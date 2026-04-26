@@ -11,6 +11,7 @@ import { calKey } from '../store';
 import {
   type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda,
 } from '../calRoles';
+import { MergeBadge } from './MergeBadge';
 import { MiniMonth } from './MiniMonth';
 import { avatarBg, initials } from './MacTitleBar';
 import { WeatherStrip } from './WeatherStrip';
@@ -61,9 +62,7 @@ function AgendaSummary({
             <span className="t">all day</span>
             <span className="ttl">
               <span className="dot" /> {e.title}
-              {e.mergedFrom && e.mergedFrom.length > 1 && (
-                <span className="dup-badge">×{e.mergedFrom.length}</span>
-              )}
+              <MergeBadge event={e} />
             </span>
           </div>
         ))}
@@ -72,9 +71,7 @@ function AgendaSummary({
             <span className="t">{formatTime(new Date(e.start))}</span>
             <span className="ttl">
               <span className="dot" /> {e.title}
-              {e.mergedFrom && e.mergedFrom.length > 1 && (
-                <span className="dup-badge">×{e.mergedFrom.length}</span>
-              )}
+              <MergeBadge event={e} />
             </span>
           </div>
         ))}
@@ -128,6 +125,7 @@ function CalListByAccount({
                   <button
                     className={'cal-item ' + (on ? '' : 'off')}
                     style={{ ['--cal' as never]: c.color }}
+                    title={c.name}
                     onClick={(ev) => { ev.stopPropagation(); toggleCal(k); }}
                   >
                     <span className="swatch" />

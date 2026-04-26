@@ -48,19 +48,26 @@ function parseIcsDate(value: string): string | null {
   return `${m[1]}-${m[2]}-${m[3]}`;
 }
 
-// We render forecast glyphs in the editorial serif column, so colored emoji
-// (☀️ 🌧 ⛈ 🌦) clash visually with the rest of the typography. Map weather
-// keywords (and well-known emoji) to a fixed set of monochrome typographic
-// characters, then strip variation selectors so the OS renders text-style.
+// Forecast SUMMARY → semantic glyph key. The renderer maps these keys to
+// SVG icons (sun, cloud, rain, etc.) so we get consistent monochrome line
+// art regardless of what emoji the feed emits. Order matters — more
+// specific patterns (drizzle before rain, partly-cloudy before cloud,
+// thunder before rain) come first.
 const GLYPH_MAP: Array<[RegExp, string]> = [
-  [/(thunder|storm|lightning|⛈|🌩|⚡)/i, '⚡'],
-  [/(snow|flurr|sleet|❄|🌨|☃)/i, '❄'],
-  [/(rain|shower|drizzle|☔|🌧|🌦)/i, '☂'],
-  [/(fog|mist|haze|smoke|🌫)/i, '☁'],
-  [/(part(ly|ial)?\s*(sun|cloud)|⛅)/i, '☁'],
-  [/(cloud|overcast|☁)/i, '☁'],
-  [/(sun|clear|fair|☀|🌞|🌤)/i, '☀'],
-  [/(wind|breez|💨)/i, '∿'],
+  [/(thunder|t-?storm|lightning|⛈|🌩|⚡)/i, 'thunder'],
+  [/(sleet|freezing\s*rain|wintry\s*mix)/i, 'sleet'],
+  [/(snow|flurr|❄|🌨|☃)/i, 'snow'],
+  [/drizzle/i, 'drizzle'],
+  [/(rain|shower|☔|🌧|🌦)/i, 'rain'],
+  [/(fog|mist|haze|smoke|🌫)/i, 'fog'],
+  [/(part(ly|ial)?\s*(sun|cloud)|mostly\s*sunny|mostly\s*clear|⛅|🌤)/i, 'partly-cloudy'],
+  [/(cloud|overcast|mostly\s*cloudy|☁)/i, 'cloud'],
+  [/(wind|breez|gust|💨)/i, 'wind'],
+  [/(very\s*hot|heat|scorch|swelter|🥵)/i, 'hot'],
+  [/(very\s*cold|frigid|freezing|🥶)/i, 'cold'],
+  [/(night.*(clear|sun)|moon|🌙|🌜)/i, 'night-clear'],
+  [/(night.*cloud)/i, 'night-cloudy'],
+  [/(sun|clear|fair|☀|🌞)/i, 'sun'],
 ];
 function extractGlyph(summary: string): string | null {
   for (const [re, glyph] of GLYPH_MAP) {

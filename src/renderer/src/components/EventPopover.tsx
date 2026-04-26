@@ -3,6 +3,7 @@ import type { CalendarEvent, CalendarSummary, AccountSummary } from '@shared/typ
 import { DOW_LONG, MONTH_NAMES, formatTimeFull, ordinal } from '../dates';
 import { avatarBg, initials } from './MacTitleBar';
 import { DescriptionHTML } from './DescriptionHTML';
+import { MergeBadge } from './MergeBadge';
 
 interface Props {
   event: CalendarEvent;
@@ -54,15 +55,11 @@ export function EventPopover({ event, anchor, calendars, accounts, onClose }: Pr
         style={{ top: pos.top, left: pos.left, ['--cal' as never]: event.color }}
       >
         <button className="pp-close" onClick={onClose}>✕</button>
-        <div className="pp-cal">
-          {cal ? cal.name : 'Event'}
-          {merged && (
-            <span className="dup-badge" style={{ marginLeft: 8 }}>
-              ×{merged.length} merged
-            </span>
-          )}
+        <div className="pp-cal">{cal ? cal.name : 'Event'}</div>
+        <div className="pp-title">
+          {event.title}
+          <MergeBadge event={event} />
         </div>
-        <div className="pp-title">{event.title}</div>
         <hr className="pp-rule" />
         <div className="pp-row">
           <span className="k">When</span>
@@ -115,23 +112,19 @@ export function EventPopover({ event, anchor, calendars, accounts, onClose }: Pr
         )}
         {merged && (
           <div className="pp-row">
-            <span className="k">In</span>
-            <span className="v" style={{ fontSize: 12, lineHeight: 1.55 }}>
-              {merged.map((m) => {
+            <span className="k">Also on</span>
+            <span className="v pp-merged">
+              {/* Skip the first source — it's the canonical event already
+                  shown above as the calendar/account. The "Also on" list
+                  surfaces every other calendar this event lives in. */}
+              {merged.slice(1).map((m) => {
                 const c = calendars.find((cc) => cc.id === m.calendarId);
+                const a = accounts.find((aa) => aa.id === m.accountId);
                 return (
-                  <span key={m.id} style={{ display: 'block' }}>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        width: 8,
-                        height: 8,
-                        background: m.color,
-                        marginRight: 6,
-                        verticalAlign: 1,
-                      }}
-                    />
-                    {c ? c.name : m.calendarId}
+                  <span key={m.id} className="pp-merged-row">
+                    <span className="pp-merged-dot" style={{ background: m.color }} />
+                    <span className="pp-merged-name">{c ? c.name : m.calendarId}</span>
+                    {a && <span className="pp-merged-acct">· {a.email}</span>}
                   </span>
                 );
               })}

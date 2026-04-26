@@ -4,6 +4,7 @@ import { eventsTouchingDay } from '../multiday';
 import {
   type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent,
 } from '../calRoles';
+import { MergeBadge } from './MergeBadge';
 
 interface Props {
   date: Date;
@@ -65,9 +66,7 @@ export function DayDetailPanel({
         </span>
         <span className="dn">
           {e.title}
-          {e.mergedFrom && e.mergedFrom.length > 1 && (
-            <span className="dup-badge">×{e.mergedFrom.length}</span>
-          )}
+          <MergeBadge event={e} />
           {cal && (
             <span className="acct-tag">— {cal.name}</span>
           )}

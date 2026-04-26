@@ -346,6 +346,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   font-size: 12.5px;
   color: var(--ink);
   width: 100%;
+  min-width: 0;
 }
 .cal-item .swatch {
   width: 10px; height: 10px;
@@ -355,7 +356,13 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 .cal-item.off .swatch { background: transparent !important; }
 .cal-item.off .label { color: var(--ink-faint); text-decoration: line-through; text-decoration-thickness: 0.5px; }
-.cal-item .label { flex: 1; }
+.cal-item .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cal-item .primary-tag {
   font-family: var(--serif-body);
   font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
@@ -376,8 +383,9 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   position: relative;
   display: flex;
   align-items: stretch;
+  min-width: 0;
 }
-.cal-row-wrap .cal-item { flex: 1; }
+.cal-row-wrap .cal-item { flex: 1; min-width: 0; }
 .cal-gear {
   appearance: none;
   background: transparent;
@@ -639,6 +647,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   font-family: var(--serif-body);
   font-size: 11px;
   font-weight: 500;
+  font-style: italic;
+  letter-spacing: 0.01em;
   line-height: 1.1;
   white-space: nowrap;
   overflow: hidden;
@@ -646,6 +656,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   text-align: left;
   cursor: pointer;
   min-width: 0;
+  box-shadow: 0 0.5px 0 rgba(0,0,0,0.18);
 }
 .ribbon:hover { filter: brightness(1.08); }
 /* Continuation indicators when the bar runs past the week boundary. */
@@ -835,17 +846,61 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 .event-desc br + br { display: none; } /* collapse double <br><br> noise */
 
-/* "×N" badge appended to merged-event titles to signal duplicates collapsed. */
-.dup-badge {
+/* Cross-calendar merge indicator. Compact variant (icon-only) lives inside
+   small in-cell pills; the full variant adds an "×N" count for popover and
+   agenda surfaces. */
+.merge-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 5px;
   font-family: var(--mono);
   font-size: 9px;
+  font-weight: 500;
   color: var(--ink-mute);
-  margin-left: 4px;
-  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
   flex-shrink: 0;
 }
-.evt.all-day .dup-badge { color: rgba(255,255,255,0.8); }
-.tv-allday-pill .dup-badge { color: rgba(255,255,255,0.85); }
+.merge-badge .mb-icon { width: 12px; height: 8.5px; display: inline-block; }
+.merge-badge .mb-n { font-feature-settings: "tnum"; }
+.merge-badge.mb-compact { margin-left: 4px; color: rgba(255,255,255,0.92); }
+.merge-badge.mb-compact .mb-icon { width: 11px; height: 7.5px; }
+/* Override compact white tint when the parent surface is paper-colored. */
+.evt:not(.all-day) .merge-badge { color: var(--ink-soft); }
+.tv-event .merge-badge { color: var(--cal); }
+.agenda-row .merge-badge,
+.dd-event .merge-badge { color: var(--ink-mute); margin-left: 6px; }
+.pp-title .merge-badge {
+  font-size: 10px;
+  margin-left: 8px;
+  vertical-align: 3px;
+  color: var(--ink-mute);
+}
+
+/* Merged-source list inside the popover ("Also on" row). */
+.pp-merged { display: flex; flex-direction: column; gap: 4px; }
+.pp-merged-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink);
+}
+.pp-merged-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.pp-merged-name { font-weight: 500; }
+.pp-merged-acct {
+  color: var(--ink-mute);
+  font-style: italic;
+  font-size: 11px;
+}
+
+/* Weather SVG icon — inherits color from the parent (--ink by default). */
+.weather-icon { display: block; margin: 0 auto; color: var(--ink); }
 .evt-more {
   appearance: none; background: transparent; border: 0;
   font-family: var(--serif-body); font-style: italic;

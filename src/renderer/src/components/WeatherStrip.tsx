@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { WeatherDay } from '@shared/types';
 import { DOW_NARROW, addDays, fmtDate } from '../dates';
+import { WeatherIcon } from './WeatherIcon';
 
 interface Props {
   start: Date;
@@ -200,7 +201,9 @@ export function WeatherStrip({ start, url, days, error, onSetUrl }: Props) {
               title={w ? w.summary : undefined}
             >
               <div className="dow">{DOW_NARROW[d.getDay()]}</div>
-              <div className="gl">{w?.glyph ?? '·'}</div>
+              <div className="gl">
+                <WeatherIcon glyph={w?.glyph ?? null} size={18} />
+              </div>
               <div className="hi">{w?.hi != null ? `${w.hi}°` : '—'}</div>
               <div className="lo">{w?.lo != null ? `${w.lo}°` : ''}</div>
             </div>

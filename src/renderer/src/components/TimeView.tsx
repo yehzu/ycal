@@ -8,6 +8,7 @@ import {
   type RibbonPlacement,
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
+import { MergeBadge } from './MergeBadge';
 
 interface Props {
   today: Date;
@@ -188,9 +189,7 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
                       onClick={(ev) => onEventClick(e, ev.currentTarget)}
                     >
                       {e.title}
-                      {e.mergedFrom && e.mergedFrom.length > 1 && (
-                        <span className="dup-badge">×{e.mergedFrom.length}</span>
-                      )}
+                      <MergeBadge event={e} variant="compact" />
                     </button>
                   );
                 })}
@@ -226,9 +225,7 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
                     {r.clippedLeft && <span className="ribbon-arrow">‹</span>}
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {e.title}
-                      {e.mergedFrom && e.mergedFrom.length > 1 && (
-                        <span className="dup-badge">×{e.mergedFrom.length}</span>
-                      )}
+                      <MergeBadge event={e} variant="compact" />
                     </span>
                     {r.clippedRight && (
                       <span className="ribbon-arrow" style={{ marginLeft: 'auto' }}>›</span>
@@ -305,9 +302,7 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
                       </span>
                       <span className="en">
                         {e.title}
-                        {e.mergedFrom && e.mergedFrom.length > 1 && (
-                          <span className="dup-badge">×{e.mergedFrom.length}</span>
-                        )}
+                        <MergeBadge event={e} variant="compact" />
                       </span>
                     </button>
                   );

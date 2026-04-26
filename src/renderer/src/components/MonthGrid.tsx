@@ -9,6 +9,7 @@ import {
   type RibbonPlacement,
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
+import { MergeBadge } from './MergeBadge';
 
 interface Props {
   today: Date;
@@ -182,9 +183,7 @@ function Ribbon({
       {placement.clippedLeft && <span className="ribbon-arrow">‹</span>}
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {e.title}
-        {e.mergedFrom && e.mergedFrom.length > 1 && (
-          <span className="dup-badge">×{e.mergedFrom.length}</span>
-        )}
+        <MergeBadge event={e} variant="compact" />
       </span>
       {placement.clippedRight && <span className="ribbon-arrow" style={{ marginLeft: 'auto' }}>›</span>}
     </button>
@@ -289,9 +288,7 @@ function Cell({
                 </span>
               )}
               <span className="evt-ttl">{e.title}</span>
-              {e.mergedFrom && e.mergedFrom.length > 1 && (
-                <span className="dup-badge">×{e.mergedFrom.length}</span>
-              )}
+              <MergeBadge event={e} variant="compact" />
             </button>
           );
         })}
