@@ -1,0 +1,123 @@
+import type { CalendarEvent, AccountSummary, CalendarSummary } from '@shared/types';
+import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
+import { eventsTouchingDay } from '../multiday';
+import {
+  type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent,
+} from '../calRoles';
+
+interface Props {
+  date: Date;
+  events: CalendarEvent[];
+  accounts: AccountSummary[];
+  calendars: CalendarSummary[];
+  calRoles: CalRoles;
+  onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
+}
+
+export function DayDetailPanel({
+  date, events, accounts, calendars, calRoles, onEventClick,
+}: Props) {
+  const todays = eventsTouchingDay(events, date);
+
+  // Holidays render as a margin note above the journal. Dedupe by title.
+  const holidayEvts = todays.filter((e) => isHolidayEvent(e, calRoles));
+  const seen = new Set<string>();
+  const uniqHolidays = holidayEvts.filter((h) => {
+    if (seen.has(h.title)) return false;
+    seen.add(h.title);
+    return true;
+  });
+
+  // Subscribed (read-only) calendars render in their own section so the
+  // primary agenda stays focused on the user's own events.
+  const subscribed = todays.filter(
+    (e) => roleOfEvent(e, calRoles) === 'subscribed',
+  );
+  const agenda = todays.filter((e) => !isExcludedFromAgenda(e, calRoles));
+  const allDay = agenda.filter((e) => e.allDay);
+  const timed = agenda
+    .filter((e) => !e.allDay)
+    .sort((a, b) => a.start.localeCompare(b.start));
+
+  const acctOf = (accountId: string) => accounts.find((a) => a.id === accountId);
+  const calOf = (calendarId: string) => calendars.find((c) => c.id === calendarId);
+
+  const renderEv = (e: CalendarEvent, allDayMode: boolean) => {
+    const acct = acctOf(e.accountId);
+    const cal = calOf(e.calendarId);
+    return (
+      <div
+        key={e.id}
+        className="dd-event"
+        style={{ ['--cal' as never]: e.color }}
+        onClick={(ev) => onEventClick(e, ev.currentTarget as HTMLElement)}
+      >
+        <span className="dt">
+          {allDayMode ? (
+            'all day'
+          ) : (
+            <>
+              {formatTime(new Date(e.start))}
+              <br />
+              {formatTime(new Date(e.end))}
+            </>
+          )}
+        </span>
+        <span className="dn">
+          {e.title}
+          {e.mergedFrom && e.mergedFrom.length > 1 && (
+            <span className="dup-badge">×{e.mergedFrom.length}</span>
+          )}
+          {cal && (
+            <span className="acct-tag">— {cal.name}</span>
+          )}
+          {acct && !cal && (
+            <span className="acct-tag">— {acct.email}</span>
+          )}
+          {e.location && <span className="dl">{e.location}</span>}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <aside className="day-detail-panel">
+      <div className="dd-date">
+        {ordinal(date.getDate())} {MONTH_NAMES[date.getMonth()]}
+        <small>
+          {DOW_LONG[date.getDay()]} · A.D. {date.getFullYear()}
+        </small>
+      </div>
+      <hr className="dd-rule" />
+
+      {uniqHolidays.length > 0 && (
+        <div className="dd-holidays">
+          {uniqHolidays.map((he) => (
+            <span key={he.id} style={{ color: he.color }}>· {he.title}</span>
+          ))}
+        </div>
+      )}
+
+      <div className="dd-section-h">All-day</div>
+      {allDay.length === 0 && (
+        <div className="dd-notes-empty" style={{ padding: '4px 0' }}>—</div>
+      )}
+      {allDay.map((e) => renderEv(e, true))}
+
+      <div className="dd-section-h">Schedule</div>
+      {timed.length === 0 && (
+        <div className="dd-notes-empty" style={{ padding: '4px 0' }}>
+          No appointments.
+        </div>
+      )}
+      {timed.map((e) => renderEv(e, false))}
+
+      {subscribed.length > 0 && (
+        <>
+          <div className="dd-section-h">Other calendars</div>
+          {subscribed.map((e) => renderEv(e, e.allDay))}
+        </>
+      )}
+    </aside>
+  );
+}
