@@ -15,6 +15,7 @@ import {
   setupAutoUpdater, getLastUpdateStatus, checkForUpdatesNow, requestInstall,
 } from './updater';
 import { runCli, extractCliArgs, isCliInvocation } from './cli';
+import { startCliServer } from './cliServer';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -186,7 +187,7 @@ if (isCliInvocation(process.argv)) {
   app.whenReady().then(async () => {
     let code = 0;
     try {
-      code = await runCli(extractCliArgs(process.argv));
+      code = await runCli(extractCliArgs(process.argv), process.stdout, process.stderr);
     } catch (e) {
       process.stderr.write(`ycal: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
       code = 1;
@@ -218,6 +219,7 @@ if (isCliInvocation(process.argv)) {
 
     const win = createWindow();
     setupAutoUpdater(win);
+    startCliServer();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

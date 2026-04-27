@@ -1,32 +1,114 @@
-#!/usr/bin/env bash
-# yCal CLI launcher.
-#
-# Strategy:
-#   1. Honour an explicit override via $YCAL_BIN.
-#   2. Prefer the installed yCal.app on macOS — it shares safeStorage with
-#      the GUI, so its accounts.json is the user's "real" data.
-#   3. Fall back to running the project from this checkout via npx electron.
-#      This requires `npm run build` to have produced out/main/index.js.
-#
-# All args after the program name are forwarded to the CLI verbatim.
-set -euo pipefail
+#!/usr/bin/env node
+// yCal CLI client — talks to the running yCal GUI via a Unix socket so
+// invocations don't bounce a second Electron process and flash the dock.
+//
+// Flow:
+//   1. Try to connect to ~/Library/Application Support/yCal/cli.sock.
+//      If it answers → print response → exit. (~50ms, no dock activity.)
+//   2. If the GUI isn't running, launch yCal.app via `open -a`, poll the
+//      socket for up to 15s, then drive it once it's up. The GUI window
+//      shows up — once. Subsequent calls go straight through path 1.
+//   3. If yCal.app isn't installed, fail with code 2.
+//
+// Pure Node, no Electron import — that's what keeps the dock quiet.
+'use strict';
 
-if [[ -n "${YCAL_BIN:-}" && -x "${YCAL_BIN}" ]]; then
-  exec "${YCAL_BIN}" --cli "$@"
-fi
+const net = require('node:net');
+const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
+const { spawn } = require('node:child_process');
 
-INSTALLED="/Applications/yCal.app/Contents/MacOS/yCal"
-if [[ -x "$INSTALLED" ]]; then
-  exec "$INSTALLED" --cli "$@"
-fi
+const APP_PATH = '/Applications/yCal.app';
+const APP_BIN = path.join(APP_PATH, 'Contents/MacOS/yCal');
+// app.name resolves to "ycal" (the package.json name field) — that's the
+// real userData dir name. macOS's default APFS volume is case-insensitive
+// so "yCal" works too, but match the real path for case-sensitive volumes.
+const SOCK = path.join(
+  os.homedir(),
+  'Library/Application Support/ycal/cli.sock',
+);
+const args = process.argv.slice(2);
 
-# Dev fallback: use the source tree this script ships with.
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-if [[ ! -f "$SCRIPT_DIR/out/main/index.js" ]]; then
-  echo "ycal: built main entry not found at $SCRIPT_DIR/out/main/index.js" >&2
-  echo "      run: (cd \"$SCRIPT_DIR\" && npm run build)" >&2
-  exit 1
-fi
+function tryRequest(timeoutMs) {
+  return new Promise((resolve) => {
+    const sock = net.createConnection(SOCK);
+    let connected = false;
+    let buf = '';
+    const timer = setTimeout(() => {
+      sock.destroy();
+      resolve(null);
+    }, timeoutMs);
 
-cd "$SCRIPT_DIR"
-exec npx --no-install electron . --cli "$@"
+    sock.setEncoding('utf8');
+    sock.on('connect', () => {
+      connected = true;
+      sock.write(JSON.stringify({ args }));
+      sock.end(); // half-close: server reads until 'end'
+    });
+    sock.on('data', (chunk) => { buf += chunk; });
+    sock.on('end', () => {
+      clearTimeout(timer);
+      try {
+        resolve(JSON.parse(buf));
+      } catch (_e) {
+        resolve(null);
+      }
+    });
+    sock.on('error', () => {
+      clearTimeout(timer);
+      // ENOENT (no socket) and ECONNREFUSED (stale socket, nobody listening)
+      // both land here. Returning null tells main() to fall back to launching
+      // the GUI.
+      if (!connected) resolve(null);
+    });
+  });
+}
+
+function deliver(res) {
+  if (res.stdout) process.stdout.write(res.stdout);
+  if (res.stderr) process.stderr.write(res.stderr);
+  process.exit(typeof res.code === 'number' ? res.code : 0);
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function main() {
+  // Fast path: GUI already running.
+  let res = await tryRequest(2000);
+  if (res) deliver(res);
+
+  // Slow path: launch the GUI, then poll.
+  if (!fs.existsSync(APP_BIN)) {
+    process.stderr.write(
+      `ycal: yCal.app not found at ${APP_PATH}. ` +
+        'Install it from a release on https://github.com/yehzu/ycal\n',
+    );
+    process.exit(2);
+  }
+  process.stderr.write('yCal not running — launching…\n');
+  const proc = spawn('/usr/bin/open', ['-a', APP_PATH], {
+    stdio: 'ignore',
+    detached: true,
+  });
+  proc.unref();
+
+  // Poll the socket for up to 15s. The GUI usually accepts requests within
+  // 1–3s of launch on a warm machine; cold start with auth refresh can take
+  // longer.
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    await sleep(300);
+    res = await tryRequest(700);
+    if (res) deliver(res);
+  }
+  process.stderr.write('ycal: timed out waiting for yCal to start (15s)\n');
+  process.exit(1);
+}
+
+main().catch((e) => {
+  process.stderr.write(`ycal: ${e instanceof Error ? e.stack || e.message : String(e)}\n`);
+  process.exit(1);
+});

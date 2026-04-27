@@ -125,7 +125,11 @@ yCal ships a small, headless CLI that reuses the same auth and Google Calendar c
 
 ### How it works
 
-The CLI is the same Electron binary as the app, launched with a `--cli` sentinel. Because Electron is required for `safeStorage` (which decrypts your refresh tokens), there is no plain-Node fallback. Sign-in must happen via the GUI; once you're signed in, the CLI can read your calendars without the GUI running.
+`bin/ycal` is a tiny Node script (no Electron). It connects to a Unix socket the GUI yCal exposes at `~/Library/Application Support/ycal/cli.sock` and exchanges one JSON request/response per invocation. Because no second Electron process is started, the macOS Dock never flashes — typical roundtrip is ~50ms.
+
+If yCal isn't already running, the client launches it via `open -a yCal` and polls the socket for up to 15 seconds. The window appears once; subsequent CLI invocations go straight through the socket with the GUI still in the background.
+
+The same `runCli` code path also still works as `yCal --cli <args>` (in-process Electron mode) — useful for CI/headless contexts where the GUI can't display.
 
 ### Install
 

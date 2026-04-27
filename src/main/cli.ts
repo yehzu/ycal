@@ -20,6 +20,7 @@ import { app } from 'electron';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Writable } from 'node:stream';
 
 import { isConfigured } from './config';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
@@ -55,6 +56,16 @@ function readVersion(): string {
 }
 
 type Format = 'json' | 'text' | 'markdown';
+
+// Threaded explicitly so the same `runCli` works in two modes:
+//   • Electron --cli mode → process.stdout / process.stderr
+//   • Socket-server mode  → in-memory buffers serialized back to the client
+// Threading via param avoids module-level state and lets the server handle
+// concurrent socket requests safely.
+export interface CliIo {
+  out: Writable;
+  err: Writable;
+}
 
 interface ParsedArgs {
   command: string;
@@ -323,11 +334,11 @@ function compareEvents(a: PublicEvent, b: PublicEvent): number {
 
 // ---------- Output ----------
 
-function emit(payload: unknown, format: Format, render: () => string): void {
+function emit(payload: unknown, format: Format, render: () => string, io: CliIo): void {
   if (format === 'json') {
-    process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+    io.out.write(JSON.stringify(payload, null, 2) + '\n');
   } else {
-    process.stdout.write(render() + '\n');
+    io.out.write(render() + '\n');
   }
 }
 
@@ -386,7 +397,7 @@ function ensureAccounts(): AccountSummary[] {
   return accounts;
 }
 
-async function cmdAccounts(args: ParsedArgs): Promise<number> {
+async function cmdAccounts(args: ParsedArgs, io: CliIo): Promise<number> {
   ensureConfigured();
   const accounts = listAccountSummaries();
   const format = getFormat(args);
@@ -400,11 +411,12 @@ async function cmdAccounts(args: ParsedArgs): Promise<number> {
       }
       return accounts.map((a) => `${a.email}${a.name ? `  (${a.name})` : ''}`).join('\n');
     },
+    io,
   );
   return 0;
 }
 
-async function cmdCalendars(args: ParsedArgs): Promise<number> {
+async function cmdCalendars(args: ParsedArgs, io: CliIo): Promise<number> {
   ensureConfigured();
   ensureAccounts();
   const accountFilter = args.flags.account;
@@ -441,6 +453,7 @@ async function cmdCalendars(args: ParsedArgs): Promise<number> {
         .map((c) => `${c.primary ? '★' : ' '} ${c.name.padEnd(w)}  ${c.account ?? ''}  ${c.id}`)
         .join('\n');
     },
+    io,
   );
   return 0;
 }
@@ -597,7 +610,7 @@ function renderEventsMarkdown(events: PublicEvent[], opts: EventQueryOptions): s
   return sections.join('\n');
 }
 
-async function cmdEvents(args: ParsedArgs, defaultRange: EventRange): Promise<number> {
+async function cmdEvents(args: ParsedArgs, defaultRange: EventRange, io: CliIo): Promise<number> {
   ensureConfigured();
   ensureAccounts();
   const opts = readQueryOptions(args, defaultRange);
@@ -623,11 +636,12 @@ async function cmdEvents(args: ParsedArgs, defaultRange: EventRange): Promise<nu
       if (format === 'markdown') return renderEventsMarkdown(events, opts);
       return renderEventsText(events);
     },
+    io,
   );
   return 0;
 }
 
-async function cmdNext(args: ParsedArgs): Promise<number> {
+async function cmdNext(args: ParsedArgs, io: CliIo): Promise<number> {
   ensureConfigured();
   ensureAccounts();
   const n = args.positional[0] ? parseInt(args.positional[0], 10) : 5;
@@ -652,11 +666,12 @@ async function cmdNext(args: ParsedArgs): Promise<number> {
     },
     format,
     () => format === 'markdown' ? renderEventsMarkdown(events, { ...opts, range: { from, to } }) : renderEventsText(events),
+    io,
   );
   return 0;
 }
 
-async function cmdFind(args: ParsedArgs): Promise<number> {
+async function cmdFind(args: ParsedArgs, io: CliIo): Promise<number> {
   ensureConfigured();
   ensureAccounts();
   const query = args.positional[0];
@@ -672,11 +687,12 @@ async function cmdFind(args: ParsedArgs): Promise<number> {
     { command: 'find', params: { query, from: from.toISOString(), to: to.toISOString() }, count: events.length, events },
     format,
     () => format === 'markdown' ? renderEventsMarkdown(events, { ...opts, range: { from, to } }) : renderEventsText(events),
+    io,
   );
   return 0;
 }
 
-async function cmdWeather(args: ParsedArgs): Promise<number> {
+async function cmdWeather(args: ParsedArgs, io: CliIo): Promise<number> {
   const days = await fetchWeather().catch((e) => {
     throw new CliError(`weather fetch failed: ${e instanceof Error ? e.message : String(e)}`);
   });
@@ -694,6 +710,7 @@ async function cmdWeather(args: ParsedArgs): Promise<number> {
         })
         .join('\n');
     },
+    io,
   );
   return 0;
 }
@@ -756,25 +773,30 @@ EXIT CODES
 
 // ---------- Entry point ----------
 
-export async function runCli(argv: string[]): Promise<number> {
+export async function runCli(
+  argv: string[],
+  out: Writable = process.stdout,
+  err: Writable = process.stderr,
+): Promise<number> {
+  const io: CliIo = { out, err };
   const version = readVersion();
   const args = parseArgs(argv);
 
   if (args.command === '__version' || args.flags.version) {
-    process.stdout.write(`yCal ${version}\n`);
+    io.out.write(`yCal ${version}\n`);
     return 0;
   }
   if (args.help && !args.command) {
-    process.stdout.write(helpText(version));
+    io.out.write(helpText(version));
     return 0;
   }
   if (!args.command || args.command === 'help') {
-    process.stdout.write(helpText(version));
+    io.out.write(helpText(version));
     return args.command ? 0 : 1;
   }
   if (args.help) {
     // Per-command help → for now, fall back to the global help.
-    process.stdout.write(helpText(version));
+    io.out.write(helpText(version));
     return 0;
   }
 
@@ -782,38 +804,38 @@ export async function runCli(argv: string[]): Promise<number> {
     const now = new Date();
     switch (args.command) {
       case 'accounts':
-        return await cmdAccounts(args);
+        return await cmdAccounts(args, io);
       case 'calendars':
-        return await cmdCalendars(args);
+        return await cmdCalendars(args, io);
       case 'events':
-        return await cmdEvents(args, { from: startOfDay(now), to: endOfDay(addDays(now, 7)) });
+        return await cmdEvents(args, { from: startOfDay(now), to: endOfDay(addDays(now, 7)) }, io);
       case 'today':
-        return await cmdEvents(args, { from: startOfDay(now), to: endOfDay(now) });
+        return await cmdEvents(args, { from: startOfDay(now), to: endOfDay(now) }, io);
       case 'tomorrow': {
         const t = addDays(now, 1);
-        return await cmdEvents(args, { from: startOfDay(t), to: endOfDay(t) });
+        return await cmdEvents(args, { from: startOfDay(t), to: endOfDay(t) }, io);
       }
       case 'week': {
         const ws = startOfWeek(now);
-        return await cmdEvents(args, { from: ws, to: endOfDay(addDays(ws, 6)) });
+        return await cmdEvents(args, { from: ws, to: endOfDay(addDays(ws, 6)) }, io);
       }
       case 'next':
-        return await cmdNext(args);
+        return await cmdNext(args, io);
       case 'find':
-        return await cmdFind(args);
+        return await cmdFind(args, io);
       case 'weather':
-        return await cmdWeather(args);
+        return await cmdWeather(args, io);
       default:
-        process.stderr.write(`ycal: unknown command "${args.command}"\n\n`);
-        process.stderr.write(helpText(version));
+        io.err.write(`ycal: unknown command "${args.command}"\n\n`);
+        io.err.write(helpText(version));
         return 1;
     }
   } catch (e) {
     if (e instanceof CliError) {
-      process.stderr.write(`ycal: ${e.message}\n`);
+      io.err.write(`ycal: ${e.message}\n`);
       return e.exitCode;
     }
-    process.stderr.write(`ycal: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+    io.err.write(`ycal: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
     return 1;
   }
 }
