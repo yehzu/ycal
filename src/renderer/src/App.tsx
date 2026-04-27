@@ -92,7 +92,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     return cleaned.length === DEFAULT_SECTION_ORDER.length ? cleaned : DEFAULT_SECTION_ORDER;
   });
   const [hideReadOnly, setHideReadOnly] = useState(false);
-  const [hideDisabledCals, setHideDisabledCals] = useState(false);
+  const [hideDisabledCals, setHideDisabledCals] = useState<boolean>(
+    () => initialUi.hideDisabledCals ?? false,
+  );
   const [dayModal, setDayModal] = useState<Date | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mergeCriteria, setMergeCriteria] = useState<MergeCriteria>(() => ({
@@ -136,10 +138,11 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       showWeekNums,
       showWeather,
       units,
+      hideDisabledCals,
     });
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
-    mergeCriteria, showWeekNums, showWeather, units,
+    mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -152,6 +155,45 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     const now = new Date();
     setAnchor(now);
     setSelected(now);
+  }, []);
+
+  // Browser-style back/forward across (anchor, selected, view) snapshots.
+  // The effect below detects user-initiated changes and pushes the previous
+  // snapshot onto `back`; navigateHistory itself flips a flag so its own
+  // restore does not re-enter the stack.
+  type NavSnap = { anchor: Date; selected: Date; view: ViewMode };
+  const historyRef = useRef<{ back: NavSnap[]; forward: NavSnap[] }>({
+    back: [], forward: [],
+  });
+  const lastSnapRef = useRef<NavSnap>({ anchor, selected, view });
+  const navigatingRef = useRef(false);
+  const sameSnap = (a: NavSnap, b: NavSnap) =>
+    a.view === b.view
+    && a.anchor.getTime() === b.anchor.getTime()
+    && a.selected.getTime() === b.selected.getTime();
+
+  useEffect(() => {
+    const next: NavSnap = { anchor, selected, view };
+    if (navigatingRef.current) {
+      navigatingRef.current = false;
+    } else if (!sameSnap(lastSnapRef.current, next)) {
+      historyRef.current.back.push(lastSnapRef.current);
+      if (historyRef.current.back.length > 100) historyRef.current.back.shift();
+      historyRef.current.forward = [];
+    }
+    lastSnapRef.current = next;
+  }, [anchor, selected, view]);
+
+  const navigateHistory = useCallback((dir: -1 | 1) => {
+    const h = historyRef.current;
+    const stack = dir === -1 ? h.back : h.forward;
+    if (stack.length === 0) return;
+    const target = stack.pop()!;
+    (dir === -1 ? h.forward : h.back).push(lastSnapRef.current);
+    navigatingRef.current = true;
+    setAnchor(target.anchor);
+    setSelected(target.selected);
+    setView(target.view);
   }, []);
 
   // Move the selected day by `dx` days; pull anchor along only when the new
@@ -206,18 +248,19 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
         if (ev.key === 'Escape') setDayModal(null);
         return;
       }
-      if (ev.key === 'ArrowLeft') {
+      const stepAnchor = (dir: -1 | 1) => {
         setAnchor((a) =>
-          view === 'month' ? addMonths(a, -1)
-          : view === 'week' ? addDays(a, -7)
-          : addDays(a, -1),
+          view === 'month' ? addMonths(a, dir)
+          : view === 'week' ? addDays(a, 7 * dir)
+          : addDays(a, dir),
         );
-      } else if (ev.key === 'ArrowRight') {
-        setAnchor((a) =>
-          view === 'month' ? addMonths(a, 1)
-          : view === 'week' ? addDays(a, 7)
-          : addDays(a, 1),
-        );
+      };
+      if (ev.key === 'ArrowLeft' || ev.key === 'u') {
+        ev.preventDefault();
+        stepAnchor(-1);
+      } else if (ev.key === 'ArrowRight' || ev.key === 'i') {
+        ev.preventDefault();
+        stepAnchor(1);
       } else if (ev.key === 'h') {
         ev.preventDefault();
         moveSelection(-1);
@@ -232,7 +275,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
         moveSelection(-7);
       } else if (ev.key === ' ' && target?.tagName !== 'BUTTON') {
         ev.preventDefault();
-        goToToday();
+        setDayModal(selected);
       } else if (ev.key === 's') {
         ev.preventDefault();
         setView('month');
@@ -247,13 +290,35 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       } else if (ev.key === 'w') {
         ev.preventDefault();
         setHideReadOnly((v) => !v);
+      } else if (ev.key === 'e') {
+        ev.preventDefault();
+        setHideDisabledCals((v) => !v);
       } else if (ev.key === 'Escape') {
         setAcctPickerOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, popover, dayModal, settingsOpen, goToToday, moveSelection]);
+  }, [view, popover, dayModal, settingsOpen, selected, goToToday, moveSelection]);
+
+  // Mouse buttons 3 (XBUTTON1 / Back) and 4 (XBUTTON2 / Forward) navigate
+  // the per-app history stack. Suppress on mousedown too — Electron would
+  // otherwise propagate them as browser-style history events.
+  useEffect(() => {
+    const onMouseDown = (ev: MouseEvent) => {
+      if (ev.button === 3) { ev.preventDefault(); navigateHistory(-1); }
+      else if (ev.button === 4) { ev.preventDefault(); navigateHistory(1); }
+    };
+    const onMouseUp = (ev: MouseEvent) => {
+      if (ev.button === 3 || ev.button === 4) ev.preventDefault();
+    };
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [navigateHistory]);
 
   const onEventClick = useCallback((event: CalendarEvent, anchorEl: HTMLElement) => {
     setPopover({ event, anchor: anchorEl });

@@ -25,6 +25,12 @@ export function DayEventsModal({
     document.body.style.overflow = 'hidden';
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') onClose();
+      else if (ev.key === ' ') {
+        const target = ev.target as HTMLElement | null;
+        if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
+        ev.preventDefault();
+        onClose();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => {

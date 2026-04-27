@@ -119,6 +119,8 @@ export interface UiSettings {
   showWeather?: boolean;
   // Temperature units for in-view weather chips.
   units?: TempUnits;
+  // Hide calendar rows that the user has toggled off in the sidebar.
+  hideDisabledCals?: boolean;
 }
 
 // Auto-update lifecycle, mirrored from electron-updater's events into a

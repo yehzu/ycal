@@ -554,11 +554,13 @@ function PrefsShortcuts() {
       title: 'Navigate',
       rows: [
         { keys: [['←'], 'or', ['→']], desc: 'Previous / next page (month, week, or day)' },
+        { keys: [['U'], 'or', ['I']], desc: 'Previous / next page (alias for ← / →)' },
         { keys: [['H']], desc: 'Move selection one day backward' },
         { keys: [['L']], desc: 'Move selection one day forward' },
         { keys: [['K']], desc: 'Move selection one week backward' },
         { keys: [['J']], desc: 'Move selection one week forward' },
-        { keys: [['T'], 'or', ['Space']], desc: 'Jump to today' },
+        { keys: [['T']], desc: 'Jump to today' },
+        { keys: [['Mouse Back'], 'or', ['Mouse Forward']], desc: 'Step through view history' },
       ],
     },
     {
@@ -568,6 +570,7 @@ function PrefsShortcuts() {
         { keys: [['S']], desc: 'Month view' },
         { keys: [['D']], desc: 'Week view' },
         { keys: [['F']], desc: 'Day view' },
+        { keys: [['Space']], desc: 'Open the selected day’s full event list (press again to close)' },
       ],
     },
     {
@@ -575,6 +578,7 @@ function PrefsShortcuts() {
       title: 'Filters',
       rows: [
         { keys: [['W']], desc: 'Toggle Show read-only calendars' },
+        { keys: [['E']], desc: 'Toggle Show / hide disabled calendars (persistent)' },
       ],
     },
     {

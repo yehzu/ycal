@@ -91,6 +91,9 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   if (patch.units !== undefined) {
     next.units = patch.units;
   }
+  if (patch.hideDisabledCals !== undefined) {
+    next.hideDisabledCals = patch.hideDisabledCals;
+  }
   s.ui = next;
   write(s);
 }
