@@ -8,7 +8,7 @@ import type {
   WeatherDay,
 } from '@shared/types';
 import { addDays, fmtDate, startOfMonth } from './dates';
-import { dedupEvents } from './dedup';
+import { dedupEvents } from '@shared/dedup';
 
 // Calendar visibility is keyed per (account, calendar) because shared/public
 // calendars (e.g. holiday calendars) carry the same Google calendarId across

@@ -14,6 +14,7 @@ import { clearWeatherCache, fetchWeather } from './weather';
 import {
   setupAutoUpdater, getLastUpdateStatus, checkForUpdatesNow, requestInstall,
 } from './updater';
+import { runCli, extractCliArgs, isCliInvocation } from './cli';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -171,34 +172,59 @@ function registerIpc() {
   });
 }
 
-app.whenReady().then(() => {
-  // In dev, set the dock icon explicitly — electron-builder only injects the
-  // real icns on packaged builds.
-  if (process.platform === 'darwin' && process.env.ELECTRON_RENDERER_URL && app.dock) {
-    try { app.dock.setIcon(DEV_ICON_PATH); } catch { /* dock icon is best-effort */ }
+if (isCliInvocation(process.argv)) {
+  // Headless CLI mode. We still need Electron's runtime (safeStorage relies
+  // on it) but we skip the window, dock icon, missing-config dialog, and
+  // auto-updater. Quit explicitly with the CLI's exit code.
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.hide(); } catch { /* best-effort */ }
   }
-  registerIpc();
-
-  if (!isConfigured()) {
-    dialog.showMessageBoxSync({
-      type: 'warning',
-      title: 'yCal — OAuth not configured',
-      message: 'OAuth client credentials missing.',
-      detail:
-        'Place oauth-client.json in:\n' +
-        `  ${app.getPath('userData')}\n\n` +
-        'See README.md for Google Cloud Console setup.',
-    });
-  }
-
-  const win = createWindow();
-  setupAutoUpdater(win);
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // Some Google API failure paths log via console.log; keep stdout reserved
+  // for the CLI's structured output by pinning info to stderr.
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => console.error(...args);
+  app.whenReady().then(async () => {
+    let code = 0;
+    try {
+      code = await runCli(extractCliArgs(process.argv));
+    } catch (e) {
+      process.stderr.write(`ycal: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+      code = 1;
+    } finally {
+      console.log = origLog;
+      app.exit(code);
+    }
   });
-});
+} else {
+  app.whenReady().then(() => {
+    // In dev, set the dock icon explicitly — electron-builder only injects the
+    // real icns on packaged builds.
+    if (process.platform === 'darwin' && process.env.ELECTRON_RENDERER_URL && app.dock) {
+      try { app.dock.setIcon(DEV_ICON_PATH); } catch { /* dock icon is best-effort */ }
+    }
+    registerIpc();
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+    if (!isConfigured()) {
+      dialog.showMessageBoxSync({
+        type: 'warning',
+        title: 'yCal — OAuth not configured',
+        message: 'OAuth client credentials missing.',
+        detail:
+          'Place oauth-client.json in:\n' +
+          `  ${app.getPath('userData')}\n\n` +
+          'See README.md for Google Cloud Console setup.',
+      });
+    }
+
+    const win = createWindow();
+    setupAutoUpdater(win);
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+}

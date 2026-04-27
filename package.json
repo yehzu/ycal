@@ -1,6 +1,6 @@
 {
   "name": "ycal",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "An editorial-styled macOS calendar with multi-Google-account support and per-event colors.",
   "main": "out/main/index.js",
   "author": "yCal",
@@ -15,7 +15,11 @@
     "dist": "electron-vite build && electron-builder --mac",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web"
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "ycal": "electron . --cli"
+  },
+  "bin": {
+    "ycal": "bin/ycal"
   },
   "dependencies": {
     "@types/dompurify": "^3.0.5",

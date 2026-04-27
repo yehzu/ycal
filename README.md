@@ -117,6 +117,138 @@ GH_TOKEN=<token> npm run dist -- --publish always
 
 bumps the artifacts to a draft GitHub release for the version in `package.json`. Tag the commit, publish the draft, and existing installs pick it up on next launch.
 
+---
+
+## CLI (LLM-friendly)
+
+yCal ships a small, headless CLI that reuses the same auth and Google Calendar code as the GUI. Designed for piping into LLMs and other automations: stable JSON output, no TTY-only ANSI escapes, stderr-vs-stdout discipline.
+
+### How it works
+
+The CLI is the same Electron binary as the app, launched with a `--cli` sentinel. Because Electron is required for `safeStorage` (which decrypts your refresh tokens), there is no plain-Node fallback. Sign-in must happen via the GUI; once you're signed in, the CLI can read your calendars without the GUI running.
+
+### Install
+
+```bash
+# from the repo
+npm install
+npm run build           # produces out/main/index.js
+ln -s "$PWD/bin/ycal" /usr/local/bin/ycal   # optional — put it on PATH
+```
+
+The launcher in `bin/ycal` prefers the installed `/Applications/yCal.app` binary, falling back to the local checkout. To force a specific binary set `YCAL_BIN=/path/to/yCal`.
+
+For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built source.
+
+### Commands
+
+| Command | Description |
+| --- | --- |
+| `ycal accounts` | Signed-in Google accounts. |
+| `ycal calendars` | All calendars across all accounts. Filter with `--account <id>`. |
+| `ycal events` | Events in a date range (default: today + 7d). |
+| `ycal today` | Shortcut for `--from today --to today`. |
+| `ycal tomorrow` | Shortcut for tomorrow. |
+| `ycal week` | Current Mon–Sun. |
+| `ycal next [N]` | Next N upcoming events (default 5). |
+| `ycal find <query>` | Search events `-7d` to `+90d`. |
+| `ycal weather` | Forecast from the configured weather iCal feed. |
+| `ycal --help` | Full reference. |
+
+### Flags
+
+```
+--from <when>            Start of range. See "Date shorthand".
+--to <when>              End of range.
+--calendar <id>          Repeatable; restrict to specific calendar IDs.
+--account <id>           Repeatable; restrict to specific account IDs.
+--search <text>          Substring match against title/description/location.
+--limit <n>              Cap result count after sorting by start.
+--include-declined       Keep events you've declined (default: drop).
+--no-dedup               Disable cross-calendar duplicate collapsing.
+--format json|text|markdown    Default: json.
+```
+
+#### Date shorthand
+
+```
+today | tomorrow | yesterday | now
++Nd | +Nw | +Nm | +Nh    (also -Nd, etc.)
+YYYY-MM-DD               (local midnight)
+YYYY-MM-DDTHH:MM[:SS]    (local time, or include offset)
+```
+
+### JSON shape
+
+Every JSON document has at minimum `{ "command", "count" }` and a payload array named after the command. All times are ISO 8601 (timed events carry the originating timezone offset; all-day events are naive YYYY-MM-DDT00:00:00). Durations are in minutes. Descriptions are plain text — HTML is stripped and entities decoded.
+
+```jsonc
+{
+  "command": "events",
+  "params": {
+    "from": "2026-04-27T00:00:00.000Z",
+    "to":   "2026-05-04T23:59:59.999Z",
+    "search": null, "limit": null, "includeDeclined": false,
+    "calendarIds": null, "accountIds": null
+  },
+  "count": 1,
+  "events": [
+    {
+      "id": "abc123",
+      "title": "Standup",
+      "start": "2026-04-27T09:00:00+08:00",
+      "end":   "2026-04-27T09:30:00+08:00",
+      "allDay": false,
+      "duration_minutes": 30,
+      "location": "Zoom",
+      "description": null,
+      "rsvp": "accepted",                    // accepted | tentative | declined | needsAction | null
+      "status": "confirmed",
+      "eventType": "default",                // default | workingLocation | outOfOffice | focusTime | birthday | fromGmail
+      "calendar": { "id": "...", "name": "Work", "account": "you@gmail.com", "primary": true },
+      "url": "https://www.google.com/calendar/event?..."
+    }
+  ]
+}
+```
+
+### Examples
+
+```bash
+# What's on today, as Markdown for pasting into chat:
+ycal today --format markdown
+
+# Next three upcoming events:
+ycal next 3
+
+# Pipe to an LLM:
+ycal events --from today --to +14d | llm -m claude-opus-4-7 \
+  "Summarise my next two weeks. Flag any conflicts."
+
+# Find every "1:1" in the last month:
+ycal find "1:1" --from -30d --to today --format text
+
+# Just one calendar, declined included:
+ycal events --calendar primary@gmail.com --include-declined
+```
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Usage / runtime error (details on stderr) |
+| 2 | Not configured, or no accounts signed in |
+
+### Notes
+
+- **Cross-calendar duplicates are collapsed by default.** Same `(title + start)` events on multiple calendars become one row. Pass `--no-dedup` to see all rows.
+- **Declined events are hidden by default.** Pass `--include-declined` to include them.
+- **Stderr is for diagnostics only.** stdout receives exactly one JSON document (or one text/markdown block). Pipe-safe.
+- **Default range** for `events` is today through 7 days out. Override with `--from`/`--to`.
+
+---
+
 ## What's not built (yet)
 
 - Creating / editing / deleting events (read-only for now; the scopes are restricted to `*.readonly`)

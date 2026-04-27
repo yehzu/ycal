@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# yCal CLI launcher.
+#
+# Strategy:
+#   1. Honour an explicit override via $YCAL_BIN.
+#   2. Prefer the installed yCal.app on macOS — it shares safeStorage with
+#      the GUI, so its accounts.json is the user's "real" data.
+#   3. Fall back to running the project from this checkout via npx electron.
+#      This requires `npm run build` to have produced out/main/index.js.
+#
+# All args after the program name are forwarded to the CLI verbatim.
+set -euo pipefail
+
+if [[ -n "${YCAL_BIN:-}" && -x "${YCAL_BIN}" ]]; then
+  exec "${YCAL_BIN}" --cli "$@"
+fi
+
+INSTALLED="/Applications/yCal.app/Contents/MacOS/yCal"
+if [[ -x "$INSTALLED" ]]; then
+  exec "$INSTALLED" --cli "$@"
+fi
+
+# Dev fallback: use the source tree this script ships with.
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ ! -f "$SCRIPT_DIR/out/main/index.js" ]]; then
+  echo "ycal: built main entry not found at $SCRIPT_DIR/out/main/index.js" >&2
+  echo "      run: (cd \"$SCRIPT_DIR\" && npm run build)" >&2
+  exit 1
+fi
+
+cd "$SCRIPT_DIR"
+exec npx --no-install electron . --cli "$@"
