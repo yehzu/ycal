@@ -56,12 +56,9 @@ function AgendaSummary({
   onEventClick?: (e: CalendarEvent, anchor: HTMLElement) => void;
 }) {
   const touching = eventsTouchingDay(events, date);
-  const todays = touching.filter(
-    (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e),
-  );
-  const allDay = todays.filter((e) => e.allDay);
-  const timed = todays
-    .filter((e) => !e.allDay)
+  const todays = touching
+    .filter((e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e))
+    .slice()
     .sort((a, b) => a.start.localeCompare(b.start));
 
   const seenLoc = new Set<string>();
@@ -96,18 +93,9 @@ function AgendaSummary({
         </div>
       )}
       <div className="agenda-list">
-        {allDay.map((e) => (
+        {todays.map((e) => (
           <div key={e.id} className="agenda-row" style={{ ['--cal' as never]: e.color }}>
-            <span className="t">all day</span>
-            <span className="ttl">
-              <span className="dot" /> {e.title}
-              <MergeBadge event={e} />
-            </span>
-          </div>
-        ))}
-        {timed.map((e) => (
-          <div key={e.id} className="agenda-row" style={{ ['--cal' as never]: e.color }}>
-            <span className="t">{formatTime(new Date(e.start))}</span>
+            <span className="t">{e.allDay ? 'all day' : formatTime(new Date(e.start))}</span>
             <span className="ttl">
               <span className="dot" /> {e.title}
               <MergeBadge event={e} />

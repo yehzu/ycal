@@ -1895,3 +1895,80 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   letter-spacing: 1.4px;
   color: var(--ink-faint);
 }
+
+/* ============================================================
+   Settings modal — opened with Cmd+,
+   ============================================================ */
+.settings-modal {
+  position: fixed;
+  z-index: 70;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  background: var(--paper);
+  border: 0.5px solid var(--ink);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25), 0 0 0 0.5px var(--ink) inset;
+  display: flex;
+  flex-direction: column;
+  border-radius: 1px;
+}
+.settings-note {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+.settings-group { margin-bottom: 14px; }
+.settings-group:last-child { margin-bottom: 4px; }
+.settings-group-h {
+  font: 600 9.5px/1 var(--serif-body);
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: var(--ink-soft);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 0.5px dotted var(--rule);
+}
+.settings-row {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  align-items: baseline;
+  gap: 14px;
+  padding: 6px 4px;
+  font-family: var(--serif-body);
+  font-size: 13px;
+  color: var(--ink);
+}
+.settings-keys {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.settings-kbd {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  padding: 2px 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  background: rgba(0,0,0,0.04);
+  border: 0.5px solid var(--rule);
+  border-bottom-width: 1px;
+  border-radius: 3px;
+  letter-spacing: 0;
+}
+.settings-sep {
+  font-style: italic;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin: 0 4px;
+}
+.settings-label {
+  color: var(--ink-soft);
+  line-height: 1.4;
+}

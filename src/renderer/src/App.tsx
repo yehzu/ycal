@@ -12,6 +12,7 @@ import { TimeView } from './components/TimeView';
 import { DayDetailPanel } from './components/DayDetailPanel';
 import { EventPopover } from './components/EventPopover';
 import { DayEventsModal } from './components/DayEventsModal';
+import { SettingsModal } from './components/SettingsModal';
 import { roleOfEvent } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
@@ -79,6 +80,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [hideReadOnly, setHideReadOnly] = useState(false);
   const [hideDisabledCals, setHideDisabledCals] = useState(false);
   const [dayModal, setDayModal] = useState<Date | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
     setCalRoles((prev) => ({ ...prev, [key]: role }));
@@ -151,7 +153,17 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     const onKey = (ev: KeyboardEvent) => {
       const target = ev.target as HTMLElement | null;
       if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
+      // Cmd/Ctrl+, opens Settings — handle before the modifier early-return.
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === ',' && !ev.altKey && !ev.shiftKey) {
+        ev.preventDefault();
+        setSettingsOpen(true);
+        return;
+      }
       if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (settingsOpen) {
+        if (ev.key === 'Escape') setSettingsOpen(false);
+        return;
+      }
       if (popover) {
         if (ev.key === 'Escape') setPopover(null);
         return;
@@ -198,13 +210,16 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
         setView('day');
       } else if (ev.key.toLowerCase() === 't') {
         goToToday();
+      } else if (ev.key === 'w') {
+        ev.preventDefault();
+        setHideReadOnly((v) => !v);
       } else if (ev.key === 'Escape') {
         setAcctPickerOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, popover, dayModal, goToToday, moveSelection]);
+  }, [view, popover, dayModal, settingsOpen, goToToday, moveSelection]);
 
   const onEventClick = useCallback((event: CalendarEvent, anchorEl: HTMLElement) => {
     setPopover({ event, anchor: anchorEl });
@@ -375,6 +390,10 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           calendars={store.calendars}
           onClose={() => setPopover(null)}
         />
+      )}
+
+      {settingsOpen && (
+        <SettingsModal onClose={() => setSettingsOpen(false)} />
       )}
 
       {dayModal && (

@@ -31,18 +31,20 @@ export function DayDetailPanel({
     return true;
   });
 
+  const byStart = (a: CalendarEvent, b: CalendarEvent) =>
+    a.start.localeCompare(b.start);
+
   // Subscribed (read-only) calendars render in their own section so the
   // primary agenda stays focused on the user's own events.
-  const subscribed = todays.filter(
-    (e) => roleOfEvent(e, calRoles) === 'subscribed',
-  );
+  const subscribed = todays
+    .filter((e) => roleOfEvent(e, calRoles) === 'subscribed')
+    .slice()
+    .sort(byStart);
   const agenda = todays.filter(
     (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e),
   );
-  const allDay = agenda.filter((e) => e.allDay);
-  const timed = agenda
-    .filter((e) => !e.allDay)
-    .sort((a, b) => a.start.localeCompare(b.start));
+  const allDay = agenda.filter((e) => e.allDay).slice().sort(byStart);
+  const timed = agenda.filter((e) => !e.allDay).slice().sort(byStart);
 
   const seenLoc = new Set<string>();
   const locations = todays

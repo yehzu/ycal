@@ -253,16 +253,12 @@ const Cell = memo(function Cell({
   // Holiday-role events render beside the date, not as event rows.
   // Multi-day all-day events render in the ribbon overlay only.
   // Location indicators render as small chips beside the date.
-  const inCellEvents = touching.filter(
-    (e) => !isMultiDayAllDay(e)
+  const ordered = touching
+    .filter((e) => !isMultiDayAllDay(e)
       && !isHolidayEvent(e, calRoles)
-      && !isLocationEvent(e),
-  );
-  const allDay = inCellEvents.filter((e) => e.allDay);
-  const timed = inCellEvents
-    .filter((e) => !e.allDay)
+      && !isLocationEvent(e))
+    .slice()
     .sort((a, b) => a.start.localeCompare(b.start));
-  const ordered = [...allDay, ...timed];
   const shown = ordered.slice(0, maxPerCell);
   const hidden = ordered.length - shown.length;
 

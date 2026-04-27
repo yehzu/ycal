@@ -53,17 +53,21 @@ export function DayEventsModal({
       return true;
     });
 
+  const byStart = (a: CalendarEvent, b: CalendarEvent) =>
+    a.start.localeCompare(b.start);
+
   const rest = occurs.filter(
     (e) =>
       !isHolidayEvent(e, calRoles) &&
       !isLocationEvent(e) &&
       !isExcludedFromAgenda(e, calRoles),
   );
-  const allDay = rest.filter((e) => e.allDay);
-  const timed = rest
-    .filter((e) => !e.allDay)
-    .sort((a, b) => a.start.localeCompare(b.start));
-  const subscribed = occurs.filter((e) => roleOfEvent(e, calRoles) === 'subscribed');
+  const allDay = rest.filter((e) => e.allDay).slice().sort(byStart);
+  const timed = rest.filter((e) => !e.allDay).slice().sort(byStart);
+  const subscribed = occurs
+    .filter((e) => roleOfEvent(e, calRoles) === 'subscribed')
+    .slice()
+    .sort(byStart);
 
   const calOf = (id: string) => calendars.find((c) => c.id === id);
 
