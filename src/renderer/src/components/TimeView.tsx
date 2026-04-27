@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import type { CalendarEvent } from '@shared/types';
 import {
-  DOW_SHORT, addDays, fmtDate, formatTime, getISOWeek, minutesOfDate, sameYMD,
+  DOW_SHORT, addDays, fmtDate, formatTime, getISOWeek, sameYMD,
 } from '../dates';
 import {
-  eventTouchesDay, isMultiDayAllDay, layoutRangeRibbons,
+  eventTouchesDay, isEventStartDay, isMultiDayAllDay, layoutRangeRibbons,
   type RibbonPlacement,
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
@@ -36,12 +36,23 @@ interface Placed {
 }
 
 // Sweep overlapping events into columns so 15-min slots don't crash into each other.
-function layoutColumns(items: CalendarEvent[]): Placed[] {
-  const sorted = items.slice().sort((a, b) => {
-    const sa = minutesOfDate(new Date(a.start));
-    const sb = minutesOfDate(new Date(b.start));
-    if (sa !== sb) return sa - sb;
-    return minutesOfDate(new Date(b.end)) - minutesOfDate(new Date(a.end));
+// Minutes are clipped to [0, 1440] within `day` so an event spanning midnight
+// renders on both days with the right segment in each.
+function layoutColumns(items: CalendarEvent[], day: Date): Placed[] {
+  const dayStartMs = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+  const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
+
+  const clipped = items.map((e) => {
+    const evS = new Date(e.start).getTime();
+    const evE = new Date(e.end).getTime();
+    const sMin = evS <= dayStartMs ? 0 : Math.round((evS - dayStartMs) / 60000);
+    const eMin = evE >= dayEndMs ? 24 * 60 : Math.round((evE - dayStartMs) / 60000);
+    return { item: e, sMin, eMin };
+  });
+
+  const sorted = clipped.slice().sort((a, b) => {
+    if (a.sMin !== b.sMin) return a.sMin - b.sMin;
+    return b.eMin - a.eMin;
   });
 
   const placed: Array<{ item: CalendarEvent; col: number; sMin: number; eMin: number }> = [];
@@ -50,9 +61,8 @@ function layoutColumns(items: CalendarEvent[]): Placed[] {
   let curCluster = -1;
   let curEnd = -Infinity;
 
-  for (const e of sorted) {
-    const sMin = minutesOfDate(new Date(e.start));
-    const eMin = minutesOfDate(new Date(e.end));
+  for (const c of sorted) {
+    const { item: e, sMin, eMin } = c;
     if (sMin >= curEnd) {
       curCluster++;
       curEnd = eMin;
@@ -139,8 +149,12 @@ export function TimeView({
     for (const e of events) {
       if (e.allDay) continue;
       if (isLocationEvent(e)) continue;
-      const key = fmtDate(new Date(e.start));
-      if (m[key]) m[key].push(e);
+      // Cross-midnight events render in every day they touch, clipped per day
+      // by layoutColumns. Bucketing only by start day would leave the tail
+      // segment invisible on the next day.
+      for (const d of days) {
+        if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
+      }
     }
     return m;
   }, [days, events]);
@@ -348,7 +362,7 @@ export function TimeView({
             if (isWeekend && hInfo?.kind !== 'workday') colCls.push('weekend');
             if (hInfo) colCls.push('h-' + hInfo.kind);
             const dayTimed = timedByDay[fmtDate(d)] ?? [];
-            const laid = layoutColumns(dayTimed);
+            const laid = layoutColumns(dayTimed, d);
             return (
               <div
                 key={fmtDate(d)}
@@ -368,6 +382,7 @@ export function TimeView({
                   const height = (dur / 60) * HOUR_HEIGHT;
                   const widthPct = 100 / cols;
                   const leftPct = widthPct * col;
+                  const startsHere = isEventStartDay(e, d);
                   const cn = ['tv-event'];
                   if (dur < 15) cn.push('tiny');
                   else if (dur <= 30) cn.push('short');
@@ -386,12 +401,14 @@ export function TimeView({
                       }}
                       onClick={(ev) => onEventClick(e, ev.currentTarget)}
                     >
-                      <span className="et">
-                        {formatTime(new Date(e.start))}
-                        {cols === 1 && dur > 30
-                          ? `–${formatTime(new Date(e.end))}`
-                          : ''}
-                      </span>
+                      {startsHere && (
+                        <span className="et">
+                          {formatTime(new Date(e.start))}
+                          {cols === 1 && dur > 30
+                            ? `–${formatTime(new Date(e.end))}`
+                            : ''}
+                        </span>
+                      )}
                       <span className="en">
                         {e.title}
                         <MergeBadge event={e} variant="compact" />
