@@ -36,7 +36,11 @@ export function startCliServer(): void {
   // Stale socket from a prior crash will block listen with EADDRINUSE.
   try { fs.unlinkSync(sockPath); } catch { /* not present, that's fine */ }
 
-  const s = net.createServer((sock) => {
+  // allowHalfOpen=true is essential: by default Node auto-FINs the server's
+  // write side as soon as the client half-closes, which races our async
+  // runCli — the response gets dropped on the floor. With half-open we keep
+  // the writable side alive until we explicitly sock.end(response).
+  const s = net.createServer({ allowHalfOpen: true }, (sock) => {
     let buf = '';
     sock.setEncoding('utf8');
     sock.on('data', (chunk: string) => { buf += chunk; });
