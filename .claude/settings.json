@@ -28,6 +28,16 @@
       "Bash(git tag)",
       "Bash(git tag *)",
       "Bash(git mv *)",
+      "Bash(git push origin main)",
+      "Bash(git push origin v*)",
+      "Bash(git push origin --tags)",
+      "Bash(npm run release)",
+      "Bash(sh scripts/release.sh)",
+      "Bash(./scripts/release.sh)",
+      "Bash(gh auth token)",
+      "Bash(gh auth status)",
+      "Bash(gh release list)",
+      "Bash(gh release view *)",
       "Bash(chmod +x bin/ycal)",
       "Bash(chmod +x /Users/yehzu/.local/bin/ycal)",
       "Bash(cp bin/ycal *)",
@@ -35,13 +45,14 @@
       "Bash(lsof *)"
     ],
     "deny": [
-      "Bash(git push origin main)",
       "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * main --force*)",
       "Bash(git reset --hard *)",
-      "Bash(npm run dist*)",
       "Bash(rm -rf *)",
       "Bash(pkill *)",
-      "Bash(killall *)"
+      "Bash(killall *)",
+      "Bash(gh release delete *)"
     ]
   }
 }

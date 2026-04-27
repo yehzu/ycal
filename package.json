@@ -16,7 +16,8 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "ycal": "electron . --cli"
+    "ycal": "electron . --cli",
+    "release": "sh scripts/release.sh"
   },
   "bin": {
     "ycal": "bin/ycal"

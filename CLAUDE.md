@@ -93,17 +93,20 @@ Two execution modes share `runCli()` from `src/main/cli.ts`:
 
 ## Release flow
 
-1. Bump `package.json` `version` (semver: bug fix → patch, new CLI command → minor).
-2. `npm run typecheck && npm run build`.
-3. Commit with the project's Bump format:
-   ```
-   Bump X.Y.Z: <short summary>
+Encapsulated in `scripts/release.sh` (run via `npm run release`). Pre-conditions: `package.json` `version` is bumped, the bump commit is HEAD, working tree is clean.
 
-   <reasoning>
-   ```
-4. `git push origin main && git tag vX.Y.Z && git push origin vX.Y.Z`.
-5. `GH_TOKEN=$(gh auth token) npm run dist -- --publish always`.
-6. Open the resulting draft release on GitHub, click Publish. Existing installs auto-update within ~6h via `electron-updater`.
+```bash
+# 1. Bump version + commit
+#    (use the Bump format the project's commits follow):
+#      Bump X.Y.Z: <one-line summary>
+#
+#      <multi-line reasoning>
+
+# 2. Ship it
+npm run release
+```
+
+`scripts/release.sh` then: typechecks + builds → tags `vX.Y.Z` if not present → pushes `main` and the tag → `npm run dist -- --publish always` (uploads dmg + zip to a draft GitHub release using `gh auth token` for `GH_TOKEN`) → `gh release edit vX.Y.Z --draft=false` to promote the draft to live. Existing installs auto-update within ~6h via `electron-updater`.
 
 **`bin/ycal` is not in the dmg.** It's a checkout-only script. If a fix lives in `bin/ycal`, users with `~/.local/bin/ycal` already symlinked or copied need to re-copy. A version bump still helps signal that.
 
@@ -112,8 +115,9 @@ Two execution modes share `runCli()` from `src/main/cli.ts`:
 - **Match the user's input language.** Chinese in → Chinese out, English in → English out.
 - **Direct, concise.** Lead with the answer; expand only on follow-up.
 - **Frame technical decisions in business terms** when they affect users / release scope.
-- **Don't ask before reading or building** (auto mode is the norm). Do ask before pushing to main, publishing releases, or any irreversible/external action.
-- **`git push origin main` is blocked by harness policy** — explicit per-call confirmation needed every time, regardless of prior approvals.
+- **Auto mode is the norm.** Don't ask before reading, building, committing, pushing to main, tagging, or publishing a release — those are all pre-authorized in `.claude/settings.json` for this repo. Solo personal project; the user wants velocity over ceremony.
+- **The full release flow is one autonomous block.** When the user says "ship X.Y.Z" or "release", the expected sequence is: bump → typecheck+build → commit → push main → tag → push tag → `npm run dist -- --publish always` → `gh release edit vX.Y.Z --draft=false`. No checkpoints.
+- **Force-push, hard reset, rm -rf, killing processes — still denied.** Those are how you lose work, and irreversible. Stop and ask.
 
 ## Things I learned the hard way (so future Claude doesn't have to)
 
