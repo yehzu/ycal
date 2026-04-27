@@ -30,25 +30,41 @@ const SOCK = path.join(
 );
 const args = process.argv.slice(2);
 
-function tryRequest(timeoutMs) {
+// Split timeouts on purpose:
+//   • connectTimeoutMs caps how long we wait for the GUI to accept the
+//     socket. Short — if it can't accept in <1s the GUI almost certainly
+//     isn't running, and we should fall back to launching.
+//   • readTimeoutMs caps the actual request. Generous, since real commands
+//     hit the Google Calendar API and can take a couple seconds. A single
+//     unified timeout caused responses to be cut off mid-flight on slower
+//     queries and produced false "yCal not running" reports.
+function tryRequest(connectTimeoutMs, readTimeoutMs) {
   return new Promise((resolve) => {
     const sock = net.createConnection(SOCK);
     let connected = false;
     let buf = '';
-    const timer = setTimeout(() => {
+
+    const connectTimer = setTimeout(() => {
       sock.destroy();
       resolve(null);
-    }, timeoutMs);
+    }, connectTimeoutMs);
+    let readTimer = null;
 
     sock.setEncoding('utf8');
     sock.on('connect', () => {
       connected = true;
+      clearTimeout(connectTimer);
       sock.write(JSON.stringify({ args }));
       sock.end(); // half-close: server reads until 'end'
+      readTimer = setTimeout(() => {
+        sock.destroy();
+        resolve(null);
+      }, readTimeoutMs);
     });
     sock.on('data', (chunk) => { buf += chunk; });
     sock.on('end', () => {
-      clearTimeout(timer);
+      clearTimeout(connectTimer);
+      if (readTimer) clearTimeout(readTimer);
       try {
         resolve(JSON.parse(buf));
       } catch (_e) {
@@ -56,7 +72,8 @@ function tryRequest(timeoutMs) {
       }
     });
     sock.on('error', () => {
-      clearTimeout(timer);
+      clearTimeout(connectTimer);
+      if (readTimer) clearTimeout(readTimer);
       // ENOENT (no socket) and ECONNREFUSED (stale socket, nobody listening)
       // both land here. Returning null tells main() to fall back to launching
       // the GUI.
@@ -76,8 +93,10 @@ function sleep(ms) {
 }
 
 async function main() {
-  // Fast path: GUI already running.
-  let res = await tryRequest(2000);
+  // Fast path: GUI already running. Short connect, long read — most commands
+  // need a network roundtrip to Google Calendar, which can take a couple
+  // seconds.
+  let res = await tryRequest(1000, 30000);
   if (res) deliver(res);
 
   // Slow path: launch the GUI, then poll.
@@ -101,7 +120,7 @@ async function main() {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     await sleep(300);
-    res = await tryRequest(700);
+    res = await tryRequest(700, 30000);
     if (res) deliver(res);
   }
   process.stderr.write('ycal: timed out waiting for yCal to start (15s)\n');
