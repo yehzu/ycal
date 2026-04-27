@@ -14,10 +14,17 @@ import type { UpdateStatus } from '@shared/types';
 
 const { autoUpdater } = electronUpdater;
 
-// Re-check every 6 hours while the app is running. Cheap; GitHub serves
-// latest.yml from a CDN, and it's the only way users on long-lived sessions
-// learn about new releases without a restart.
-const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Re-check every 30 minutes while the app is running. Cheap; GitHub serves
+// latest-mac.yml from a CDN, and short polling is the only way users on
+// long-lived sessions learn about new releases without a restart.
+// We also check on every window-focus event (see below) so the perceived
+// latency is near-zero whenever the user comes back to the app.
+const RECHECK_INTERVAL_MS = 30 * 60 * 1000;
+// Coalesce focus-driven checks: even if focus fires often, only re-check
+// once per minute. Keeps us from hammering the CDN when the user alt-tabs
+// rapidly between yCal and another window.
+const FOCUS_CHECK_MIN_GAP_MS = 60 * 1000;
+let lastCheckAt = 0;
 
 let lastStatus: UpdateStatus = { state: 'idle', version: null };
 let currentWin: BrowserWindow | null = null;
@@ -92,10 +99,23 @@ export function setupAutoUpdater(win: BrowserWindow): void {
     });
   });
 
-  void autoUpdater.checkForUpdates().catch(() => { /* surfaced via 'error' event */ });
-  setInterval(() => {
-    void autoUpdater.checkForUpdates().catch(() => {});
-  }, RECHECK_INTERVAL_MS);
+  const tryCheck = (force = false): void => {
+    const now = Date.now();
+    if (!force && now - lastCheckAt < FOCUS_CHECK_MIN_GAP_MS) return;
+    lastCheckAt = now;
+    void autoUpdater.checkForUpdates().catch(() => { /* surfaced via 'error' */ });
+  };
+
+  // Initial check on launch.
+  tryCheck(true);
+
+  // Periodic background re-check.
+  setInterval(() => tryCheck(true), RECHECK_INTERVAL_MS);
+
+  // Focus-driven check: when the user comes back to yCal we want to learn
+  // about a release within seconds, not in the worst case 30 min. Throttled
+  // by FOCUS_CHECK_MIN_GAP_MS so rapid alt-tabbing doesn't spam GitHub.
+  win.on('focus', () => tryCheck(false));
 }
 
 export function getLastUpdateStatus(): UpdateStatus {
@@ -104,6 +124,7 @@ export function getLastUpdateStatus(): UpdateStatus {
 
 export async function checkForUpdatesNow(): Promise<void> {
   if (!app.isPackaged) return;
+  lastCheckAt = Date.now();
   await autoUpdater.checkForUpdates();
 }
 

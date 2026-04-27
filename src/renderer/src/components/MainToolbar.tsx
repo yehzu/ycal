@@ -11,10 +11,11 @@ interface Props {
   setAnchor: (d: Date) => void;
   goToToday: () => void;
   loading: boolean;
+  onOpenSettings: () => void;
 }
 
 export function MainToolbar({
-  view, setView, anchor, setAnchor, goToToday, loading,
+  view, setView, anchor, setAnchor, goToToday, loading, onOpenSettings,
 }: Props) {
   const monthName = MONTH_NAMES[anchor.getMonth()];
   const yr = anchor.getFullYear();
@@ -86,6 +87,26 @@ export function MainToolbar({
             </button>
           ))}
         </div>
+        <button
+          className="icon-btn prefs-btn"
+          onClick={onOpenSettings}
+          title="Settings (⌘,)"
+          aria-label="Open settings"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.25"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="8" cy="8" r="2.2" />
+            <path d="M8 1.5v1.8 M8 12.7v1.8 M14.5 8h-1.8 M3.3 8H1.5 M12.6 3.4l-1.27 1.27 M4.67 11.33l-1.27 1.27 M12.6 12.6l-1.27-1.27 M4.67 4.67L3.4 3.4" />
+          </svg>
+        </button>
       </div>
     </div>
   );

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CalendarEvent, MergeCriteria, UiSettings } from '@shared/types';
+import type {
+  CalendarEvent, MergeCriteria, TempUnits, UiSettings,
+} from '@shared/types';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import { addDays, addMonths, startOfMonth, startOfWeek } from './dates';
 import { useStore } from './store';
@@ -18,7 +20,7 @@ import { UpdateOverlay } from './components/UpdateOverlay';
 import { roleOfEvent } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
-  'almanac', 'agenda', 'calendars', 'forecast',
+  'almanac', 'agenda', 'calendars',
 ];
 
 const DEFAULT_UI: UiSettings = {
@@ -28,6 +30,8 @@ const DEFAULT_UI: UiSettings = {
   sectionOrder: DEFAULT_SECTION_ORDER,
   mergeCriteria: DEFAULT_MERGE_CRITERIA,
   showWeekNums: true,
+  showWeather: true,
+  units: 'F',
 };
 
 // Boot waits for persisted UI settings to load before mounting AppShell so
@@ -76,11 +80,17 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   >(null);
   const [signInError, setSignInError] = useState<string | null>(null);
   const [calRoles, setCalRoles] = useState<CalRoles>(() => ({ ...initialUi.calRoles }));
-  const [sectionOrder, setSectionOrder] = useState<SidebarSectionKey[]>(() =>
-    initialUi.sectionOrder.length === DEFAULT_SECTION_ORDER.length
-      ? (initialUi.sectionOrder as SidebarSectionKey[])
-      : DEFAULT_SECTION_ORDER,
-  );
+  // Filter out the now-removed 'forecast' section from any older saved orders,
+  // then top-up with the canonical defaults so newly added sections still appear.
+  const [sectionOrder, setSectionOrder] = useState<SidebarSectionKey[]>(() => {
+    const allowed = new Set<SidebarSectionKey>(DEFAULT_SECTION_ORDER);
+    const cleaned = (initialUi.sectionOrder as SidebarSectionKey[])
+      .filter((s) => allowed.has(s));
+    for (const s of DEFAULT_SECTION_ORDER) {
+      if (!cleaned.includes(s)) cleaned.push(s);
+    }
+    return cleaned.length === DEFAULT_SECTION_ORDER.length ? cleaned : DEFAULT_SECTION_ORDER;
+  });
   const [hideReadOnly, setHideReadOnly] = useState(false);
   const [hideDisabledCals, setHideDisabledCals] = useState(false);
   const [dayModal, setDayModal] = useState<Date | null>(null);
@@ -91,6 +101,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   }));
   const [showWeekNums, setShowWeekNums] = useState<boolean>(
     () => initialUi.showWeekNums ?? true,
+  );
+  const [showWeather, setShowWeather] = useState<boolean>(
+    () => initialUi.showWeather ?? true,
+  );
+  const [units, setUnits] = useState<TempUnits>(
+    () => initialUi.units ?? 'F',
   );
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
@@ -118,10 +134,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       sectionOrder,
       mergeCriteria,
       showWeekNums,
+      showWeather,
+      units,
     });
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
-    mergeCriteria, showWeekNums,
+    mergeCriteria, showWeekNums, showWeather, units,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -312,10 +330,6 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
             sectionOrder={sectionOrder}
             setSectionOrder={setSectionOrder}
             events={visibleEvents}
-            weatherUrl={store.weatherUrl}
-            weatherDays={store.weatherDays}
-            weatherError={store.weatherError}
-            setWeatherUrl={store.setWeatherUrl}
             hideReadOnly={hideReadOnly}
             setHideReadOnly={setHideReadOnly}
             hideDisabledCals={hideDisabledCals}
@@ -331,6 +345,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
               setAnchor={setAnchor}
               goToToday={goToToday}
               loading={store.loading}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
 
             {store.accounts.length === 0 ? (
@@ -348,6 +363,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 onEventClick={onEventClick}
                 openDayModal={openDayModal}
                 showWeekNums={showWeekNums}
+                showWeather={showWeather}
+                units={units}
+                weatherDays={store.weatherDays}
               />
             ) : view === 'week' ? (
               <TimeView
@@ -357,6 +375,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 calRoles={calRoles}
                 onEventClick={onEventClick}
                 showWeekNums={showWeekNums}
+                showWeather={showWeather}
+                units={units}
+                weatherDays={store.weatherDays}
               />
             ) : (
               <div className="day-view-layout">
@@ -367,6 +388,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   calRoles={calRoles}
                   onEventClick={onEventClick}
                   showWeekNums={showWeekNums}
+                  showWeather={showWeather}
+                  units={units}
+                  weatherDays={store.weatherDays}
                 />
                 <DayDetailPanel
                   date={anchor}
@@ -416,10 +440,27 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       {settingsOpen && (
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
-          mergeCriteria={mergeCriteria}
-          setMergeCriteria={setMergeCriteria}
           showWeekNums={showWeekNums}
           setShowWeekNums={setShowWeekNums}
+          mergeCriteria={mergeCriteria}
+          setMergeCriteria={setMergeCriteria}
+          showWeather={showWeather}
+          setShowWeather={setShowWeather}
+          units={units}
+          setUnits={setUnits}
+          weatherUrl={store.weatherUrl}
+          setWeatherUrl={store.setWeatherUrl}
+          weatherError={store.weatherError}
+          accounts={store.accounts}
+          accountsActive={store.accountsActive}
+          toggleAccount={store.toggleAccount}
+          calendars={store.calendars}
+          calVisible={store.calVisible}
+          toggleCal={store.toggleCal}
+          calRoles={calRoles}
+          setCalRole={setCalRole}
+          onAddAccount={handleSignIn}
+          onRemoveAccount={store.signOut}
         />
       )}
 

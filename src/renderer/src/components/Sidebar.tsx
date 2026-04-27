@@ -3,7 +3,6 @@ import type {
   AccountSummary,
   CalendarEvent,
   CalendarSummary,
-  WeatherDay,
 } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventTouchesDay, eventsTouchingDay } from '../multiday';
@@ -16,11 +15,10 @@ import { rsvpClass } from '../rsvp';
 import { MergeBadge } from './MergeBadge';
 import { MiniMonth } from './MiniMonth';
 import { avatarBg, initials } from './MacTitleBar';
-import { WeatherStrip } from './WeatherStrip';
 import { LocationIcon } from './LocationIcon';
 import { CalListPrefsMenu } from './CalListPrefsMenu';
 
-export type SidebarSectionKey = 'almanac' | 'agenda' | 'calendars' | 'forecast';
+export type SidebarSectionKey = 'almanac' | 'agenda' | 'calendars';
 
 interface Props {
   today: Date;
@@ -38,10 +36,6 @@ interface Props {
   sectionOrder: SidebarSectionKey[];
   setSectionOrder: (order: SidebarSectionKey[]) => void;
   events: CalendarEvent[];
-  weatherUrl: string | null;
-  weatherDays: WeatherDay[];
-  weatherError: string | null;
-  setWeatherUrl: (url: string | null) => Promise<void>;
   hideReadOnly: boolean;
   setHideReadOnly: (v: boolean) => void;
   hideDisabledCals: boolean;
@@ -299,18 +293,6 @@ export function Sidebar(props: Props) {
             hideDisabledCals={props.hideDisabledCals}
           />
         )
-      ),
-    },
-    forecast: {
-      title: 'Forecast',
-      render: () => (
-        <WeatherStrip
-          start={props.selected}
-          url={props.weatherUrl}
-          days={props.weatherDays}
-          error={props.weatherError}
-          onSetUrl={props.setWeatherUrl}
-        />
       ),
     },
   };

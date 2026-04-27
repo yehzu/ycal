@@ -12,7 +12,7 @@ const DEFAULT_UI: UiSettings = {
   accountsActive: {},
   calVisible: {},
   calRoles: {},
-  sectionOrder: ['almanac', 'agenda', 'calendars', 'forecast'],
+  sectionOrder: ['almanac', 'agenda', 'calendars'],
 };
 
 const DEFAULTS: Settings = {
@@ -78,6 +78,18 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   }
   if (patch.sectionOrder) {
     next.sectionOrder = patch.sectionOrder.slice();
+  }
+  if (patch.mergeCriteria) {
+    next.mergeCriteria = { ...patch.mergeCriteria };
+  }
+  if (patch.showWeekNums !== undefined) {
+    next.showWeekNums = patch.showWeekNums;
+  }
+  if (patch.showWeather !== undefined) {
+    next.showWeather = patch.showWeather;
+  }
+  if (patch.units !== undefined) {
+    next.units = patch.units;
   }
   s.ui = next;
   write(s);

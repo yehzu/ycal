@@ -86,7 +86,8 @@ export interface WeatherDay {
 
 // User-controlled UI state that survives across launches.
 export type CalRolePersisted = 'normal' | 'subscribed' | 'holiday';
-export type SidebarSection = 'almanac' | 'agenda' | 'calendars' | 'forecast';
+export type SidebarSection = 'almanac' | 'agenda' | 'calendars';
+export type TempUnits = 'F' | 'C';
 
 // Cross-calendar merge criteria. Title (lowercased + trimmed) and start moment
 // always count; the rest are user-configurable. Defaults match the loose
@@ -114,6 +115,10 @@ export interface UiSettings {
   mergeCriteria?: MergeCriteria;
   // Show ISO week numbers in the month grid, mini-month, and time-view corner.
   showWeekNums?: boolean;
+  // Show weather glyph + hi/lo on each date in month/week/day views.
+  showWeather?: boolean;
+  // Temperature units for in-view weather chips.
+  units?: TempUnits;
 }
 
 // Auto-update lifecycle, mirrored from electron-updater's events into a

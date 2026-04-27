@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import type { CalendarEvent } from '@shared/types';
+import type { CalendarEvent, WeatherDay } from '@shared/types';
 import {
   DOW_SHORT, MONTH_SHORT, addDays, fmtDate, formatTime, getISOWeek, sameYMD,
   startOfMonth, startOfWeek,
@@ -14,6 +14,7 @@ import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
+import { WeatherChip } from './WeatherChip';
 
 interface Props {
   today: Date;
@@ -27,6 +28,9 @@ interface Props {
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   openDayModal: (d: Date) => void;
   showWeekNums: boolean;
+  showWeather: boolean;
+  units: 'F' | 'C';
+  weatherDays: WeatherDay[];
 }
 
 const DAY_HEAD_PX = 24;
@@ -38,7 +42,7 @@ const EMPTY_EVENTS: CalendarEvent[] = [];
 
 export function MonthGrid({
   today, anchor, selected, setSelected, setAnchor, events, calRoles, goToDayView,
-  onEventClick, openDayModal, showWeekNums,
+  onEventClick, openDayModal, showWeekNums, showWeather, units, weatherDays,
 }: Props) {
   const weeks = useMemo(() => {
     const gridStart = startOfWeek(startOfMonth(anchor), 0);
@@ -114,6 +118,9 @@ export function MonthGrid({
           onEventClick={onEventClick}
           openDayModal={openDayModal}
           showWeekNums={showWeekNums}
+          showWeather={showWeather}
+          units={units}
+          weatherDays={weatherDays}
         />
       ))}
     </div>
@@ -135,11 +142,15 @@ interface WeekRowProps {
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   openDayModal: (d: Date) => void;
   showWeekNums: boolean;
+  showWeather: boolean;
+  units: 'F' | 'C';
+  weatherDays: WeatherDay[];
 }
 
 const WeekRow = memo(function WeekRow({
   week, anchor, today, selected, setSelected, setAnchor, eventsByDay, ribbonEvents,
   calRoles, maxPerCell, goToDayView, onEventClick, openDayModal, showWeekNums,
+  showWeather, units, weatherDays,
 }: WeekRowProps) {
   const ribbons = useMemo(
     () => layoutWeekRibbons(ribbonEvents, week[0]),
@@ -183,6 +194,9 @@ const WeekRow = memo(function WeekRow({
             goToDayView={goToDayView}
             onEventClick={onEventClick}
             openDayModal={openDayModal}
+            showWeather={showWeather}
+            units={units}
+            weatherDays={weatherDays}
           />
         );
       })}
@@ -246,11 +260,14 @@ interface CellProps {
   goToDayView: (d: Date) => void;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   openDayModal: (d: Date) => void;
+  showWeather: boolean;
+  units: 'F' | 'C';
+  weatherDays: WeatherDay[];
 }
 
 const Cell = memo(function Cell({
   day, inMonth, isToday, isSelected, setSelected, dayEvents, calRoles, maxPerCell,
-  goToDayView, onEventClick, openDayModal,
+  goToDayView, onEventClick, openDayModal, showWeather, units, weatherDays,
 }: CellProps) {
   const isWeekend = day.getDay() === 0 || day.getDay() === 6;
   const hInfo = dayHolidayInfo(day, dayEvents, calRoles);
@@ -306,6 +323,9 @@ const Cell = memo(function Cell({
     >
       <div className="day-head">
         <div className="day-num">{day.getDate()}</div>
+        {showWeather && (
+          <WeatherChip date={day} days={weatherDays} units={units} variant="compact" />
+        )}
         <div className="day-meta">
           {day.getDate() === 1 && <span>{MONTH_SHORT[day.getMonth()]}</span>}
           {uniqHolidays.map((he) => (

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import type { CalendarEvent } from '@shared/types';
+import type { CalendarEvent, WeatherDay } from '@shared/types';
 import {
   DOW_SHORT, addDays, fmtDate, formatTime, getISOWeek, sameYMD,
 } from '../dates';
@@ -13,6 +13,7 @@ import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
+import { WeatherChip } from './WeatherChip';
 
 interface Props {
   today: Date;
@@ -21,6 +22,9 @@ interface Props {
   calRoles: CalRoles;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   showWeekNums: boolean;
+  showWeather: boolean;
+  units: 'F' | 'C';
+  weatherDays: WeatherDay[];
 }
 
 const HOUR_HEIGHT = 56;
@@ -95,6 +99,7 @@ function layoutColumns(items: CalendarEvent[], day: Date): Placed[] {
 
 export function TimeView({
   today, days, events, calRoles, onEventClick, showWeekNums,
+  showWeather, units, weatherDays,
 }: Props) {
   const hours = Array.from({ length: END_HOUR - START_HOUR + 1 }, (_, i) => i + START_HOUR);
   const colTemplate = `60px repeat(${days.length}, 1fr)`;
@@ -207,6 +212,16 @@ export function TimeView({
               >
                 <div className="dow">{DOW_SHORT[d.getDay()]}</div>
                 <div className="num">{d.getDate()}</div>
+                {showWeather && (
+                  <div className="tv-weather-row">
+                    <WeatherChip
+                      date={d}
+                      days={weatherDays}
+                      units={units}
+                      variant="header"
+                    />
+                  </div>
+                )}
                 {hInfo && hInfo.kind !== 'weekend' && (
                   <div
                     className="tv-h-label"
