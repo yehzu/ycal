@@ -257,22 +257,7 @@ export function TimeView({
             ['--ribbon-lanes' as never]: String(ribbonLanes),
           }}
         >
-          <div
-            style={{
-              borderRight: '0.5px solid var(--rule)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'flex-end',
-              paddingRight: 6,
-              fontFamily: 'var(--serif-body)',
-              fontSize: 9.5,
-              color: 'var(--ink-mute)',
-              letterSpacing: '0.1em',
-              textTransform: 'uppercase',
-            }}
-          >
-            all day
-          </div>
+          <div className="tv-allday-gutter">all day</div>
           {days.map((d) => {
             const seen = new Set<string>();
             const dayAll = (allDayByDay[fmtDate(d)] ?? []).filter((e) => {

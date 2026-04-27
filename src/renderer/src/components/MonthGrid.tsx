@@ -37,8 +37,15 @@ const DAY_HEAD_PX = 24;
 const EVT_LINE_PX = 17;
 const MORE_LINE_PX = 16;
 const CELL_PADDING_PX = 10;
-const RIBBON_LANE_PX = 19; // 17px row + 2px gap, must match CSS
+const RIBBON_LANE_PX = 18; // 17px row + 1px gap, must match CSS
 const EMPTY_EVENTS: CalendarEvent[] = [];
+
+function fitsForLanes(cellHeight: number, ribbonLanes: number): number {
+  if (cellHeight <= 0) return 4;
+  const ribbonReserve = ribbonLanes * RIBBON_LANE_PX;
+  const usable = cellHeight - CELL_PADDING_PX - DAY_HEAD_PX - MORE_LINE_PX - ribbonReserve;
+  return Math.max(1, Math.floor(usable / EVT_LINE_PX));
+}
 
 export function MonthGrid({
   today, anchor, selected, setSelected, setAnchor, events, calRoles, goToDayView,
@@ -67,7 +74,10 @@ export function MonthGrid({
   );
 
   const gridRef = useRef<HTMLDivElement | null>(null);
-  const [maxPerCell, setMaxPerCell] = useState(4);
+  // Track raw cell height (independent of ribbon lanes) so each WeekRow can
+  // compute its own per-week event budget — weeks with many cd ribbons need
+  // to surface "+N more" sooner, while empty weeks stay generous.
+  const [cellHeight, setCellHeight] = useState(0);
 
   useEffect(() => {
     const el = gridRef.current;
@@ -75,14 +85,7 @@ export function MonthGrid({
     const compute = () => {
       const cell = el.querySelector('.month-cell') as HTMLElement | null;
       if (!cell) return;
-      const ribbonLanes = parseInt(
-        (cell.parentElement as HTMLElement | null)?.style.getPropertyValue('--ribbon-lanes') || '0',
-        10,
-      ) || 0;
-      const ribbonReserve = ribbonLanes * RIBBON_LANE_PX;
-      const usable = cell.clientHeight - CELL_PADDING_PX - DAY_HEAD_PX - MORE_LINE_PX - ribbonReserve;
-      const fits = Math.max(1, Math.floor(usable / EVT_LINE_PX));
-      setMaxPerCell(fits);
+      setCellHeight(cell.clientHeight);
     };
     compute();
     const ro = new ResizeObserver(compute);
@@ -113,7 +116,7 @@ export function MonthGrid({
           eventsByDay={eventsByDay}
           ribbonEvents={ribbonEvents}
           calRoles={calRoles}
-          maxPerCell={maxPerCell}
+          cellHeight={cellHeight}
           goToDayView={goToDayView}
           onEventClick={onEventClick}
           openDayModal={openDayModal}
@@ -137,7 +140,7 @@ interface WeekRowProps {
   eventsByDay: Map<string, CalendarEvent[]>;
   ribbonEvents: CalendarEvent[];
   calRoles: CalRoles;
-  maxPerCell: number;
+  cellHeight: number;
   goToDayView: (d: Date) => void;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   openDayModal: (d: Date) => void;
@@ -149,7 +152,7 @@ interface WeekRowProps {
 
 const WeekRow = memo(function WeekRow({
   week, anchor, today, selected, setSelected, setAnchor, eventsByDay, ribbonEvents,
-  calRoles, maxPerCell, goToDayView, onEventClick, openDayModal, showWeekNums,
+  calRoles, cellHeight, goToDayView, onEventClick, openDayModal, showWeekNums,
   showWeather, units, weatherDays,
 }: WeekRowProps) {
   const ribbons = useMemo(
@@ -159,6 +162,7 @@ const WeekRow = memo(function WeekRow({
   const ribbonLanes = ribbons.length === 0
     ? 0
     : Math.max(...ribbons.map((r) => r.lane)) + 1;
+  const maxPerCell = fitsForLanes(cellHeight, ribbonLanes);
 
   // ISO-week is computed from the Thursday of the row so cross-year boundaries
   // resolve to the correct number.

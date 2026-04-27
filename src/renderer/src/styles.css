@@ -619,19 +619,22 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 
 /* Ribbon overlay sits above the cells, in the same 7-col grid, stacked in
    lanes set by layoutWeekRibbons. Cells reserve top space proportional to
-   --ribbon-lanes so ribbons don't crash into the day-events list. */
+   --ribbon-lanes so ribbons don't crash into the day-events list.
+   Row-gap matches .day-events gap so cd ribbons stack at the same rhythm
+   as single-day all-day pills below.
+   top: 26px = day-head height (4 padding + 18 height + 4 margin-bottom),
+   so the first ribbon lines up with where .evt.all-day would start. */
 .week-ribbons {
   position: absolute;
-  top: 22px;
+  top: 26px;
   left: 0;
   right: 0;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   grid-auto-rows: 17px;
-  row-gap: 2px;
+  row-gap: 1px;
   pointer-events: none;
   z-index: 2;
-  padding: 0 2px;
 }
 .ribbon {
   pointer-events: auto;
@@ -640,8 +643,10 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: #fff;
   border: 0;
   border-radius: 2px;
-  padding: 1px 7px;
-  margin: 0 1px;
+  padding: 1px 6px;
+  /* Match .month-cell padding-left/right so a ribbon's start/end aligns
+     with the .evt.all-day background edge in the same column. */
+  margin: 0 6px;
   display: flex;
   align-items: center;
   font-family: var(--serif-body);
@@ -659,7 +664,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   box-shadow: 0 0.5px 0 rgba(0,0,0,0.18);
 }
 .ribbon:hover { filter: brightness(1.08); }
-/* Continuation indicators when the bar runs past the week boundary. */
+/* Continuation indicators when the bar runs past the week boundary —
+   bleed the ribbon to the row edge on the clipped side. */
 .ribbon.clip-l {
   margin-left: 0;
   border-top-left-radius: 0;
@@ -699,6 +705,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   border-bottom: 0.5px solid var(--rule-soft);
   display: flex; flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: var(--paper);
 }
 .month-cell.other-month { background: var(--paper-2); }
@@ -772,10 +780,11 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 
 /* Reserve vertical space for the week's multi-day ribbons so the bars sit
    between the day-head and the per-day event list instead of crashing into
-   the date number. Each lane = 17px row + 2px row-gap. */
+   the date number. Each lane = 17px row + 1px row-gap. */
 .day-events {
   display: flex; flex-direction: column; gap: 1px; overflow: hidden; flex: 1;
-  margin-top: calc(var(--ribbon-lanes, 0) * 19px);
+  min-height: 0;
+  margin-top: calc(var(--ribbon-lanes, 0) * 18px);
 }
 .evt {
   appearance: none;
@@ -1023,9 +1032,10 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   border-bottom: 0.5px dashed var(--rule-soft);
   min-height: 26px;
   background: var(--paper);
-  /* Each ribbon lane reserves vertical space; cells get matching padding-top
-     so single-day pills don't overlap the bars. */
-  padding-top: calc(var(--ribbon-lanes, 0) * 19px);
+  /* Lane reservation lives on each grid item — putting it here as
+     padding-top would leave the gutter/cell right-borders disconnected
+     from the col-heads above. Each item adds its own
+     calc(var(--ribbon-lanes, 0) * 18px) top padding instead. */
 }
 .tv-allday-ribbons {
   position: absolute;
@@ -1034,13 +1044,16 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   right: 0;
   display: grid;
   grid-auto-rows: 17px;
-  row-gap: 2px;
+  row-gap: 1px;
   pointer-events: none;
   z-index: 2;
   padding: 0 2px;
 }
 .tv-allday-cell {
-  padding: 3px 5px;
+  /* Top padding clears the ribbon stack (top: 4 + lanes*17 + (lanes-1)*1
+     = 18*lanes + 3) plus a 1px gap so single-day pills don't overlap cd
+     ribbons stacked above them. */
+  padding: calc(var(--ribbon-lanes, 0) * 18px + 4px) 5px 3px;
   border-right: 0.5px solid var(--rule-soft);
   display: flex;
   flex-wrap: wrap;
@@ -1050,6 +1063,18 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   overflow: hidden;
 }
 .tv-allday-cell:last-child { border-right: 0; }
+.tv-allday-gutter {
+  border-right: 0.5px solid var(--rule);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: calc(var(--ribbon-lanes, 0) * 18px + 4px) 6px 3px;
+  font-family: var(--serif-body);
+  font-size: 9.5px;
+  color: var(--ink-mute);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
 .tv-allday-pill {
   appearance: none;
   background: var(--cal);
