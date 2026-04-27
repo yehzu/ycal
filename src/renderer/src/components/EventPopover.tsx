@@ -8,29 +8,33 @@ import { MergeBadge } from './MergeBadge';
 
 interface Props {
   event: CalendarEvent;
-  anchor: HTMLElement | null;
+  anchorRect: DOMRect | null;
   calendars: CalendarSummary[];
   accounts: AccountSummary[];
   onClose: () => void;
 }
 
-export function EventPopover({ event, anchor, calendars, accounts, onClose }: Props) {
+export function EventPopover({ event, anchorRect, calendars, accounts, onClose }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
 
   useLayoutEffect(() => {
-    if (!anchor || !ref.current) return;
-    const a = anchor.getBoundingClientRect();
+    if (!anchorRect || !ref.current) return;
+    const a = anchorRect;
     const p = ref.current.getBoundingClientRect();
+    const margin = 12;
+    // macOS traffic-light buttons sit near the top-left of the window;
+    // keep the popover clear of them when it lands at the top edge.
+    const topMin = 36;
     let left = a.left + a.width / 2 - p.width / 2;
     let top = a.bottom + 8;
-    const margin = 12;
     left = Math.max(margin, Math.min(window.innerWidth - p.width - margin, left));
     if (top + p.height > window.innerHeight - margin) {
-      top = Math.max(margin, a.top - p.height - 8);
+      top = Math.max(topMin, a.top - p.height - 8);
     }
+    top = Math.max(topMin, top);
     setPos({ top, left });
-  }, [anchor]);
+  }, [anchorRect]);
 
   const cal = calendars.find((c) => c.id === event.calendarId);
   const acct = accounts.find((a) => a.id === event.accountId);
@@ -58,6 +62,7 @@ export function EventPopover({ event, anchor, calendars, accounts, onClose }: Pr
         style={{ top: pos.top, left: pos.left, ['--cal' as never]: event.color }}
       >
         <button className="pp-close" onClick={onClose}>✕</button>
+        <div className="pp-scroll">
         <div className="pp-cal">{cal ? cal.name : 'Event'}</div>
         <div className={'pp-title' + (rc ? ' ' + rc : '')}>
           {event.title}
@@ -139,6 +144,7 @@ export function EventPopover({ event, anchor, calendars, accounts, onClose }: Pr
             </span>
           </div>
         )}
+        </div>
         <div className="pp-actions">
           {event.htmlLink && (
             <button className="pp-btn primary" onClick={openInGoogle}>

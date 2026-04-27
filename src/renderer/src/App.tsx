@@ -76,7 +76,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [view, setView] = useState<ViewMode>('month');
   const [acctPickerOpen, setAcctPickerOpen] = useState(false);
   const [popover, setPopover] = useState<
-    { event: CalendarEvent; anchor: HTMLElement } | null
+    { event: CalendarEvent; rect: DOMRect } | null
   >(null);
   const [signInError, setSignInError] = useState<string | null>(null);
   const [calRoles, setCalRoles] = useState<CalRoles>(() => ({ ...initialUi.calRoles }));
@@ -320,8 +320,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     };
   }, [navigateHistory]);
 
+  // Capture the anchor's viewport rect synchronously — by the time
+  // EventPopover runs its layout effect, the anchor element may have
+  // unmounted (e.g. when clicked inside DayEventsModal, which closes
+  // first). A rect is positionally stable; an HTMLElement is not.
   const onEventClick = useCallback((event: CalendarEvent, anchorEl: HTMLElement) => {
-    setPopover({ event, anchor: anchorEl });
+    setPopover({ event, rect: anchorEl.getBoundingClientRect() });
   }, []);
 
   const openDayModal = useCallback((d: Date) => setDayModal(d), []);
@@ -495,7 +499,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       {popover && (
         <EventPopover
           event={popover.event}
-          anchor={popover.anchor}
+          anchorRect={popover.rect}
           accounts={store.accounts}
           calendars={store.calendars}
           onClose={() => setPopover(null)}
@@ -537,8 +541,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           calRoles={calRoles}
           onClose={() => setDayModal(null)}
           onEventClick={(e, el) => {
+            const rect = el.getBoundingClientRect();
             setDayModal(null);
-            setPopover({ event: e, anchor: el });
+            setPopover({ event: e, rect });
           }}
           openDayView={() => {
             const d = dayModal;

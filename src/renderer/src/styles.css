@@ -1320,11 +1320,20 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   z-index: 51;
   min-width: 320px;
   max-width: 400px;
+  max-height: calc(100vh - 48px);
   background: var(--paper);
   border: 0.5px solid var(--rule);
   box-shadow: 0 24px 48px rgba(26,24,20,0.28);
-  padding: 18px 20px 16px;
   border-top: 4px solid var(--cal);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.popover .pp-scroll {
+  overflow-y: auto;
+  padding: 18px 20px 4px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .popover .pp-cal {
   font-family: var(--serif-body);
@@ -1376,9 +1385,10 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 .popover .pp-actions {
   display: flex; gap: 8px;
-  margin-top: 14px;
-  padding-top: 12px;
+  flex: 0 0 auto;
+  padding: 12px 20px 16px;
   border-top: 0.5px solid var(--rule-soft);
+  background: var(--paper);
 }
 .popover .pp-btn {
   appearance: none;
