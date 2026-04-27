@@ -6,16 +6,60 @@ import type { CalendarEvent } from '@shared/types';
 // For all-day events Google reports an exclusive end (a single-day event has
 // start=YYYY-MM-DD and end=YYYY-MM-DD+1). We convert both to local-midnight
 // dates so the half-open math works the same for timed and all-day.
+//
+// Special case: degenerate 0-length events (start == end). Treat them as
+// occupying just their start day, otherwise they'd vanish — Google sometimes
+// returns these for malformed all-day entries.
 export function eventTouchesDay(event: CalendarEvent, day: Date): boolean {
   const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
   const dayEnd = dayStart + 24 * 60 * 60 * 1000;
   const evStart = new Date(event.start).getTime();
   const evEnd = new Date(event.end).getTime();
+  if (evStart === evEnd) return evStart >= dayStart && evStart < dayEnd;
   return evStart < dayEnd && evEnd > dayStart;
 }
 
 export function eventsTouchingDay(events: CalendarEvent[], day: Date): CalendarEvent[] {
   return events.filter((e) => eventTouchesDay(e, day));
+}
+
+// Bucket every event into the YYYY-MM-DD keys it touches within `days`. Cheaper
+// than calling eventsTouchingDay per cell when we already know the visible
+// range — for a 6-week month grid that turns 42×N filters into one pass.
+export function buildEventsByDay(
+  events: CalendarEvent[],
+  days: Date[],
+): Map<string, CalendarEvent[]> {
+  const m = new Map<string, CalendarEvent[]>();
+  if (days.length === 0) return m;
+  const dayStartTs: number[] = new Array(days.length);
+  const dayKeys: string[] = new Array(days.length);
+  for (let i = 0; i < days.length; i++) {
+    const d = days[i];
+    dayStartTs[i] = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    dayKeys[i] = k;
+    m.set(k, []);
+  }
+  const rangeStart = dayStartTs[0];
+  const rangeEnd = dayStartTs[dayStartTs.length - 1] + MS_PER_DAY;
+  for (const e of events) {
+    const evStart = new Date(e.start).getTime();
+    let evEnd = new Date(e.end).getTime();
+    if (evStart === evEnd) evEnd = evStart + 1;
+    if (evEnd <= rangeStart || evStart >= rangeEnd) continue;
+    const lo = Math.max(evStart, rangeStart);
+    const hi = Math.min(evEnd, rangeEnd);
+    const firstIdx = Math.floor((lo - rangeStart) / MS_PER_DAY);
+    // The half-open window [evStart, evEnd) might end exactly at midnight, in
+    // which case it does NOT touch that day — bias the last index back by one
+    // ms before flooring so 0-length boundary cases land on the previous day.
+    const lastIdx = Math.floor((hi - 1 - rangeStart) / MS_PER_DAY);
+    for (let i = Math.max(0, firstIdx); i <= Math.min(days.length - 1, lastIdx); i++) {
+      m.get(dayKeys[i])!.push(e);
+    }
+  }
+  return m;
 }
 
 export function isEventStartDay(event: CalendarEvent, day: Date): boolean {

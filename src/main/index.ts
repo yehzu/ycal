@@ -14,6 +14,11 @@ import { clearWeatherCache, fetchWeather } from './weather';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
+// Resolve the dock/window icon. In dev we point at the source PNG; in
+// production electron-builder bakes the .icns into the app bundle, so we
+// don't pass an explicit icon path.
+const DEV_ICON_PATH = path.resolve(__dirname_, '../../build/icon.png');
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1480,
@@ -24,6 +29,7 @@ function createWindow(): BrowserWindow {
     backgroundColor: '#f4ede0',
     vibrancy: 'under-window',
     visualEffectState: 'followWindow',
+    icon: process.env.ELECTRON_RENDERER_URL ? DEV_ICON_PATH : undefined,
     show: false,
     webPreferences: {
       preload: path.join(__dirname_, '../preload/index.mjs'),
@@ -154,6 +160,11 @@ function registerIpc() {
 }
 
 app.whenReady().then(() => {
+  // In dev, set the dock icon explicitly — electron-builder only injects the
+  // real icns on packaged builds.
+  if (process.platform === 'darwin' && process.env.ELECTRON_RENDERER_URL && app.dock) {
+    try { app.dock.setIcon(DEV_ICON_PATH); } catch { /* dock icon is best-effort */ }
+  }
   registerIpc();
 
   if (!isConfigured()) {

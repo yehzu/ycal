@@ -931,6 +931,11 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   display: grid;
   border-bottom: 0.5px solid var(--rule);
   background: var(--paper);
+  /* Reserve the same gutter the body shows so the header's day columns line
+     up with the time-grid columns below it. overflow:auto on a non-scrolling
+     container yields no scrollbar, just the reserved gutter. */
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .tv-body {
   display: grid;
@@ -938,6 +943,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   min-height: 0;
   position: relative;
   background: var(--paper);
+  scrollbar-gutter: stable;
 }
 .tv-gutter {
   border-right: 0.5px solid var(--rule);
@@ -1426,4 +1432,466 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   display: inline-block;
   margin-right: 6px;
   vertical-align: -1px;
+}
+
+/* ============================================================
+   Calendars-section overflow menu — small ⋯ button + popover
+   ============================================================ */
+.sec-prefs { position: relative; display: inline-flex; }
+.sec-prefs-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font: 600 13px/1 var(--serif-body);
+  color: var(--ink-soft);
+  letter-spacing: 0.5px;
+  padding: 0 4px;
+  margin-left: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms;
+  border-radius: 2px;
+}
+.side-section:hover .sec-prefs-btn,
+.sec-prefs-btn:focus-visible { opacity: 0.55; }
+.sec-prefs-btn:hover { opacity: 1; color: var(--ink); }
+.sec-prefs-btn.dirty { opacity: 1; color: var(--ink); }
+.sec-prefs-btn.dirty::after {
+  content: '';
+  display: inline-block;
+  width: 4px; height: 4px;
+  background: var(--ink);
+  border-radius: 50%;
+  margin-left: 3px;
+  vertical-align: 2px;
+}
+.sec-prefs-menu {
+  position: fixed;
+  background: var(--paper);
+  border: 0.5px solid var(--ink);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12), 0 0 0 0.5px var(--ink) inset;
+  padding: 8px 8px 6px;
+  min-width: 240px;
+  z-index: 80;
+  border-radius: 1px;
+}
+.sec-prefs-h {
+  font: 600 9px/1 var(--serif-body);
+  text-transform: uppercase;
+  letter-spacing: 1.3px;
+  color: var(--ink-soft);
+  padding: 0 2px 6px;
+  margin-bottom: 4px;
+  border-bottom: 0.5px solid var(--rule);
+}
+
+/* Editorial pill switch — used in the prefs menu */
+.toggle-row {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 6px 5px 4px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+  border-radius: 2px;
+  transition: background 100ms;
+  width: 100%;
+}
+.toggle-row:hover:not(.disabled) { background: rgba(0,0,0,0.025); }
+.toggle-row.disabled { cursor: default; opacity: 0.45; }
+.toggle-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.toggle-label {
+  font-family: var(--serif-body);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.toggle-sub {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.01em;
+}
+.toggle-track {
+  position: relative;
+  width: 30px;
+  height: 14px;
+  border: 0.5px solid var(--ink);
+  border-radius: 7px;
+  background: var(--paper);
+  flex-shrink: 0;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.toggle-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 180ms cubic-bezier(0.4, 0.0, 0.2, 1), background 160ms ease;
+}
+.toggle-row.on .toggle-track { background: var(--ink); }
+.toggle-row.on .toggle-knob {
+  transform: translateX(16px);
+  background: var(--paper);
+}
+.toggle-row.disabled .toggle-track { border-color: var(--ink-faint); }
+.toggle-row.disabled .toggle-knob { background: var(--ink-faint); }
+
+/* Dimmed state for read-only calendars when "Show read-only" is off */
+.cal-row-wrap.dimmed { opacity: 0.42; }
+.cal-row-wrap.dimmed .role-tag { opacity: 0.7; }
+
+/* ============================================================
+   Location indicators (Google Calendar "working location")
+   Single 12×12 icon — office / home / OOO / other.
+   Color comes from the calendar via --cal so the icon picks up
+   the underlying primary calendar's tint.
+   ============================================================ */
+.location-icon-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--cal, var(--ink-soft));
+  cursor: pointer;
+  appearance: none;
+  vertical-align: middle;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.location-icon-chip:hover { opacity: 0.75; }
+.loc-ico {
+  width: 12px; height: 12px;
+  display: block;
+  flex-shrink: 0;
+}
+.loc-label {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.day-meta .location-icon-chip { gap: 2px; }
+.day-meta .loc-ico { width: 11px; height: 11px; }
+.tv-loc-chips {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 3px;
+  padding: 0 4px;
+  width: 100%;
+}
+.dd-locations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 4px 0 10px;
+}
+.dd-locations .location-icon-chip { gap: 5px; }
+.agenda-locations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+
+/* ============================================================
+   Holiday-day tinting — colored from the holiday cal (--h-color)
+   ============================================================ */
+.month-cell.h-holiday {
+  background: color-mix(in srgb, var(--h-color, #8a2a2a) 6%, var(--paper));
+}
+.month-cell.h-holiday .day-num {
+  color: var(--h-color, var(--ink));
+  font-style: italic;
+}
+.month-cell.h-workday { background: var(--paper); }
+.month-cell.h-workday .day-num::after {
+  content: '·';
+  color: var(--h-color, var(--ink-soft));
+  margin-left: 3px;
+}
+.tv-col.weekend {
+  background: color-mix(in srgb, var(--ink) 3%, var(--paper));
+}
+.tv-col.h-holiday {
+  background: color-mix(in srgb, var(--h-color, #8a2a2a) 5%, var(--paper));
+}
+.tv-col.h-workday { background: var(--paper); }
+.tv-col-head.weekend .num,
+.tv-col-head.h-holiday .num {
+  color: var(--h-color, var(--ink));
+  font-style: italic;
+}
+.tv-col-head.h-workday .num::after {
+  content: '·';
+  color: var(--h-color, var(--ink-soft));
+  margin-left: 4px;
+}
+.tv-h-label {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  text-align: center;
+  margin-top: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================
+   Day events modal — opened from "+ N more"
+   ============================================================ */
+.day-modal {
+  position: fixed;
+  z-index: 70;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  background: var(--paper);
+  border: 0.5px solid var(--ink);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25), 0 0 0 0.5px var(--ink) inset;
+  display: flex;
+  flex-direction: column;
+  border-radius: 1px;
+}
+.dem-head {
+  position: relative;
+  padding: 22px 28px 14px;
+  border-bottom: 0.5px solid var(--rule);
+}
+.dem-head::after {
+  content: '';
+  position: absolute;
+  left: 28px; right: 28px; bottom: -2.5px;
+  height: 0.5px;
+  background: var(--rule);
+}
+.dem-eyebrow {
+  font: 600 9.5px/1 var(--serif-body);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--ink-soft);
+  margin-bottom: 8px;
+}
+.dem-title-h {
+  font-family: var(--serif-display);
+  font-weight: 500;
+  font-size: 26px;
+  line-height: 1.15;
+  margin: 0;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+}
+.dem-title-h em {
+  font-style: italic;
+  color: var(--ink-soft);
+  font-weight: 400;
+  margin-right: 4px;
+}
+.dem-num { margin-left: 4px; }
+.dem-year {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 17px;
+  color: var(--ink-soft);
+  margin-left: 10px;
+  letter-spacing: 0.01em;
+}
+.dem-close {
+  position: absolute;
+  top: 14px; right: 14px;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font: 500 22px/1 var(--serif-body);
+  color: var(--ink-soft);
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 2px;
+  transition: background 100ms, color 100ms;
+}
+.dem-close:hover { background: rgba(0,0,0,0.05); color: var(--ink); }
+.dem-body-scroll {
+  overflow-y: auto;
+  padding: 10px 28px 14px;
+}
+.dem-section { margin-top: 14px; }
+.dem-section:first-child { margin-top: 8px; }
+.dem-h {
+  font: 600 9.5px/1 var(--serif-body);
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+  color: var(--ink-soft);
+  margin: 0 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 0.5px solid var(--rule);
+}
+.dem-locs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 2px 0 4px;
+}
+.dem-row {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  gap: 14px;
+  align-items: baseline;
+  width: 100%;
+  padding: 8px 6px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  border-radius: 2px;
+  border-bottom: 0.5px dotted var(--rule);
+  transition: background 100ms;
+  position: relative;
+}
+.dem-row:last-child { border-bottom: 0; }
+.dem-row::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 12px; bottom: 12px;
+  width: 2px;
+  background: var(--cal, var(--ink-faint));
+  opacity: 0;
+  transition: opacity 100ms;
+}
+.dem-row:hover { background: rgba(0,0,0,0.025); }
+.dem-row:hover::before { opacity: 1; }
+.dem-time {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  font-feature-settings: "tnum";
+  letter-spacing: -0.01em;
+}
+.dem-t { color: var(--ink); }
+.dem-dash { margin: 0 4px; color: var(--ink-faint); }
+.dem-allday {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 11px;
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
+.dem-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dem-title {
+  font-family: var(--serif-body);
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.3;
+  font-weight: 500;
+}
+.dem-loc {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  line-height: 1.2;
+}
+.dem-cal {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--serif-body);
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dem-swatch {
+  width: 6px; height: 6px;
+  background: var(--cal, var(--ink-faint));
+  flex-shrink: 0;
+}
+.dem-calname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dem-empty {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--ink-soft);
+  padding: 6px 6px 8px;
+}
+.dem-row.dem-holiday .dem-title { color: var(--cal, var(--ink)); }
+.dem-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 28px 14px;
+  border-top: 0.5px solid var(--rule);
+  position: relative;
+}
+.dem-foot::before {
+  content: '';
+  position: absolute;
+  left: 28px; right: 28px; top: 2.5px;
+  height: 0.5px;
+  background: var(--rule);
+}
+.dem-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 4px 0;
+  letter-spacing: 0.01em;
+  text-decoration: underline;
+  text-decoration-thickness: 0.5px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--rule);
+  transition: text-decoration-color 100ms;
+}
+.dem-link:hover { text-decoration-color: var(--ink); }
+.dem-hint {
+  font: 500 9.5px/1 var(--serif-body);
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: var(--ink-faint);
 }

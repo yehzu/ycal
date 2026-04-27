@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CalendarEvent, UiSettings } from '@shared/types';
-import { addDays, addMonths, startOfWeek } from './dates';
+import { addDays, addMonths, startOfMonth, startOfWeek } from './dates';
 import { useStore } from './store';
 import type { CalRole, CalRoles } from './calRoles';
 import { MacTitleBar } from './components/MacTitleBar';
@@ -11,6 +11,8 @@ import { MonthGrid } from './components/MonthGrid';
 import { TimeView } from './components/TimeView';
 import { DayDetailPanel } from './components/DayDetailPanel';
 import { EventPopover } from './components/EventPopover';
+import { DayEventsModal } from './components/DayEventsModal';
+import { roleOfEvent } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
   'almanac', 'agenda', 'calendars', 'forecast',
@@ -40,9 +42,26 @@ export function App() {
 }
 
 function AppShell({ initialUi }: { initialUi: UiSettings }) {
-  // `today` is recomputed on every render (cheap) so the Today button always
-  // jumps to the current real day, not the day the app was launched on.
-  const today = new Date();
+  // `today` keeps a stable reference across renders so prop equality holds for
+  // memoized children. We refresh it every minute (and on day rollover the
+  // value naturally advances) — cheap, but no longer churns every keystroke.
+  const [today, setToday] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const tick = () => {
+      const next = new Date();
+      setToday((prev) => (
+        prev.getFullYear() === next.getFullYear()
+          && prev.getMonth() === next.getMonth()
+          && prev.getDate() === next.getDate()
+          && prev.getHours() === next.getHours()
+          && prev.getMinutes() === next.getMinutes()
+          ? prev
+          : next
+      ));
+    };
+    const id = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
   const [anchor, setAnchor] = useState<Date>(() => new Date());
   const [selected, setSelected] = useState<Date>(() => new Date());
   const [view, setView] = useState<ViewMode>('month');
@@ -57,12 +76,22 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       ? (initialUi.sectionOrder as SidebarSectionKey[])
       : DEFAULT_SECTION_ORDER,
   );
+  const [hideReadOnly, setHideReadOnly] = useState(false);
+  const [hideDisabledCals, setHideDisabledCals] = useState(false);
+  const [dayModal, setDayModal] = useState<Date | null>(null);
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
     setCalRoles((prev) => ({ ...prev, [key]: role }));
   }, []);
 
   const store = useStore(anchor, initialUi);
+
+  // Effective event list — drop read-only/subscribed entries when the master
+  // toggle is on. Other filters (account / calendar visibility) live in store.
+  const visibleEvents = useMemo(() => {
+    if (!hideReadOnly) return store.events;
+    return store.events.filter((e) => roleOfEvent(e, calRoles) !== 'subscribed');
+  }, [store.events, hideReadOnly, calRoles]);
 
   // Persist the four UI slices on change. Skip the initial render so we
   // don't redundantly write the just-loaded values back to disk.
@@ -89,12 +118,46 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     setSelected(now);
   }, []);
 
+  // Move the selected day by `dx` days; pull anchor along only when the new
+  // selection leaves the current view's visible window (otherwise stay put so
+  // the user can roam across an other-month cell without flipping the page).
+  const moveSelection = useCallback((dx: number) => {
+    setSelected((sel) => {
+      const next = addDays(sel, dx);
+      setAnchor((a) => {
+        if (view === 'month') {
+          const gridStart = startOfWeek(startOfMonth(a), 0);
+          const gridEnd = addDays(gridStart, 42);
+          if (next.getTime() < gridStart.getTime() || next.getTime() >= gridEnd.getTime()) {
+            return next;
+          }
+          return a;
+        }
+        if (view === 'week') {
+          const ws = startOfWeek(a, 0);
+          const we = addDays(ws, 7);
+          if (next.getTime() < ws.getTime() || next.getTime() >= we.getTime()) {
+            return next;
+          }
+          return a;
+        }
+        return next;
+      });
+      return next;
+    });
+  }, [view]);
+
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       const target = ev.target as HTMLElement | null;
       if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
       if (popover) {
         if (ev.key === 'Escape') setPopover(null);
+        return;
+      }
+      if (dayModal) {
+        if (ev.key === 'Escape') setDayModal(null);
         return;
       }
       if (ev.key === 'ArrowLeft') {
@@ -109,6 +172,30 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           : view === 'week' ? addDays(a, 7)
           : addDays(a, 1),
         );
+      } else if (ev.key === 'h') {
+        ev.preventDefault();
+        moveSelection(-1);
+      } else if (ev.key === 'l') {
+        ev.preventDefault();
+        moveSelection(1);
+      } else if (ev.key === 'j') {
+        ev.preventDefault();
+        moveSelection(7);
+      } else if (ev.key === 'k') {
+        ev.preventDefault();
+        moveSelection(-7);
+      } else if (ev.key === ' ' && target?.tagName !== 'BUTTON') {
+        ev.preventDefault();
+        goToToday();
+      } else if (ev.key === 's') {
+        ev.preventDefault();
+        setView('month');
+      } else if (ev.key === 'd') {
+        ev.preventDefault();
+        setView('week');
+      } else if (ev.key === 'f') {
+        ev.preventDefault();
+        setView('day');
       } else if (ev.key.toLowerCase() === 't') {
         goToToday();
       } else if (ev.key === 'Escape') {
@@ -117,11 +204,13 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, popover, goToToday]);
+  }, [view, popover, dayModal, goToToday, moveSelection]);
 
-  const onEventClick = (event: CalendarEvent, anchorEl: HTMLElement) => {
+  const onEventClick = useCallback((event: CalendarEvent, anchorEl: HTMLElement) => {
     setPopover({ event, anchor: anchorEl });
-  };
+  }, []);
+
+  const openDayModal = useCallback((d: Date) => setDayModal(d), []);
 
   const handleSignIn = async () => {
     setSignInError(null);
@@ -130,8 +219,10 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     setAcctPickerOpen(false);
   };
 
-  const weekStart = startOfWeek(anchor, 0);
-  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  const weekDays = useMemo(() => {
+    const ws = startOfWeek(anchor, 0);
+    return Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+  }, [anchor.getFullYear(), anchor.getMonth(), anchor.getDate()]);
 
   const activeCount = Object.values(store.accountsActive).filter(Boolean).length;
 
@@ -189,11 +280,15 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
             setCalRole={setCalRole}
             sectionOrder={sectionOrder}
             setSectionOrder={setSectionOrder}
-            events={store.events}
+            events={visibleEvents}
             weatherUrl={store.weatherUrl}
             weatherDays={store.weatherDays}
             weatherError={store.weatherError}
             setWeatherUrl={store.setWeatherUrl}
+            hideReadOnly={hideReadOnly}
+            setHideReadOnly={setHideReadOnly}
+            hideDisabledCals={hideDisabledCals}
+            setHideDisabledCals={setHideDisabledCals}
           />
 
           <main className="main">
@@ -214,16 +309,17 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 anchor={anchor}
                 selected={selected}
                 setSelected={setSelected}
-                events={store.events}
+                events={visibleEvents}
                 calRoles={calRoles}
                 goToDayView={goToDayView}
                 onEventClick={onEventClick}
+                openDayModal={openDayModal}
               />
             ) : view === 'week' ? (
               <TimeView
                 today={today}
                 days={weekDays}
-                events={store.events}
+                events={visibleEvents}
                 calRoles={calRoles}
                 onEventClick={onEventClick}
               />
@@ -232,13 +328,13 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 <TimeView
                   today={today}
                   days={[anchor]}
-                  events={store.events}
+                  events={visibleEvents}
                   calRoles={calRoles}
                   onEventClick={onEventClick}
                 />
                 <DayDetailPanel
                   date={anchor}
-                  events={store.events}
+                  events={visibleEvents}
                   accounts={store.accounts}
                   calendars={store.calendars}
                   calRoles={calRoles}
@@ -278,6 +374,27 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           accounts={store.accounts}
           calendars={store.calendars}
           onClose={() => setPopover(null)}
+        />
+      )}
+
+      {dayModal && (
+        <DayEventsModal
+          date={dayModal}
+          events={visibleEvents}
+          calendars={store.calendars}
+          calRoles={calRoles}
+          onClose={() => setDayModal(null)}
+          onEventClick={(e, el) => {
+            setDayModal(null);
+            setPopover({ event: e, anchor: el });
+          }}
+          openDayView={() => {
+            const d = dayModal;
+            setAnchor(d);
+            setSelected(d);
+            setView('day');
+            setDayModal(null);
+          }}
         />
       )}
     </div>

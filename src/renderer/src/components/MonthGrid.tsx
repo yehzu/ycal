@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { CalendarEvent } from '@shared/types';
 import {
   DOW_SHORT, MONTH_SHORT, addDays, fmtDate, formatTime, sameYMD,
   startOfMonth, startOfWeek,
 } from '../dates';
 import {
-  eventsTouchingDay, isMultiDayAllDay, layoutWeekRibbons,
+  buildEventsByDay, isMultiDayAllDay, layoutWeekRibbons,
   type RibbonPlacement,
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
+import { dayHolidayInfo } from '../holidays';
+import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 
 interface Props {
@@ -20,6 +23,7 @@ interface Props {
   calRoles: CalRoles;
   goToDayView: (d: Date) => void;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
+  openDayModal: (d: Date) => void;
 }
 
 const DAY_HEAD_PX = 24;
@@ -27,24 +31,32 @@ const EVT_LINE_PX = 17;
 const MORE_LINE_PX = 16;
 const CELL_PADDING_PX = 10;
 const RIBBON_LANE_PX = 19; // 17px row + 2px gap, must match CSS
+const EMPTY_EVENTS: CalendarEvent[] = [];
 
 export function MonthGrid({
   today, anchor, selected, setSelected, events, calRoles, goToDayView, onEventClick,
+  openDayModal,
 }: Props) {
-  const first = startOfMonth(anchor);
-  const gridStart = startOfWeek(first, 0);
-  const weeks = useMemo(
-    () => Array.from({ length: 6 }, (_, w) =>
+  const weeks = useMemo(() => {
+    const gridStart = startOfWeek(startOfMonth(anchor), 0);
+    return Array.from({ length: 6 }, (_, w) =>
       Array.from({ length: 7 }, (_, d) => addDays(gridStart, w * 7 + d)),
-    ),
-    [gridStart.getTime()],
+    );
+  }, [anchor.getFullYear(), anchor.getMonth()]);
+
+  // Multi-day ribbons skip holiday-role events and location indicators —
+  // both render as date-adjacent chips, not as connected bars.
+  const ribbonEvents = useMemo(
+    () => events.filter((e) => !isHolidayEvent(e, calRoles) && !isLocationEvent(e)),
+    [events, calRoles],
   );
 
-  // Multi-day ribbons skip holiday-role events — those render beside the
-  // date in each day cell, not as connected bars.
-  const ribbonEvents = useMemo(
-    () => events.filter((e) => !isHolidayEvent(e, calRoles)),
-    [events, calRoles],
+  // One-pass bucket of events keyed by YYYY-MM-DD. Each Cell looks up its own
+  // slice in O(1) instead of re-scanning the full event list.
+  const flatDays = useMemo(() => weeks.flat(), [weeks]);
+  const eventsByDay = useMemo(
+    () => buildEventsByDay(events, flatDays),
+    [events, flatDays],
   );
 
   const gridRef = useRef<HTMLDivElement | null>(null);
@@ -86,12 +98,13 @@ export function MonthGrid({
           today={today}
           selected={selected}
           setSelected={setSelected}
-          events={events}
+          eventsByDay={eventsByDay}
           ribbonEvents={ribbonEvents}
           calRoles={calRoles}
           maxPerCell={maxPerCell}
           goToDayView={goToDayView}
           onEventClick={onEventClick}
+          openDayModal={openDayModal}
         />
       ))}
     </div>
@@ -104,17 +117,18 @@ interface WeekRowProps {
   today: Date;
   selected: Date;
   setSelected: (d: Date) => void;
-  events: CalendarEvent[];
+  eventsByDay: Map<string, CalendarEvent[]>;
   ribbonEvents: CalendarEvent[];
   calRoles: CalRoles;
   maxPerCell: number;
   goToDayView: (d: Date) => void;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
+  openDayModal: (d: Date) => void;
 }
 
-function WeekRow({
-  week, anchor, today, selected, setSelected, events, ribbonEvents, calRoles,
-  maxPerCell, goToDayView, onEventClick,
+const WeekRow = memo(function WeekRow({
+  week, anchor, today, selected, setSelected, eventsByDay, ribbonEvents, calRoles,
+  maxPerCell, goToDayView, onEventClick, openDayModal,
 }: WeekRowProps) {
   const ribbons = useMemo(
     () => layoutWeekRibbons(ribbonEvents, week[0]),
@@ -129,21 +143,25 @@ function WeekRow({
       className="week-row"
       style={{ ['--ribbon-lanes' as never]: String(ribbonLanes) }}
     >
-      {week.map((d) => (
-        <Cell
-          key={fmtDate(d)}
-          day={d}
-          anchor={anchor}
-          today={today}
-          selected={selected}
-          setSelected={setSelected}
-          events={events}
-          calRoles={calRoles}
-          maxPerCell={maxPerCell}
-          goToDayView={goToDayView}
-          onEventClick={onEventClick}
-        />
-      ))}
+      {week.map((d) => {
+        const k = fmtDate(d);
+        return (
+          <Cell
+            key={k}
+            day={d}
+            inMonth={d.getMonth() === anchor.getMonth()}
+            isToday={sameYMD(d, today)}
+            isSelected={sameYMD(d, selected)}
+            setSelected={setSelected}
+            dayEvents={eventsByDay.get(k) ?? EMPTY_EVENTS}
+            calRoles={calRoles}
+            maxPerCell={maxPerCell}
+            goToDayView={goToDayView}
+            onEventClick={onEventClick}
+            openDayModal={openDayModal}
+          />
+        );
+      })}
       {ribbons.length > 0 && (
         <div className="week-ribbons">
           {ribbons.map((r) => (
@@ -153,7 +171,7 @@ function WeekRow({
       )}
     </div>
   );
-}
+});
 
 function Ribbon({
   placement, onClick,
@@ -192,27 +210,26 @@ function Ribbon({
 
 interface CellProps {
   day: Date;
-  anchor: Date;
-  today: Date;
-  selected: Date;
+  inMonth: boolean;
+  isToday: boolean;
+  isSelected: boolean;
   setSelected: (d: Date) => void;
-  events: CalendarEvent[];
+  dayEvents: CalendarEvent[];
   calRoles: CalRoles;
   maxPerCell: number;
   goToDayView: (d: Date) => void;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
+  openDayModal: (d: Date) => void;
 }
 
-function Cell({
-  day, anchor, today, selected, setSelected, events, calRoles, maxPerCell,
-  goToDayView, onEventClick,
+const Cell = memo(function Cell({
+  day, inMonth, isToday, isSelected, setSelected, dayEvents, calRoles, maxPerCell,
+  goToDayView, onEventClick, openDayModal,
 }: CellProps) {
-  const inMonth = day.getMonth() === anchor.getMonth();
-  const isToday = sameYMD(day, today);
-  const isSel = sameYMD(day, selected);
   const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+  const hInfo = dayHolidayInfo(day, dayEvents, calRoles);
 
-  const touching = eventsTouchingDay(events, day);
+  const touching = dayEvents;
   const holidayEvents = touching.filter((e) => isHolidayEvent(e, calRoles));
   // Dedupe holidays by title — multiple holiday calendars often carry the
   // same entry (e.g. Earth Day appears in both system and family holidays).
@@ -223,13 +240,26 @@ function Cell({
     return true;
   });
 
+  const seenLoc = new Set<string>();
+  const locationEvents = touching
+    .filter((e) => isLocationEvent(e))
+    .filter((e) => {
+      const k = locLabelOf(e).trim().toLowerCase();
+      if (seenLoc.has(k)) return false;
+      seenLoc.add(k);
+      return true;
+    });
+
   // Holiday-role events render beside the date, not as event rows.
   // Multi-day all-day events render in the ribbon overlay only.
-  const dayEvents = touching.filter(
-    (e) => !isMultiDayAllDay(e) && !isHolidayEvent(e, calRoles),
+  // Location indicators render as small chips beside the date.
+  const inCellEvents = touching.filter(
+    (e) => !isMultiDayAllDay(e)
+      && !isHolidayEvent(e, calRoles)
+      && !isLocationEvent(e),
   );
-  const allDay = dayEvents.filter((e) => e.allDay);
-  const timed = dayEvents
+  const allDay = inCellEvents.filter((e) => e.allDay);
+  const timed = inCellEvents
     .filter((e) => !e.allDay)
     .sort((a, b) => a.start.localeCompare(b.start));
   const ordered = [...allDay, ...timed];
@@ -239,15 +269,18 @@ function Cell({
   const cls = ['month-cell'];
   if (!inMonth) cls.push('other-month');
   if (isToday) cls.push('today');
-  if (isSel) cls.push('selected');
-  if (isWeekend) cls.push('weekend');
+  if (isSelected) cls.push('selected');
+  // 補班 promotes a weekend INTO a workday — don't apply weekend tint.
+  if (isWeekend && hInfo?.kind !== 'workday') cls.push('weekend');
+  if (hInfo) cls.push('h-' + hInfo.kind);
 
   return (
     <div
       className={cls.join(' ')}
+      style={hInfo?.color ? ({ ['--h-color' as never]: hInfo.color }) : undefined}
       onClick={() => setSelected(day)}
       onDoubleClick={() => goToDayView(day)}
-      title="Double-click to open day view"
+      title={hInfo?.label || 'Double-click to open day view'}
     >
       <div className="day-head">
         <div className="day-num">{day.getDate()}</div>
@@ -264,6 +297,20 @@ function Cell({
               }}
             >
               {he.title}
+            </span>
+          ))}
+          {locationEvents.map((le) => (
+            <span
+              key={le.id}
+              className="location-icon-chip"
+              style={{ ['--cal' as never]: le.color }}
+              title={locLabelOf(le)}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onEventClick(le, ev.currentTarget);
+              }}
+            >
+              <LocationIcon kind={locKindOf(le)} title={locLabelOf(le)} />
             </span>
           ))}
         </div>
@@ -297,7 +344,7 @@ function Cell({
             className="evt-more"
             onClick={(ev) => {
               ev.stopPropagation();
-              setSelected(day);
+              openDayModal(day);
             }}
           >
             + {hidden} more…
@@ -306,4 +353,4 @@ function Cell({
       </div>
     </div>
   );
-}
+});

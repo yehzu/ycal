@@ -11,10 +11,13 @@ import { calKey } from '../store';
 import {
   type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda,
 } from '../calRoles';
+import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
 import { MergeBadge } from './MergeBadge';
 import { MiniMonth } from './MiniMonth';
 import { avatarBg, initials } from './MacTitleBar';
 import { WeatherStrip } from './WeatherStrip';
+import { LocationIcon } from './LocationIcon';
+import { CalListPrefsMenu } from './CalListPrefsMenu';
 
 export type SidebarSectionKey = 'almanac' | 'agenda' | 'calendars' | 'forecast';
 
@@ -38,17 +41,38 @@ interface Props {
   weatherDays: WeatherDay[];
   weatherError: string | null;
   setWeatherUrl: (url: string | null) => Promise<void>;
+  hideReadOnly: boolean;
+  setHideReadOnly: (v: boolean) => void;
+  hideDisabledCals: boolean;
+  setHideDisabledCals: (v: boolean) => void;
 }
 
 function AgendaSummary({
-  date, events, calRoles,
-}: { date: Date; events: CalendarEvent[]; calRoles: CalRoles }) {
-  const todays = eventsTouchingDay(events, date)
-    .filter((e) => !isExcludedFromAgenda(e, calRoles));
+  date, events, calRoles, onEventClick,
+}: {
+  date: Date;
+  events: CalendarEvent[];
+  calRoles: CalRoles;
+  onEventClick?: (e: CalendarEvent, anchor: HTMLElement) => void;
+}) {
+  const touching = eventsTouchingDay(events, date);
+  const todays = touching.filter(
+    (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e),
+  );
   const allDay = todays.filter((e) => e.allDay);
   const timed = todays
     .filter((e) => !e.allDay)
     .sort((a, b) => a.start.localeCompare(b.start));
+
+  const seenLoc = new Set<string>();
+  const locations = touching
+    .filter((e) => isLocationEvent(e))
+    .filter((e) => {
+      const k = locLabelOf(e).trim().toLowerCase();
+      if (seenLoc.has(k)) return false;
+      seenLoc.add(k);
+      return true;
+    });
   return (
     <div>
       <div className="agenda-day-line">{DOW_LONG[date.getDay()]}</div>
@@ -56,6 +80,21 @@ function AgendaSummary({
         {MONTH_NAMES[date.getMonth()]} {ordinal(date.getDate())} · {todays.length}{' '}
         {todays.length === 1 ? 'entry' : 'entries'}
       </div>
+      {locations.length > 0 && (
+        <div className="agenda-locations">
+          {locations.map((le) => (
+            <span
+              key={le.id}
+              className="location-icon-chip"
+              style={{ ['--cal' as never]: le.color }}
+              title={locLabelOf(le)}
+              onClick={(ev) => onEventClick?.(le, ev.currentTarget)}
+            >
+              <LocationIcon kind={locKindOf(le)} title={locLabelOf(le)} />
+            </span>
+          ))}
+        </div>
+      )}
       <div className="agenda-list">
         {allDay.map((e) => (
           <div key={e.id} className="agenda-row" style={{ ['--cal' as never]: e.color }}>
@@ -93,6 +132,7 @@ function AgendaSummary({
 
 function CalListByAccount({
   accounts, accountsActive, calendars, calVisible, toggleCal, calRoles, setCalRole,
+  hideReadOnly, hideDisabledCals,
 }: {
   accounts: AccountSummary[];
   accountsActive: Record<string, boolean>;
@@ -101,12 +141,20 @@ function CalListByAccount({
   toggleCal: (key: string) => void;
   calRoles: CalRoles;
   setCalRole: (key: string, role: CalRole) => void;
+  hideReadOnly: boolean;
+  hideDisabledCals: boolean;
 }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   return (
     <div onClick={() => setOpenMenu(null)}>
       {accounts.filter((a) => accountsActive[a.id]).map((a) => {
         const cals = calendars.filter((c) => c.accountId === a.id);
+        const visibleCals = cals.filter((c) => {
+          const k = calKey(c.accountId, c.id);
+          if (hideDisabledCals && !calVisible[k]) return false;
+          return true;
+        });
+        if (visibleCals.length === 0) return null;
         return (
           <div key={a.id} className="acct-block">
             <div className="acct-row">
@@ -115,17 +163,18 @@ function CalListByAccount({
               </span>
               <span className="em">{a.email}</span>
             </div>
-            {cals.map((c) => {
+            {visibleCals.map((c) => {
               const k = calKey(c.accountId, c.id);
               const on = calVisible[k];
               const role: CalRole = calRoles[k] ?? 'normal';
               const isOpen = openMenu === k;
+              const dimmed = hideReadOnly && role === 'subscribed';
               return (
-                <div key={k} className="cal-row-wrap">
+                <div key={k} className={'cal-row-wrap' + (dimmed ? ' dimmed' : '')}>
                   <button
                     className={'cal-item ' + (on ? '' : 'off')}
                     style={{ ['--cal' as never]: c.color }}
-                    title={c.name}
+                    title={c.name + (dimmed ? ' (hidden by Show read-only)' : '')}
                     onClick={(ev) => { ev.stopPropagation(); toggleCal(k); }}
                   >
                     <span className="swatch" />
@@ -177,6 +226,7 @@ function CalListByAccount({
 interface SectionDef {
   title: string;
   render: () => JSX.Element;
+  headerExtra?: JSX.Element;
 }
 
 export function Sidebar(props: Props) {
@@ -215,6 +265,18 @@ export function Sidebar(props: Props) {
     },
     calendars: {
       title: 'Calendars',
+      headerExtra: (
+        <CalListPrefsMenu
+          hideReadOnly={props.hideReadOnly}
+          setHideReadOnly={props.setHideReadOnly}
+          hideDisabledCals={props.hideDisabledCals}
+          setHideDisabledCals={props.setHideDisabledCals}
+          accountsActive={props.accountsActive}
+          calendars={props.calendars}
+          calVisible={props.calVisible}
+          calRoles={props.calRoles}
+        />
+      ),
       render: () => (
         props.accounts.length === 0 ? (
           <div style={{
@@ -235,6 +297,8 @@ export function Sidebar(props: Props) {
             toggleCal={props.toggleCal}
             calRoles={props.calRoles}
             setCalRole={props.setCalRole}
+            hideReadOnly={props.hideReadOnly}
+            hideDisabledCals={props.hideDisabledCals}
           />
         )
       ),
@@ -270,6 +334,7 @@ export function Sidebar(props: Props) {
           <div key={key} className="side-section">
             <h3>
               <span className="sec-title">{s.title}</span>
+              {s.headerExtra}
               <span className="sec-reorder">
                 <button
                   title="Move up"

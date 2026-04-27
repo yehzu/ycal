@@ -8,6 +8,9 @@ import {
   type RibbonPlacement,
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
+import { dayHolidayInfo } from '../holidays';
+import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 
 interface Props {
@@ -19,7 +22,7 @@ interface Props {
 }
 
 const HOUR_HEIGHT = 56;
-const START_HOUR = 6;
+const START_HOUR = 0;
 const END_HOUR = 23;
 
 interface Placed {
@@ -83,27 +86,43 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
   const colTemplate = `60px repeat(${days.length}, 1fr)`;
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
+  // Default scroll: park the visible window so "now" is roughly 90 minutes
+  // below the top edge. Falls back to 6am for past days / overnight.
   useEffect(() => {
-    if (bodyRef.current) bodyRef.current.scrollTop = HOUR_HEIGHT * 1;
-  }, []);
+    if (!bodyRef.current) return;
+    const showsToday = days.some((d) => sameYMD(d, today));
+    const baseMin = showsToday
+      ? today.getHours() * 60 + today.getMinutes() - 90
+      : 6 * 60;
+    const targetMin = Math.max(0, Math.min(baseMin, (END_HOUR - START_HOUR) * 60));
+    bodyRef.current.scrollTop = (targetMin / 60) * HOUR_HEIGHT;
+  // We intentionally re-scroll when the visible day-set or current time changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days[0]?.getTime(), days.length]);
 
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
   const nowOffset = ((nowMinutes / 60) - START_HOUR) * HOUR_HEIGHT;
 
   // Single-day all-day events render inside their cell. Multi-day all-day
-  // events render as connected ribbons in the overlay below.
+  // events render as connected ribbons. Location indicators are pulled out
+  // of both — they show as date-adjacent chips.
   const allDayByDay = useMemo(() => {
     const m: Record<string, CalendarEvent[]> = {};
     for (const d of days) {
       m[fmtDate(d)] = events.filter(
-        (e) => e.allDay && !isMultiDayAllDay(e) && eventTouchesDay(e, d),
+        (e) => e.allDay
+          && !isMultiDayAllDay(e)
+          && !isLocationEvent(e)
+          && eventTouchesDay(e, d),
       );
     }
     return m;
   }, [days, events]);
 
   const ribbons = useMemo<RibbonPlacement[]>(
-    () => (days.length === 0 ? [] : layoutRangeRibbons(events, days[0], days.length)),
+    () => (days.length === 0
+      ? []
+      : layoutRangeRibbons(events.filter((e) => !isLocationEvent(e)), days[0], days.length)),
     [days, events],
   );
   const ribbonLanes = ribbons.length === 0
@@ -115,8 +134,25 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
     for (const d of days) m[fmtDate(d)] = [];
     for (const e of events) {
       if (e.allDay) continue;
+      if (isLocationEvent(e)) continue;
       const key = fmtDate(new Date(e.start));
       if (m[key]) m[key].push(e);
+    }
+    return m;
+  }, [days, events]);
+
+  const locationsByDay = useMemo(() => {
+    const m: Record<string, CalendarEvent[]> = {};
+    for (const d of days) {
+      const seen = new Set<string>();
+      m[fmtDate(d)] = events
+        .filter((e) => isLocationEvent(e) && eventTouchesDay(e, d))
+        .filter((e) => {
+          const k = locLabelOf(e).trim().toLowerCase();
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
     }
     return m;
   }, [days, events]);
@@ -128,13 +164,45 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
           <div style={{ borderRight: '0.5px solid var(--rule)' }} />
           {days.map((d) => {
             const isToday = sameYMD(d, today);
+            const hInfo = dayHolidayInfo(d, events, calRoles);
+            const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+            const headCls = ['tv-col-head'];
+            if (isToday) headCls.push('today');
+            if (isWeekend && hInfo?.kind !== 'workday') headCls.push('weekend');
+            if (hInfo) headCls.push('h-' + hInfo.kind);
+            const locs = locationsByDay[fmtDate(d)] ?? [];
             return (
               <div
                 key={fmtDate(d)}
-                className={'tv-col-head ' + (isToday ? 'today' : '')}
+                className={headCls.join(' ')}
+                style={hInfo?.color ? ({ ['--h-color' as never]: hInfo.color }) : undefined}
+                title={hInfo?.label || ''}
               >
                 <div className="dow">{DOW_SHORT[d.getDay()]}</div>
                 <div className="num">{d.getDate()}</div>
+                {hInfo && hInfo.kind !== 'weekend' && (
+                  <div
+                    className="tv-h-label"
+                    style={hInfo.color ? { color: hInfo.color } : undefined}
+                  >
+                    {hInfo.label}
+                  </div>
+                )}
+                {locs.length > 0 && (
+                  <div className="tv-loc-chips">
+                    {locs.map((le) => (
+                      <button
+                        key={le.id}
+                        className="location-icon-chip tv-loc"
+                        style={{ ['--cal' as never]: le.color }}
+                        title={locLabelOf(le)}
+                        onClick={(ev) => onEventClick(le, ev.currentTarget)}
+                      >
+                        <LocationIcon kind={locKindOf(le)} title={locLabelOf(le)} />
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -164,8 +232,6 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
             all day
           </div>
           {days.map((d) => {
-            // Dedupe single-day all-day events by title within the cell so
-            // duplicate holiday entries from multiple calendars don't double up.
             const seen = new Set<string>();
             const dayAll = (allDayByDay[fmtDate(d)] ?? []).filter((e) => {
               if (seen.has(e.title)) return false;
@@ -258,12 +324,19 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
           </div>
           {days.map((d) => {
             const isToday = sameYMD(d, today);
+            const hInfo = dayHolidayInfo(d, events, calRoles);
+            const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+            const colCls = ['tv-col'];
+            if (isToday) colCls.push('today-col');
+            if (isWeekend && hInfo?.kind !== 'workday') colCls.push('weekend');
+            if (hInfo) colCls.push('h-' + hInfo.kind);
             const dayTimed = timedByDay[fmtDate(d)] ?? [];
             const laid = layoutColumns(dayTimed);
             return (
               <div
                 key={fmtDate(d)}
-                className={'tv-col ' + (isToday ? 'today-col' : '')}
+                className={colCls.join(' ')}
+                style={hInfo?.color ? ({ ['--h-color' as never]: hInfo.color }) : undefined}
               >
                 {hours.map((h) => (
                   <div

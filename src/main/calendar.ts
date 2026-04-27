@@ -80,6 +80,44 @@ export async function listAllCalendars(): Promise<CalendarSummary[]> {
 
 interface FlatEventRow extends CalendarEvent {}
 
+// Map Google's working-location / OOO events into one of four icon buckets.
+// workingLocationProperties.type = 'homeOffice' | 'officeLocation' | 'customLocation'.
+// 'outOfOffice' eventType always lands in the OOO bucket.
+function resolveWorkingLocation(
+  ev: calendar_v3.Schema$Event,
+  eventType: string,
+): { kind: 'office' | 'home' | 'ooo' | 'other'; label: string } | undefined {
+  if (eventType === 'outOfOffice') {
+    return { kind: 'ooo', label: ev.summary ?? 'Out of office' };
+  }
+  if (eventType !== 'workingLocation') return undefined;
+  const wl = ev.workingLocationProperties;
+  if (!wl) {
+    // Fall back to title-keyword heuristic when the API omitted the field.
+    return { kind: kindFromTitle(ev.summary ?? ''), label: ev.summary ?? 'Working location' };
+  }
+  if (wl.homeOffice !== undefined) {
+    return { kind: 'home', label: ev.summary ?? 'Working from home' };
+  }
+  if (wl.officeLocation) {
+    const label = wl.officeLocation.label ?? wl.officeLocation.buildingId
+      ?? wl.officeLocation.deskId ?? wl.officeLocation.floorId ?? 'Office';
+    return { kind: 'office', label };
+  }
+  if (wl.customLocation) {
+    return { kind: 'other', label: wl.customLocation.label ?? ev.summary ?? 'Other location' };
+  }
+  return { kind: 'other', label: ev.summary ?? 'Working location' };
+}
+
+function kindFromTitle(title: string): 'office' | 'home' | 'ooo' | 'other' {
+  const t = title.toLowerCase();
+  if (/(wfh|home|remote)/.test(t)) return 'home';
+  if (/(office|hq)/.test(t)) return 'office';
+  if (/(ooo|out|pto|vacation|travel|trip)/.test(t)) return 'ooo';
+  return 'other';
+}
+
 function isoFromGoogleDate(g: calendar_v3.Schema$EventDateTime | undefined): {
   iso: string;
   allDay: boolean;
@@ -135,6 +173,8 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
           const eventColor = ev.colorId
             ? colors.event[ev.colorId]?.background ?? cal.color
             : cal.color;
+          const eventType = ev.eventType ?? 'default';
+          const workingLocation = resolveWorkingLocation(ev, eventType);
           out.push({
             id: ev.id,
             calendarId: cal.id,
@@ -149,6 +189,8 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
             colorId: ev.colorId ?? null,
             htmlLink: ev.htmlLink ?? null,
             status: ev.status ?? 'confirmed',
+            eventType,
+            ...(workingLocation ? { workingLocation } : {}),
           });
         }
         pageToken = res.data.nextPageToken ?? undefined;

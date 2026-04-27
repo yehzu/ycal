@@ -4,6 +4,8 @@ import { eventsTouchingDay } from '../multiday';
 import {
   type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent,
 } from '../calRoles';
+import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 
 interface Props {
@@ -34,11 +36,23 @@ export function DayDetailPanel({
   const subscribed = todays.filter(
     (e) => roleOfEvent(e, calRoles) === 'subscribed',
   );
-  const agenda = todays.filter((e) => !isExcludedFromAgenda(e, calRoles));
+  const agenda = todays.filter(
+    (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e),
+  );
   const allDay = agenda.filter((e) => e.allDay);
   const timed = agenda
     .filter((e) => !e.allDay)
     .sort((a, b) => a.start.localeCompare(b.start));
+
+  const seenLoc = new Set<string>();
+  const locations = todays
+    .filter((e) => isLocationEvent(e))
+    .filter((e) => {
+      const k = locLabelOf(e).trim().toLowerCase();
+      if (seenLoc.has(k)) return false;
+      seenLoc.add(k);
+      return true;
+    });
 
   const acctOf = (accountId: string) => accounts.find((a) => a.id === accountId);
   const calOf = (calendarId: string) => calendars.find((c) => c.id === calendarId);
@@ -88,6 +102,23 @@ export function DayDetailPanel({
         </small>
       </div>
       <hr className="dd-rule" />
+
+      {locations.length > 0 && (
+        <div className="dd-locations">
+          {locations.map((le) => (
+            <button
+              key={le.id}
+              className="location-icon-chip dd-loc"
+              style={{ ['--cal' as never]: le.color }}
+              title={locLabelOf(le)}
+              onClick={(ev) => onEventClick(le, ev.currentTarget as HTMLElement)}
+            >
+              <LocationIcon kind={locKindOf(le)} title={locLabelOf(le)} />
+              <span className="loc-label">{locLabelOf(le)}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {uniqHolidays.length > 0 && (
         <div className="dd-holidays">

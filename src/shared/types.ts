@@ -38,6 +38,14 @@ export interface CalendarEvent {
   colorId: string | null;
   htmlLink: string | null;
   status: string;
+  // Google's eventType — 'default', 'workingLocation', 'outOfOffice',
+  // 'focusTime', 'fromGmail', 'birthday'. Drives how we render the entry.
+  eventType: string | null;
+  // Resolved working-location bucket for kind='workingLocation'/'outOfOffice'.
+  workingLocation?: {
+    kind: 'office' | 'home' | 'ooo' | 'other';
+    label: string;
+  };
   // When events with the same title + slot are duplicated across calendars,
   // we collapse them into one for rendering and stash the originals here.
   // Includes the kept event itself, so length ≥ 1 after merging.

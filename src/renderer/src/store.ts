@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AccountSummary,
   CalendarSummary,
@@ -46,13 +46,21 @@ export interface Store {
   setWeatherUrl: (url: string | null) => Promise<void>;
 }
 
-// Compute a generous fetch range for a given anchor: month grid is 6 weeks,
-// so fetch [first-of-month - 1 week, first-of-month + 7 weeks). That covers
-// month + week views without re-fetching when navigating within the month.
-function rangeForAnchor(anchor: Date): { start: Date; end: Date } {
+// Visible range a given anchor needs (6-row month grid + buffer for
+// week-view navigation within the anchor month).
+function visibleRangeForAnchor(anchor: Date): { start: Date; end: Date } {
   const som = startOfMonth(anchor);
   const start = addDays(som, -7);
   const end = addDays(som, 7 * 7);
+  return { start, end };
+}
+
+// What we actually fetch — much wider than visibleRange, so navigating
+// ±2 months stays inside the already-loaded buffer.
+function fetchRangeForAnchor(anchor: Date): { start: Date; end: Date } {
+  const som = startOfMonth(anchor);
+  const start = addDays(som, -7 * 12);
+  const end = addDays(som, 7 * 20);
   return { start, end };
 }
 
@@ -120,17 +128,28 @@ export function useStore(anchor: Date, initialUi: UiSettings): Store {
     }
   }, []);
 
+  // Track the timestamp window currently held in `events` so we can skip the
+  // network round-trip when the requested window is already covered.
+  const fetchedRangeRef = useRef<{ start: number; end: number } | null>(null);
+
   const loadEventsForRange = useCallback(async (start: Date, end: Date) => {
+    const startTs = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+    const endTs = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
+    const cached = fetchedRangeRef.current;
+    if (cached && startTs >= cached.start && endTs <= cached.end) {
+      return;
+    }
     setLoading(true);
     try {
       const res = await window.ycal.listEvents({
-        timeMin: new Date(start.getFullYear(), start.getMonth(), start.getDate()).toISOString(),
-        timeMax: new Date(end.getFullYear(), end.getMonth(), end.getDate()).toISOString(),
+        timeMin: new Date(startTs).toISOString(),
+        timeMax: new Date(endTs).toISOString(),
       });
       if (!res.ok) {
         setError(res.error);
         return;
       }
+      fetchedRangeRef.current = { start: startTs, end: endTs };
       setEvents(res.events);
       setError(null);
     } finally {
@@ -197,19 +216,28 @@ export function useStore(anchor: Date, initialUi: UiSettings): Store {
     };
   }, [refreshAccounts, refreshCalendars, refreshWeather]);
 
-  // Re-fetch events when anchor month or accounts change.
+  // Re-fetch events when the anchor moves outside the cached window or accounts
+  // change. The cache check inside loadEventsForRange short-circuits when the
+  // visible window is already covered, so consecutive month navs are free.
   useEffect(() => {
     if (configured === false) return;
     if (accounts.length === 0) {
       setEvents([]);
+      fetchedRangeRef.current = null;
       return;
     }
-    const { start, end } = rangeForAnchor(anchor);
-    void loadEventsForRange(start, end);
+    const visible = visibleRangeForAnchor(anchor);
+    const visStart = new Date(visible.start.getFullYear(), visible.start.getMonth(), visible.start.getDate()).getTime();
+    const visEnd = new Date(visible.end.getFullYear(), visible.end.getMonth(), visible.end.getDate()).getTime();
+    const cached = fetchedRangeRef.current;
+    if (cached && visStart >= cached.start && visEnd <= cached.end) {
+      return;
+    }
+    const fetchRange = fetchRangeForAnchor(anchor);
+    void loadEventsForRange(fetchRange.start, fetchRange.end);
   }, [
     configured,
     accounts.length,
-    // re-fetch on month change
     fmtDate(startOfMonth(anchor)),
     loadEventsForRange,
   ]);
