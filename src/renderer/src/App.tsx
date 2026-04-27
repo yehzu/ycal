@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CalendarEvent, UiSettings } from '@shared/types';
+import type { CalendarEvent, MergeCriteria, UiSettings } from '@shared/types';
+import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import { addDays, addMonths, startOfMonth, startOfWeek } from './dates';
 import { useStore } from './store';
 import type { CalRole, CalRoles } from './calRoles';
@@ -24,6 +25,7 @@ const DEFAULT_UI: UiSettings = {
   calVisible: {},
   calRoles: {},
   sectionOrder: DEFAULT_SECTION_ORDER,
+  mergeCriteria: DEFAULT_MERGE_CRITERIA,
 };
 
 // Boot waits for persisted UI settings to load before mounting AppShell so
@@ -81,12 +83,16 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [hideDisabledCals, setHideDisabledCals] = useState(false);
   const [dayModal, setDayModal] = useState<Date | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mergeCriteria, setMergeCriteria] = useState<MergeCriteria>(() => ({
+    ...DEFAULT_MERGE_CRITERIA,
+    ...(initialUi.mergeCriteria ?? {}),
+  }));
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
     setCalRoles((prev) => ({ ...prev, [key]: role }));
   }, []);
 
-  const store = useStore(anchor, initialUi);
+  const store = useStore(anchor, initialUi, mergeCriteria);
 
   // Effective event list — drop read-only/subscribed entries when the master
   // toggle is on. Other filters (account / calendar visibility) live in store.
@@ -105,8 +111,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       calVisible: store.calVisible,
       calRoles,
       sectionOrder,
+      mergeCriteria,
     });
-  }, [store.accountsActive, store.calVisible, calRoles, sectionOrder]);
+  }, [store.accountsActive, store.calVisible, calRoles, sectionOrder, mergeCriteria]);
 
   const goToDayView = useCallback((d: Date) => {
     setAnchor(d);
@@ -393,7 +400,11 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       )}
 
       {settingsOpen && (
-        <SettingsModal onClose={() => setSettingsOpen(false)} />
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          mergeCriteria={mergeCriteria}
+          setMergeCriteria={setMergeCriteria}
+        />
       )}
 
       {dayModal && (

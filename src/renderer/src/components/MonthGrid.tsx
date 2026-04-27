@@ -5,7 +5,7 @@ import {
   startOfMonth, startOfWeek,
 } from '../dates';
 import {
-  buildEventsByDay, isMultiDayAllDay, layoutWeekRibbons,
+  buildEventsByDay, compareEventsByStart, isMultiDayAllDay, layoutWeekRibbons,
   type RibbonPlacement,
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
@@ -258,7 +258,7 @@ const Cell = memo(function Cell({
       && !isHolidayEvent(e, calRoles)
       && !isLocationEvent(e))
     .slice()
-    .sort((a, b) => a.start.localeCompare(b.start));
+    .sort(compareEventsByStart);
   const shown = ordered.slice(0, maxPerCell);
   const hidden = ordered.length - shown.length;
 

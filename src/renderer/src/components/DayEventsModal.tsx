@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import type { CalendarEvent, CalendarSummary } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
-import { eventsTouchingDay } from '../multiday';
+import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import { type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent } from '../calRoles';
 import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
 import { LocationIcon } from './LocationIcon';
@@ -53,21 +53,18 @@ export function DayEventsModal({
       return true;
     });
 
-  const byStart = (a: CalendarEvent, b: CalendarEvent) =>
-    a.start.localeCompare(b.start);
-
   const rest = occurs.filter(
     (e) =>
       !isHolidayEvent(e, calRoles) &&
       !isLocationEvent(e) &&
       !isExcludedFromAgenda(e, calRoles),
   );
-  const allDay = rest.filter((e) => e.allDay).slice().sort(byStart);
-  const timed = rest.filter((e) => !e.allDay).slice().sort(byStart);
+  const allDay = rest.filter((e) => e.allDay).slice().sort(compareEventsByStart);
+  const timed = rest.filter((e) => !e.allDay).slice().sort(compareEventsByStart);
   const subscribed = occurs
     .filter((e) => roleOfEvent(e, calRoles) === 'subscribed')
     .slice()
-    .sort(byStart);
+    .sort(compareEventsByStart);
 
   const calOf = (id: string) => calendars.find((c) => c.id === id);
 

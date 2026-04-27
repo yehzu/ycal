@@ -6,7 +6,7 @@ import type {
   WeatherDay,
 } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
-import { eventTouchesDay, eventsTouchingDay } from '../multiday';
+import { compareEventsByStart, eventTouchesDay, eventsTouchingDay } from '../multiday';
 import { calKey } from '../store';
 import {
   type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda,
@@ -59,7 +59,7 @@ function AgendaSummary({
   const todays = touching
     .filter((e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e))
     .slice()
-    .sort((a, b) => a.start.localeCompare(b.start));
+    .sort(compareEventsByStart);
 
   const seenLoc = new Set<string>();
   const locations = touching

@@ -3,6 +3,7 @@ import type {
   AccountSummary,
   CalendarSummary,
   CalendarEvent,
+  MergeCriteria,
   UiSettings,
   WeatherDay,
 } from '@shared/types';
@@ -64,7 +65,11 @@ function fetchRangeForAnchor(anchor: Date): { start: Date; end: Date } {
   return { start, end };
 }
 
-export function useStore(anchor: Date, initialUi: UiSettings): Store {
+export function useStore(
+  anchor: Date,
+  initialUi: UiSettings,
+  mergeCriteria: MergeCriteria,
+): Store {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [calendars, setCalendars] = useState<CalendarSummary[]>([]);
@@ -249,8 +254,8 @@ export function useStore(anchor: Date, initialUi: UiSettings): Store {
       if (!calVisible[calKey(e.accountId, e.calendarId)]) return false;
       return true;
     });
-    return dedupEvents(filtered, calendars);
-  }, [events, accountsActive, calVisible, calendars]);
+    return dedupEvents(filtered, calendars, mergeCriteria);
+  }, [events, accountsActive, calVisible, calendars, mergeCriteria]);
 
   return {
     configured,

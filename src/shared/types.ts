@@ -84,6 +84,19 @@ export interface WeatherDay {
 export type CalRolePersisted = 'normal' | 'subscribed' | 'holiday';
 export type SidebarSection = 'almanac' | 'agenda' | 'calendars' | 'forecast';
 
+// Cross-calendar merge criteria. Title (lowercased + trimmed) and start moment
+// always count; the rest are user-configurable. Defaults match the loose
+// "same topic + same starting slot" intuition users expect from a calendar.
+export interface MergeCriteria {
+  matchEnd: boolean;
+  matchAllDay: boolean;
+}
+
+export const DEFAULT_MERGE_CRITERIA: MergeCriteria = {
+  matchEnd: false,
+  matchAllDay: true,
+};
+
 export interface UiSettings {
   // accountId → on/off in the title-bar account stack
   accountsActive: Record<string, boolean>;
@@ -93,6 +106,8 @@ export interface UiSettings {
   calRoles: Record<string, CalRolePersisted>;
   // Order of sidebar sections, top to bottom
   sectionOrder: SidebarSection[];
+  // Optional — older settings files may not have it; fall back to defaults.
+  mergeCriteria?: MergeCriteria;
 }
 
 // IPC channel names — typed once, shared.

@@ -1,7 +1,11 @@
 import { useEffect } from 'react';
+import type { MergeCriteria } from '@shared/types';
+import { ToggleSwitch } from './ToggleSwitch';
 
 interface Props {
   onClose: () => void;
+  mergeCriteria: MergeCriteria;
+  setMergeCriteria: (next: MergeCriteria) => void;
 }
 
 interface ShortcutRow {
@@ -47,7 +51,7 @@ const SECTIONS: ShortcutSection[] = [
   },
 ];
 
-export function SettingsModal({ onClose }: Props) {
+export function SettingsModal({ onClose, mergeCriteria, setMergeCriteria }: Props) {
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -73,6 +77,34 @@ export function SettingsModal({ onClose }: Props) {
           <button className="dem-close" onClick={onClose} title="Close (Esc)">×</button>
         </header>
         <div className="dem-body-scroll">
+          <section className="dem-section">
+            <h3 className="dem-h">Cross-calendar merge</h3>
+            <p className="settings-note">
+              Events with the same title and start moment collapse into one row
+              with an <em>×N</em> badge. Tighten the criteria below if you find
+              unrelated entries getting merged.
+            </p>
+            <div className="settings-toggles">
+              <ToggleSwitch
+                label="Also match end time"
+                subtitle="Require the end of the slot to line up too."
+                on={mergeCriteria.matchEnd}
+                onChange={() => setMergeCriteria({
+                  ...mergeCriteria,
+                  matchEnd: !mergeCriteria.matchEnd,
+                })}
+              />
+              <ToggleSwitch
+                label="Also match all-day flag"
+                subtitle="Don't merge a timed event with an all-day one of the same name."
+                on={mergeCriteria.matchAllDay}
+                onChange={() => setMergeCriteria({
+                  ...mergeCriteria,
+                  matchAllDay: !mergeCriteria.matchAllDay,
+                })}
+              />
+            </div>
+          </section>
           <section className="dem-section">
             <h3 className="dem-h">Keyboard shortcuts</h3>
             <p className="settings-note">

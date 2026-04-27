@@ -1972,3 +1972,9 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: var(--ink-soft);
   line-height: 1.4;
 }
+.settings-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 6px;
+}

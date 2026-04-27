@@ -1,23 +1,34 @@
-import type { CalendarEvent, CalendarSummary } from '@shared/types';
+import type {
+  CalendarEvent, CalendarSummary, MergeCriteria,
+} from '@shared/types';
+import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 
 // Collapse events that look identical across calendars into a single rendered
-// event. Signature: lowercase-trimmed title + start ISO + end ISO + allDay flag.
+// event. Title (trimmed + lowercased) and the start moment always count;
+// matchEnd / matchAllDay are user-configurable.
 //
-// When merging, prefer the version on the user's primary calendar (it's most
-// likely the canonical one); fall back to the lexicographically smallest
-// calendarId. The kept event's color wins; the others are stashed in
-// mergedFrom so the popover can list them.
+// Time fields are compared via Date.getTime() — Google can return the same
+// wall-clock moment as either an offset ISO (`...T06:00:00+08:00`) or a UTC
+// ISO (`...T22:00:00Z`), and a raw-string key would treat those as distinct.
+//
+// When merging, prefer the version on the user's primary calendar; fall back
+// to the lexicographically smallest calendarId. The kept event's color wins;
+// the others are stashed in mergedFrom so the popover can list them.
 export function dedupEvents(
   events: CalendarEvent[],
   calendars: CalendarSummary[],
+  criteria: MergeCriteria = DEFAULT_MERGE_CRITERIA,
 ): CalendarEvent[] {
   const calRank = new Map<string, number>();
-  // Lower rank → preferred. Primary calendars get rank 0, others rank 1.
   for (const c of calendars) calRank.set(c.id, c.primary ? 0 : 1);
 
   const groups = new Map<string, CalendarEvent[]>();
   for (const e of events) {
-    const key = `${e.title.trim().toLowerCase()}|${e.start}|${e.end}|${e.allDay ? '1' : '0'}`;
+    const startMs = new Date(e.start).getTime();
+    const parts = [e.title.trim().toLowerCase(), String(startMs)];
+    if (criteria.matchEnd) parts.push(String(new Date(e.end).getTime()));
+    if (criteria.matchAllDay) parts.push(e.allDay ? '1' : '0');
+    const key = parts.join('|');
     const arr = groups.get(key);
     if (arr) arr.push(e);
     else groups.set(key, [e]);

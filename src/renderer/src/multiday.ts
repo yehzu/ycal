@@ -1,5 +1,17 @@
 import type { CalendarEvent } from '@shared/types';
 
+// Compare events by absolute start moment. We deliberately parse with `new
+// Date()` instead of localeCompare-ing the raw string, because Google can
+// return the same wall-clock moment as either an offset ISO
+// (`2026-05-01T06:00:00+08:00`) or a UTC ISO (`2026-04-30T22:00:00.000Z`),
+// and lexical compare separates them across unrelated events.
+export function compareEventsByStart(
+  a: { start: string },
+  b: { start: string },
+): number {
+  return new Date(a.start).getTime() - new Date(b.start).getTime();
+}
+
 // Event "touches" day D iff [event.start, event.end) overlaps
 // [00:00 of D, 00:00 of D+1).
 //

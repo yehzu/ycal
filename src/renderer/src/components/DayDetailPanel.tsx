@@ -1,6 +1,6 @@
 import type { CalendarEvent, AccountSummary, CalendarSummary } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
-import { eventsTouchingDay } from '../multiday';
+import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import {
   type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent,
 } from '../calRoles';
@@ -31,20 +31,17 @@ export function DayDetailPanel({
     return true;
   });
 
-  const byStart = (a: CalendarEvent, b: CalendarEvent) =>
-    a.start.localeCompare(b.start);
-
   // Subscribed (read-only) calendars render in their own section so the
   // primary agenda stays focused on the user's own events.
   const subscribed = todays
     .filter((e) => roleOfEvent(e, calRoles) === 'subscribed')
     .slice()
-    .sort(byStart);
+    .sort(compareEventsByStart);
   const agenda = todays.filter(
     (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e),
   );
-  const allDay = agenda.filter((e) => e.allDay).slice().sort(byStart);
-  const timed = agenda.filter((e) => !e.allDay).slice().sort(byStart);
+  const allDay = agenda.filter((e) => e.allDay).slice().sort(compareEventsByStart);
+  const timed = agenda.filter((e) => !e.allDay).slice().sort(compareEventsByStart);
 
   const seenLoc = new Set<string>();
   const locations = todays
