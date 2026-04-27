@@ -535,6 +535,17 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
     timeMax: opts.range.to.toISOString(),
     calendarIds,
   });
+  // Google's timeMin is documented as exclusive on event end, but multi-day
+  // all-day events whose exclusive end.date equals our local midnight still
+  // come back (e.g. an event whose last day is "yesterday" leaks into today).
+  // Enforce strict overlap with the requested local range here.
+  const fromMs = opts.range.from.getTime();
+  const toMs = opts.range.to.getTime();
+  events = events.filter((ev) => {
+    const startMs = new Date(ev.start).getTime();
+    const endMs = new Date(ev.end).getTime();
+    return endMs > fromMs && startMs <= toMs;
+  });
   if (opts.dedup) {
     // Same cross-calendar collapse the GUI applies. Keeps tokens manageable
     // when the user subscribes to the same shared calendar from multiple
