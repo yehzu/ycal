@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(npm run build)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npm run dev)",
+      "Bash(npm run start)",
+      "Bash(npm run package)",
+      "Bash(npm run ycal)",
+      "Bash(npm run ycal -- *)",
+      "Bash(npm install)",
+      "Bash(npm install --no-save *)",
+      "Bash(./node_modules/.bin/electron *)",
+      "Bash(./node_modules/.bin/asar *)",
+      "Bash(./bin/ycal *)",
+      "Bash(ycal *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git log)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git tag)",
+      "Bash(git tag *)",
+      "Bash(git mv *)",
+      "Bash(chmod +x bin/ycal)",
+      "Bash(chmod +x /Users/yehzu/.local/bin/ycal)",
+      "Bash(cp bin/ycal *)",
+      "Bash(ls *)",
+      "Bash(lsof *)"
+    ],
+    "deny": [
+      "Bash(git push origin main)",
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(npm run dist*)",
+      "Bash(rm -rf *)",
+      "Bash(pkill *)",
+      "Bash(killall *)"
+    ]
+  }
+}
