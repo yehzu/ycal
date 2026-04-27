@@ -14,6 +14,7 @@ import { DayDetailPanel } from './components/DayDetailPanel';
 import { EventPopover } from './components/EventPopover';
 import { DayEventsModal } from './components/DayEventsModal';
 import { SettingsModal } from './components/SettingsModal';
+import { UpdateOverlay } from './components/UpdateOverlay';
 import { roleOfEvent } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
@@ -442,6 +443,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           }}
         />
       )}
+
+      <UpdateOverlay />
     </div>
   );
 }

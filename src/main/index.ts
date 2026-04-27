@@ -11,6 +11,9 @@ import {
   getWeatherUrl, setWeatherUrl, getUiSettings, setUiSettings,
 } from './settings';
 import { clearWeatherCache, fetchWeather } from './weather';
+import {
+  setupAutoUpdater, getLastUpdateStatus, checkForUpdatesNow, requestInstall,
+} from './updater';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -157,6 +160,15 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  ipcMain.handle(IPC.UpdateCheck, async () => {
+    await checkForUpdatesNow();
+    return getLastUpdateStatus();
+  });
+
+  ipcMain.handle(IPC.UpdateInstall, () => {
+    requestInstall();
+  });
 }
 
 app.whenReady().then(() => {
@@ -179,7 +191,8 @@ app.whenReady().then(() => {
     });
   }
 
-  createWindow();
+  const win = createWindow();
+  setupAutoUpdater(win);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

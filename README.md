@@ -105,6 +105,17 @@ Add more accounts via the **+** in the account stack. Each account's calendars a
 - Refresh tokens encrypted at rest via Electron `safeStorage`
 - **Cross-calendar duplicate merging.** Events with the same title and time slot across multiple calendars collapse into a single rendering with a `×N` badge; the popover lists all source calendars. Duplicates are matched on `title + start + end + allDay` (case-insensitive title, trimmed). Color of the kept rendering prefers the primary calendar's.
 - **Seven-day weather strip** powered by [weather-in-calendar.com](https://weather-in-calendar.com). Generate your per-location iCal feed at that site, paste the URL into the sidebar's *Forecast · Seven Days* section, and the strip updates with daily glyph + high/low. Click the **✎ change** link to update the location (re-generate at the site → paste new URL). The feed is cached for 30 minutes per fetch.
+- **Auto-update against GitHub releases** via `electron-updater`. On startup (and every six hours after) the app polls the repo's `latest-mac.yml`. When a newer release is found it downloads the zip silently in the background; once ready, a full-bleed splash with a **Relaunch yCal** button appears, and clicking it quits, swaps the binary, and reopens. Skipping a version with **Later** suppresses the toast for that version only.
+
+### Cutting a release
+
+`electron-builder` is configured with `publish: { provider: "github" }`, so:
+
+```bash
+GH_TOKEN=<token> npm run dist -- --publish always
+```
+
+bumps the artifacts to a draft GitHub release for the version in `package.json`. Tag the commit, publish the draft, and existing installs pick it up on next launch.
 
 ## What's not built (yet)
 

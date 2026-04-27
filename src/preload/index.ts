@@ -7,6 +7,7 @@ import type {
   GoogleColors,
   ListEventsRequest,
   UiSettings,
+  UpdateStatus,
   WeatherDay,
 } from '@shared/types';
 
@@ -33,6 +34,15 @@ const api = {
   getUiSettings: (): Promise<UiSettings> => ipcRenderer.invoke(IPC.GetUiSettings),
   setUiSettings: (patch: Partial<UiSettings>): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.SetUiSettings, patch),
+  // Auto-update: trigger an explicit check, install a downloaded update, or
+  // subscribe to the lifecycle stream pushed from main.
+  checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke(IPC.UpdateCheck),
+  installUpdate: (): Promise<void> => ipcRenderer.invoke(IPC.UpdateInstall),
+  onUpdateStatus: (handler: (status: UpdateStatus) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, status: UpdateStatus): void => handler(status);
+    ipcRenderer.on(IPC.UpdateStatus, listener);
+    return () => ipcRenderer.removeListener(IPC.UpdateStatus, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('ycal', api);

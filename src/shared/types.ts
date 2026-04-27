@@ -116,6 +116,29 @@ export interface UiSettings {
   showWeekNums?: boolean;
 }
 
+// Auto-update lifecycle, mirrored from electron-updater's events into a
+// renderer-friendly union. `idle` is the boot state and what we fall back
+// to after a dismissal or an error.
+// `available` covers both "found, downloading silently" and "downloaded,
+// waiting for user". The renderer doesn't need to distinguish — the toast
+// is identical. `installing` means "user clicked, splash is up, app is
+// about to quit". No manual `ready` step in between.
+export type UpdateState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'installing'
+  | 'error';
+
+export interface UpdateStatus {
+  state: UpdateState;
+  version: string | null;
+  // 0–100 during 'downloading'.
+  progress?: number;
+  // Populated when state === 'error'.
+  error?: string;
+}
+
 // IPC channel names — typed once, shared.
 export const IPC = {
   AddAccount: 'ycal:addAccount',
@@ -130,4 +153,8 @@ export const IPC = {
   GetWeather: 'ycal:getWeather',
   GetUiSettings: 'ycal:getUiSettings',
   SetUiSettings: 'ycal:setUiSettings',
+  // Auto-update.
+  UpdateCheck: 'ycal:updateCheck',
+  UpdateInstall: 'ycal:updateInstall',
+  UpdateStatus: 'ycal:updateStatus', // main → renderer push
 } as const;

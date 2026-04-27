@@ -2281,3 +2281,146 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: var(--ink-mute);
   text-decoration: line-through;
 }
+
+/* ── Auto-update overlay ────────────────────────────────────────────────
+   Toast for downloading/available, full-bleed splash for ready-to-relaunch.
+   Visual language matches the rest of the app: paper, serif, dotted rules. */
+.update-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 28px;
+  z-index: 80;
+  width: 340px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18), 0 1px 0 rgba(0, 0, 0, 0.06);
+  padding: 14px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: update-toast-in 360ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@keyframes update-toast-in {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.update-toast-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+.update-toast-ttl {
+  font-family: var(--serif-display);
+  font-size: 22px;
+  line-height: 1.05;
+  color: var(--ink);
+}
+.update-toast-sub {
+  font-family: var(--serif-body);
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.update-toast-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px dotted var(--rule);
+  padding-top: 10px;
+}
+.u-btn {
+  font: inherit;
+  font-family: var(--sf-font);
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+}
+.u-btn[disabled] { opacity: 0.55; cursor: default; }
+.u-btn-ghost { color: var(--ink-soft); }
+.u-btn-ghost:hover { background: var(--paper-2); color: var(--ink); }
+.u-btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.u-btn-primary:hover:not([disabled]) { background: #000; }
+
+/* Full-screen splash for ready-to-relaunch */
+.update-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: update-splash-in 220ms ease-out;
+}
+@keyframes update-splash-in { from { opacity: 0; } to { opacity: 1; } }
+.update-splash-card {
+  width: min(440px, 80vw);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 32px 28px;
+}
+.update-splash-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--serif-display);
+  font-size: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+.update-splash-ttl {
+  font-family: var(--serif-display);
+  font-size: 28px;
+  color: var(--ink);
+}
+.update-splash-sub {
+  font-family: var(--serif-body);
+  font-size: 14px;
+  color: var(--ink-soft);
+  max-width: 340px;
+  line-height: 1.4;
+}
+.update-splash-bar {
+  width: 240px;
+  height: 4px;
+  background: var(--paper-2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 8px 0 4px;
+  position: relative;
+}
+.update-splash-bar-fill {
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: var(--ink);
+  border-radius: 2px;
+  animation: update-bar-march 1.6s linear infinite;
+}
+.update-splash-bar-fill.done {
+  width: 100%;
+  animation: none;
+}
+@keyframes update-bar-march {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
