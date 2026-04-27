@@ -62,3 +62,13 @@ export const ordinal = (n: number): string => {
 };
 
 export const minutesOfDate = (d: Date): number => d.getHours() * 60 + d.getMinutes();
+
+// ISO 8601 week number — week starts Monday, Jan 4 is always in week 1.
+// Pass the Thursday of the row to get the right number on cross-year weeks.
+export const getISOWeek = (d: Date): number => {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+};

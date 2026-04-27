@@ -41,6 +41,10 @@ export interface CalendarEvent {
   // Google's eventType — 'default', 'workingLocation', 'outOfOffice',
   // 'focusTime', 'fromGmail', 'birthday'. Drives how we render the entry.
   eventType: string | null;
+  // The current user's response to this invite, or null when there's no
+  // attendee record for "self" (events you own, working location, etc.).
+  // Mirrors Google's vocabulary so the renderer can switch on it directly.
+  rsvp: 'accepted' | 'tentative' | 'declined' | 'needsAction' | null;
   // Resolved working-location bucket for kind='workingLocation'/'outOfOffice'.
   workingLocation?: {
     kind: 'office' | 'home' | 'ooo' | 'other';
@@ -108,6 +112,8 @@ export interface UiSettings {
   sectionOrder: SidebarSection[];
   // Optional — older settings files may not have it; fall back to defaults.
   mergeCriteria?: MergeCriteria;
+  // Show ISO week numbers in the month grid, mini-month, and time-view corner.
+  showWeekNums?: boolean;
 }
 
 // IPC channel names — typed once, shared.

@@ -6,6 +6,8 @@ interface Props {
   onClose: () => void;
   mergeCriteria: MergeCriteria;
   setMergeCriteria: (next: MergeCriteria) => void;
+  showWeekNums: boolean;
+  setShowWeekNums: (next: boolean) => void;
 }
 
 interface ShortcutRow {
@@ -51,7 +53,9 @@ const SECTIONS: ShortcutSection[] = [
   },
 ];
 
-export function SettingsModal({ onClose, mergeCriteria, setMergeCriteria }: Props) {
+export function SettingsModal({
+  onClose, mergeCriteria, setMergeCriteria, showWeekNums, setShowWeekNums,
+}: Props) {
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -77,6 +81,17 @@ export function SettingsModal({ onClose, mergeCriteria, setMergeCriteria }: Prop
           <button className="dem-close" onClick={onClose} title="Close (Esc)">×</button>
         </header>
         <div className="dem-body-scroll">
+          <section className="dem-section">
+            <h3 className="dem-h">Layout</h3>
+            <div className="settings-toggles">
+              <ToggleSwitch
+                label="Show week numbers"
+                subtitle="ISO week numbers in the month grid, mini-month, and week / day view corner."
+                on={showWeekNums}
+                onChange={() => setShowWeekNums(!showWeekNums)}
+              />
+            </div>
+          </section>
           <section className="dem-section">
             <h3 className="dem-h">Cross-calendar merge</h3>
             <p className="settings-note">

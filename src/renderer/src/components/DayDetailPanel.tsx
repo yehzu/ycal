@@ -5,6 +5,7 @@ import {
   type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent,
 } from '../calRoles';
 import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 
@@ -59,10 +60,11 @@ export function DayDetailPanel({
   const renderEv = (e: CalendarEvent, allDayMode: boolean) => {
     const acct = acctOf(e.accountId);
     const cal = calOf(e.calendarId);
+    const rc = rsvpClass(e);
     return (
       <div
         key={e.id}
-        className="dd-event"
+        className={'dd-event' + (rc ? ' ' + rc : '')}
         style={{ ['--cal' as never]: e.color }}
         onClick={(ev) => onEventClick(e, ev.currentTarget as HTMLElement)}
       >

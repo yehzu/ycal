@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import type { CalendarEvent } from '@shared/types';
 import {
-  DOW_SHORT, fmtDate, formatTime, minutesOfDate, sameYMD,
+  DOW_SHORT, addDays, fmtDate, formatTime, getISOWeek, minutesOfDate, sameYMD,
 } from '../dates';
 import {
   eventTouchesDay, isMultiDayAllDay, layoutRangeRibbons,
@@ -10,6 +10,7 @@ import {
 import { type CalRoles, isHolidayEvent } from '../calRoles';
 import { dayHolidayInfo } from '../holidays';
 import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 
@@ -19,6 +20,7 @@ interface Props {
   events: CalendarEvent[];
   calRoles: CalRoles;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
+  showWeekNums: boolean;
 }
 
 const HOUR_HEIGHT = 56;
@@ -81,7 +83,9 @@ function layoutColumns(items: CalendarEvent[]): Placed[] {
   }));
 }
 
-export function TimeView({ today, days, events, calRoles, onEventClick }: Props) {
+export function TimeView({
+  today, days, events, calRoles, onEventClick, showWeekNums,
+}: Props) {
   const hours = Array.from({ length: END_HOUR - START_HOUR + 1 }, (_, i) => i + START_HOUR);
   const colTemplate = `60px repeat(${days.length}, 1fr)`;
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -161,7 +165,16 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
     <div className="time-view">
       <div className="tv-header">
         <div style={{ display: 'grid', gridTemplateColumns: colTemplate }}>
-          <div style={{ borderRight: '0.5px solid var(--rule)' }} />
+          <div className="tv-corner">
+            {showWeekNums && days.length > 0 && (
+              <div className="tv-wk">
+                <span className="tv-wk-label">wk</span>
+                <span className="tv-wk-num">
+                  {getISOWeek(addDays(days[0], days.length === 7 ? 3 : 0))}
+                </span>
+              </div>
+            )}
+          </div>
           {days.map((d) => {
             const isToday = sameYMD(d, today);
             const hInfo = dayHolidayInfo(d, events, calRoles);
@@ -244,6 +257,8 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
                   const holiday = isHolidayEvent(e, calRoles);
                   const cn = ['tv-allday-pill'];
                   if (holiday) cn.push('holiday-pill');
+                  const rc = rsvpClass(e);
+                  if (rc) cn.push(rc);
                   return (
                     <button
                       key={e.id}
@@ -274,6 +289,8 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
                 if (r.clippedLeft) cn.push('clip-l');
                 if (r.clippedRight) cn.push('clip-r');
                 if (holiday) cn.push('holiday-ribbon');
+                const rc = rsvpClass(e);
+                if (rc) cn.push(rc);
                 return (
                   <button
                     key={e.id + ':' + r.colStart}
@@ -354,6 +371,8 @@ export function TimeView({ today, days, events, calRoles, onEventClick }: Props)
                   const cn = ['tv-event'];
                   if (dur < 15) cn.push('tiny');
                   else if (dur <= 30) cn.push('short');
+                  const rc = rsvpClass(e);
+                  if (rc) cn.push(rc);
                   return (
                     <button
                       key={e.id}

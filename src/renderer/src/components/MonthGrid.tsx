@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { CalendarEvent } from '@shared/types';
 import {
-  DOW_SHORT, MONTH_SHORT, addDays, fmtDate, formatTime, sameYMD,
+  DOW_SHORT, MONTH_SHORT, addDays, fmtDate, formatTime, getISOWeek, sameYMD,
   startOfMonth, startOfWeek,
 } from '../dates';
 import {
@@ -11,6 +11,7 @@ import {
 import { type CalRoles, isHolidayEvent } from '../calRoles';
 import { dayHolidayInfo } from '../holidays';
 import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 
@@ -19,11 +20,13 @@ interface Props {
   anchor: Date;
   selected: Date;
   setSelected: (d: Date) => void;
+  setAnchor: (d: Date) => void;
   events: CalendarEvent[];
   calRoles: CalRoles;
   goToDayView: (d: Date) => void;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   openDayModal: (d: Date) => void;
+  showWeekNums: boolean;
 }
 
 const DAY_HEAD_PX = 24;
@@ -34,8 +37,8 @@ const RIBBON_LANE_PX = 19; // 17px row + 2px gap, must match CSS
 const EMPTY_EVENTS: CalendarEvent[] = [];
 
 export function MonthGrid({
-  today, anchor, selected, setSelected, events, calRoles, goToDayView, onEventClick,
-  openDayModal,
+  today, anchor, selected, setSelected, setAnchor, events, calRoles, goToDayView,
+  onEventClick, openDayModal, showWeekNums,
 }: Props) {
   const weeks = useMemo(() => {
     const gridStart = startOfWeek(startOfMonth(anchor), 0);
@@ -84,8 +87,12 @@ export function MonthGrid({
   }, []);
 
   return (
-    <div className="month-grid" ref={gridRef}>
+    <div
+      className={'month-grid' + (showWeekNums ? ' with-wk' : '')}
+      ref={gridRef}
+    >
       <div className="month-dow-header">
+        {showWeekNums && <div className="month-wk-h">wk</div>}
         {DOW_SHORT.map((d) => (
           <div key={d} className="month-dow">{d}</div>
         ))}
@@ -98,6 +105,7 @@ export function MonthGrid({
           today={today}
           selected={selected}
           setSelected={setSelected}
+          setAnchor={setAnchor}
           eventsByDay={eventsByDay}
           ribbonEvents={ribbonEvents}
           calRoles={calRoles}
@@ -105,6 +113,7 @@ export function MonthGrid({
           goToDayView={goToDayView}
           onEventClick={onEventClick}
           openDayModal={openDayModal}
+          showWeekNums={showWeekNums}
         />
       ))}
     </div>
@@ -117,6 +126,7 @@ interface WeekRowProps {
   today: Date;
   selected: Date;
   setSelected: (d: Date) => void;
+  setAnchor: (d: Date) => void;
   eventsByDay: Map<string, CalendarEvent[]>;
   ribbonEvents: CalendarEvent[];
   calRoles: CalRoles;
@@ -124,11 +134,12 @@ interface WeekRowProps {
   goToDayView: (d: Date) => void;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   openDayModal: (d: Date) => void;
+  showWeekNums: boolean;
 }
 
 const WeekRow = memo(function WeekRow({
-  week, anchor, today, selected, setSelected, eventsByDay, ribbonEvents, calRoles,
-  maxPerCell, goToDayView, onEventClick, openDayModal,
+  week, anchor, today, selected, setSelected, setAnchor, eventsByDay, ribbonEvents,
+  calRoles, maxPerCell, goToDayView, onEventClick, openDayModal, showWeekNums,
 }: WeekRowProps) {
   const ribbons = useMemo(
     () => layoutWeekRibbons(ribbonEvents, week[0]),
@@ -138,11 +149,24 @@ const WeekRow = memo(function WeekRow({
     ? 0
     : Math.max(...ribbons.map((r) => r.lane)) + 1;
 
+  // ISO-week is computed from the Thursday of the row so cross-year boundaries
+  // resolve to the correct number.
+  const wkNum = getISOWeek(addDays(week[0], 3));
+
   return (
     <div
       className="week-row"
       style={{ ['--ribbon-lanes' as never]: String(ribbonLanes) }}
     >
+      {showWeekNums && (
+        <div
+          className="month-wk"
+          title={`Week ${wkNum}`}
+          onClick={() => { setAnchor(week[0]); setSelected(week[0]); }}
+        >
+          {wkNum}
+        </div>
+      )}
       {week.map((d) => {
         const k = fmtDate(d);
         return (
@@ -183,6 +207,8 @@ function Ribbon({
   const cn = ['ribbon'];
   if (placement.clippedLeft) cn.push('clip-l');
   if (placement.clippedRight) cn.push('clip-r');
+  const rc = rsvpClass(e);
+  if (rc) cn.push(rc);
   return (
     <button
       className={cn.join(' ')}
@@ -315,6 +341,8 @@ const Cell = memo(function Cell({
         {shown.map((e) => {
           const cn = ['evt'];
           if (e.allDay) cn.push('all-day');
+          const rc = rsvpClass(e);
+          if (rc) cn.push(rc);
           return (
             <button
               key={e.id}

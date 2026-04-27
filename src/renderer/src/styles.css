@@ -1978,3 +1978,306 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   gap: 4px;
   padding: 4px 0 6px;
 }
+
+/* ===== Week numbers =====
+   ISO week numbers slot into a leading 38px column on the month grid and the
+   week/day-view corner. The mini-month uses a slimmer 18px column.
+   ============================================================= */
+.month-grid.with-wk .month-dow-header,
+.month-grid.with-wk .week-row {
+  grid-template-columns: 38px repeat(7, 1fr);
+}
+/* Ribbons overlay still spans 7 day cells — push it right by the wk gutter so
+   bars line up with cell columns instead of bleeding under the wk column. */
+.month-grid.with-wk .week-ribbons {
+  left: 38px;
+}
+.month-wk-h {
+  padding: 5px 0;
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: lowercase;
+  color: var(--ink-faint);
+  text-align: center;
+  border-right: 0.5px dashed var(--rule);
+  border-bottom: 0.5px solid var(--rule);
+  background: var(--paper);
+}
+.month-wk {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+  text-align: center;
+  padding-top: 8px;
+  border-right: 0.5px dashed var(--rule);
+  border-bottom: 0.5px solid var(--rule-soft);
+  background: var(--paper);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.month-wk:hover { background: var(--paper-2); color: var(--ink); }
+
+.mini-grid.with-wk {
+  grid-template-columns: 18px repeat(7, 1fr);
+  column-gap: 4px;
+  row-gap: 1px;
+}
+.mini-wk-h {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  text-align: center;
+  padding-right: 2px;
+  border-right: 0.5px dashed var(--rule);
+}
+.mini-wk {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-faint);
+  text-align: center;
+  align-self: center;
+  padding-right: 2px;
+  border-right: 0.5px dashed var(--rule);
+  font-variant-numeric: tabular-nums;
+}
+
+/* TimeView corner — newspaper-style "wk" label over the ISO number. The
+   surrounding 60px gutter is unchanged; the badge replaces the empty corner. */
+.tv-corner {
+  border-right: 0.5px solid var(--rule);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 6px;
+}
+.tv-wk {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  gap: 2px;
+}
+.tv-wk-label {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+  text-transform: lowercase;
+}
+.tv-wk-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== Unaccepted-event visual hints =====
+   Mirrors Google's RSVP vocabulary:
+     needsAction — pending acceptance: hatched/dashed, italic
+     tentative   — maybe: diagonal stripes
+     declined    — strikethrough, faded
+   Applied via classes: .rsvp-needsaction / .rsvp-tentative / .rsvp-declined
+   ============================================================= */
+
+/* --- Month cell .evt (timed = transparent fill, all-day = solid fill) --- */
+.evt.rsvp-needsaction:not(.all-day) {
+  border-left-style: dashed;
+  border-left-width: 2px;
+}
+.evt.rsvp-needsaction:not(.all-day) .evt-ttl,
+.evt.rsvp-needsaction:not(.all-day) .evt-t {
+  font-style: italic;
+  color: var(--ink-mute);
+}
+.evt.rsvp-tentative:not(.all-day) {
+  border-left-style: dotted;
+  border-left-width: 3px;
+}
+.evt.rsvp-needsaction.all-day {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cal) 0 2px,
+    color-mix(in srgb, var(--cal) 18%, var(--paper) 82%) 2px 6px
+  );
+  outline: 1px dashed var(--cal);
+  outline-offset: -2px;
+  color: var(--ink) !important;
+}
+.evt.rsvp-needsaction.all-day .evt-ttl {
+  color: var(--ink) !important;
+  font-style: italic;
+}
+.evt.rsvp-tentative.all-day {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cal) 0 4px,
+    color-mix(in srgb, var(--cal) 35%, var(--paper) 65%) 4px 8px
+  );
+}
+.evt.rsvp-declined { opacity: 0.42; }
+.evt.rsvp-declined .evt-ttl {
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+/* --- Multi-day month / week-allday ribbon --- */
+.ribbon.rsvp-needsaction {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cal) 0 3px,
+    color-mix(in srgb, var(--cal) 22%, var(--paper) 78%) 3px 8px
+  );
+  outline: 1px dashed var(--cal);
+  outline-offset: -2px;
+  color: var(--ink);
+  font-style: italic;
+}
+.ribbon.rsvp-tentative {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cal) 0 4px,
+    color-mix(in srgb, var(--cal) 38%, var(--paper) 62%) 4px 9px
+  );
+}
+.ribbon.rsvp-declined {
+  opacity: 0.42;
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+/* --- Time-view event (timed) --- */
+.tv-event.rsvp-needsaction {
+  background: var(--paper);
+  border: 1px dashed var(--cal);
+  border-left-width: 2px;
+}
+.tv-event.rsvp-needsaction .en,
+.tv-event.rsvp-needsaction .et { font-style: italic; color: var(--ink-mute); }
+.tv-event.rsvp-tentative {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--cal) 32%, var(--paper) 68%) 0 4px,
+    color-mix(in srgb, var(--cal) 12%, var(--paper) 88%) 4px 8px
+  );
+}
+.tv-event.rsvp-declined {
+  opacity: 0.45;
+  background: color-mix(in srgb, var(--ink) 6%, var(--paper) 94%);
+}
+.tv-event.rsvp-declined .en,
+.tv-event.rsvp-declined .et {
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+/* --- Time-view all-day pill --- */
+.tv-allday-pill.rsvp-needsaction {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cal) 0 3px,
+    color-mix(in srgb, var(--cal) 22%, var(--paper) 78%) 3px 8px
+  );
+  outline: 1px dashed var(--cal);
+  outline-offset: -2px;
+  color: var(--ink);
+  font-style: italic;
+}
+.tv-allday-pill.rsvp-tentative {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cal) 0 4px,
+    color-mix(in srgb, var(--cal) 38%, var(--paper) 62%) 4px 9px
+  );
+}
+.tv-allday-pill.rsvp-declined {
+  opacity: 0.42;
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+/* --- Sidebar agenda + DayDetailPanel + DayEventsModal rows --- */
+.agenda-row.rsvp-needsaction .ttl,
+.agenda-row.rsvp-needsaction .t { font-style: italic; color: var(--ink-mute); }
+.agenda-row.rsvp-needsaction .dot {
+  background: var(--paper) !important;
+  box-shadow: inset 0 0 0 1px var(--cal);
+}
+.agenda-row.rsvp-tentative .dot {
+  background: repeating-linear-gradient(
+    -45deg, var(--cal) 0 2px, transparent 2px 4px) !important;
+}
+.agenda-row.rsvp-declined { opacity: 0.45; }
+.agenda-row.rsvp-declined .ttl {
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+.dd-event.rsvp-needsaction { font-style: italic; }
+.dd-event.rsvp-needsaction .dn { color: var(--ink-mute); }
+.dd-event.rsvp-tentative .dn { color: var(--ink); }
+.dd-event.rsvp-declined { opacity: 0.45; }
+.dd-event.rsvp-declined .dn {
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+.dem-row.rsvp-needsaction .dem-title { font-style: italic; color: var(--ink-mute); }
+.dem-row.rsvp-tentative .dem-title { color: var(--ink); }
+.dem-row.rsvp-declined { opacity: 0.45; }
+.dem-row.rsvp-declined .dem-title {
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+/* --- Popover --- */
+.pp-title.rsvp-declined {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--ink-mute);
+}
+.pp-title.rsvp-needsaction { font-style: italic; }
+.pp-rsvp {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0 4px;
+  flex-wrap: wrap;
+}
+.pp-rsvp-pill {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  padding: 2px 9px;
+  border: 0.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper-2);
+  color: var(--ink);
+}
+.pp-rsvp-pill.rsvp-needsaction {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--paper-2) 0 4px,
+    color-mix(in srgb, var(--cal) 25%, var(--paper-2) 75%) 4px 8px);
+  border-style: dashed;
+}
+.pp-rsvp-pill.rsvp-tentative {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cal) 0 4px,
+    color-mix(in srgb, var(--cal) 30%, var(--paper-2) 70%) 4px 8px);
+  color: #fff;
+  border-color: transparent;
+}
+.pp-rsvp-pill.rsvp-declined {
+  background: var(--paper-2);
+  color: var(--ink-mute);
+  text-decoration: line-through;
+}

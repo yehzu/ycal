@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   DOW_NARROW, MONTH_NAMES, addDays, addMonths, fmtDate,
-  sameYMD, startOfMonth, startOfWeek,
+  getISOWeek, sameYMD, startOfMonth, startOfWeek,
 } from '../dates';
 
 interface Props {
@@ -11,9 +11,12 @@ interface Props {
   setAnchor: (d: Date) => void;
   setSelected: (d: Date) => void;
   hasEvents: (dateKey: string) => boolean;
+  showWeekNums: boolean;
 }
 
-export function MiniMonth({ today, anchor, selected, setAnchor, setSelected, hasEvents }: Props) {
+export function MiniMonth({
+  today, anchor, selected, setAnchor, setSelected, hasEvents, showWeekNums,
+}: Props) {
   const [shown, setShown] = useState<Date>(() => startOfMonth(anchor));
 
   useEffect(() => {
@@ -22,7 +25,9 @@ export function MiniMonth({ today, anchor, selected, setAnchor, setSelected, has
 
   const first = startOfMonth(shown);
   const gridStart = startOfWeek(first, 0);
-  const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+  // Six week-rows; render row-by-row so the optional wk-column stays aligned
+  // with the seven day cells beside it.
+  const weekStarts = Array.from({ length: 6 }, (_, w) => addDays(gridStart, w * 7));
 
   return (
     <div>
@@ -33,30 +38,39 @@ export function MiniMonth({ today, anchor, selected, setAnchor, setSelected, has
           <button onClick={() => setShown(addMonths(shown, 1))}>›</button>
         </div>
       </div>
-      <div className="mini-grid">
+      <div className={'mini-grid' + (showWeekNums ? ' with-wk' : '')}>
+        {showWeekNums && <div className="mini-wk-h">wk</div>}
         {DOW_NARROW.map((d, i) => (
           <div key={i} className="mini-dow">{d}</div>
         ))}
-        {cells.map((d) => {
-          const inMonth = d.getMonth() === shown.getMonth();
-          const isToday = sameYMD(d, today);
-          const isSel = sameYMD(d, selected);
-          const has = hasEvents(fmtDate(d));
-          const cls = ['mini-day'];
-          if (!inMonth) cls.push('other');
-          if (isToday) cls.push('today');
-          if (isSel) cls.push('selected');
-          if (has) cls.push('has-events');
-          return (
-            <button
-              key={fmtDate(d)}
-              className={cls.join(' ')}
-              onClick={() => { setSelected(d); setAnchor(d); }}
-            >
-              {d.getDate()}
-            </button>
-          );
-        })}
+        {weekStarts.map((wkStart) => (
+          <Fragment key={fmtDate(wkStart)}>
+            {showWeekNums && (
+              <div className="mini-wk">{getISOWeek(addDays(wkStart, 3))}</div>
+            )}
+            {Array.from({ length: 7 }, (_, di) => {
+              const d = addDays(wkStart, di);
+              const inMonth = d.getMonth() === shown.getMonth();
+              const isToday = sameYMD(d, today);
+              const isSel = sameYMD(d, selected);
+              const has = hasEvents(fmtDate(d));
+              const cls = ['mini-day'];
+              if (!inMonth) cls.push('other');
+              if (isToday) cls.push('today');
+              if (isSel) cls.push('selected');
+              if (has) cls.push('has-events');
+              return (
+                <button
+                  key={fmtDate(d)}
+                  className={cls.join(' ')}
+                  onClick={() => { setSelected(d); setAnchor(d); }}
+                >
+                  {d.getDate()}
+                </button>
+              );
+            })}
+          </Fragment>
+        ))}
       </div>
     </div>
   );

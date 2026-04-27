@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { CalendarEvent, CalendarSummary, AccountSummary } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTimeFull, ordinal } from '../dates';
+import { rsvpClass, rsvpLabel } from '../rsvp';
 import { avatarBg, initials } from './MacTitleBar';
 import { DescriptionHTML } from './DescriptionHTML';
 import { MergeBadge } from './MergeBadge';
@@ -36,6 +37,8 @@ export function EventPopover({ event, anchor, calendars, accounts, onClose }: Pr
   const startD = new Date(event.start);
   const endD = new Date(event.end);
   const merged = event.mergedFrom && event.mergedFrom.length > 1 ? event.mergedFrom : null;
+  const rc = rsvpClass(event);
+  const rLabel = rsvpLabel(event.rsvp);
 
   const openInGoogle = () => {
     if (event.htmlLink) {
@@ -56,10 +59,15 @@ export function EventPopover({ event, anchor, calendars, accounts, onClose }: Pr
       >
         <button className="pp-close" onClick={onClose}>✕</button>
         <div className="pp-cal">{cal ? cal.name : 'Event'}</div>
-        <div className="pp-title">
+        <div className={'pp-title' + (rc ? ' ' + rc : '')}>
           {event.title}
           <MergeBadge event={event} />
         </div>
+        {rc && rLabel && (
+          <div className="pp-rsvp">
+            <span className={'pp-rsvp-pill ' + rc}>{rLabel}</span>
+          </div>
+        )}
         <hr className="pp-rule" />
         <div className="pp-row">
           <span className="k">When</span>

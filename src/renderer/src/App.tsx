@@ -26,6 +26,7 @@ const DEFAULT_UI: UiSettings = {
   calRoles: {},
   sectionOrder: DEFAULT_SECTION_ORDER,
   mergeCriteria: DEFAULT_MERGE_CRITERIA,
+  showWeekNums: true,
 };
 
 // Boot waits for persisted UI settings to load before mounting AppShell so
@@ -87,6 +88,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     ...DEFAULT_MERGE_CRITERIA,
     ...(initialUi.mergeCriteria ?? {}),
   }));
+  const [showWeekNums, setShowWeekNums] = useState<boolean>(
+    () => initialUi.showWeekNums ?? true,
+  );
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
     setCalRoles((prev) => ({ ...prev, [key]: role }));
@@ -112,8 +116,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       calRoles,
       sectionOrder,
       mergeCriteria,
+      showWeekNums,
     });
-  }, [store.accountsActive, store.calVisible, calRoles, sectionOrder, mergeCriteria]);
+  }, [
+    store.accountsActive, store.calVisible, calRoles, sectionOrder,
+    mergeCriteria, showWeekNums,
+  ]);
 
   const goToDayView = useCallback((d: Date) => {
     setAnchor(d);
@@ -311,6 +319,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
             setHideReadOnly={setHideReadOnly}
             hideDisabledCals={hideDisabledCals}
             setHideDisabledCals={setHideDisabledCals}
+            showWeekNums={showWeekNums}
           />
 
           <main className="main">
@@ -331,11 +340,13 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 anchor={anchor}
                 selected={selected}
                 setSelected={setSelected}
+                setAnchor={setAnchor}
                 events={visibleEvents}
                 calRoles={calRoles}
                 goToDayView={goToDayView}
                 onEventClick={onEventClick}
                 openDayModal={openDayModal}
+                showWeekNums={showWeekNums}
               />
             ) : view === 'week' ? (
               <TimeView
@@ -344,6 +355,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 events={visibleEvents}
                 calRoles={calRoles}
                 onEventClick={onEventClick}
+                showWeekNums={showWeekNums}
               />
             ) : (
               <div className="day-view-layout">
@@ -353,6 +365,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   events={visibleEvents}
                   calRoles={calRoles}
                   onEventClick={onEventClick}
+                  showWeekNums={showWeekNums}
                 />
                 <DayDetailPanel
                   date={anchor}
@@ -404,6 +417,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           onClose={() => setSettingsOpen(false)}
           mergeCriteria={mergeCriteria}
           setMergeCriteria={setMergeCriteria}
+          showWeekNums={showWeekNums}
+          setShowWeekNums={setShowWeekNums}
         />
       )}
 

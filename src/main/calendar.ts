@@ -118,6 +118,25 @@ function kindFromTitle(title: string): 'office' | 'home' | 'ooo' | 'other' {
   return 'other';
 }
 
+// Map Google's attendee.responseStatus on the "self" attendee into our rsvp
+// vocabulary. Events with no attendees-for-self (e.g. ones you own outright,
+// working location, birthdays) get null and render with no visual hint.
+function resolveRsvp(
+  ev: calendar_v3.Schema$Event,
+): CalendarEvent['rsvp'] {
+  const self = (ev.attendees ?? []).find((a) => a.self);
+  if (!self || !self.responseStatus) return null;
+  switch (self.responseStatus) {
+    case 'accepted':
+    case 'tentative':
+    case 'declined':
+    case 'needsAction':
+      return self.responseStatus;
+    default:
+      return null;
+  }
+}
+
 function isoFromGoogleDate(g: calendar_v3.Schema$EventDateTime | undefined): {
   iso: string;
   allDay: boolean;
@@ -190,6 +209,7 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
             htmlLink: ev.htmlLink ?? null,
             status: ev.status ?? 'confirmed',
             eventType,
+            rsvp: resolveRsvp(ev),
             ...(workingLocation ? { workingLocation } : {}),
           });
         }

@@ -4,6 +4,7 @@ import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import { type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent } from '../calRoles';
 import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 
 interface Props {
@@ -70,10 +71,11 @@ export function DayEventsModal({
 
   const renderEv = (e: CalendarEvent, isAllDay: boolean) => {
     const cal = calOf(e.calendarId);
+    const rc = rsvpClass(e);
     return (
       <button
         key={e.id}
-        className="dem-row"
+        className={'dem-row' + (rc ? ' ' + rc : '')}
         style={{ ['--cal' as never]: e.color }}
         onClick={(ev) => onEventClick(e, ev.currentTarget)}
       >

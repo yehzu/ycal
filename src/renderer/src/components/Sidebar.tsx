@@ -12,6 +12,7 @@ import {
   type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda,
 } from '../calRoles';
 import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { rsvpClass } from '../rsvp';
 import { MergeBadge } from './MergeBadge';
 import { MiniMonth } from './MiniMonth';
 import { avatarBg, initials } from './MacTitleBar';
@@ -45,6 +46,7 @@ interface Props {
   setHideReadOnly: (v: boolean) => void;
   hideDisabledCals: boolean;
   setHideDisabledCals: (v: boolean) => void;
+  showWeekNums: boolean;
 }
 
 function AgendaSummary({
@@ -93,15 +95,22 @@ function AgendaSummary({
         </div>
       )}
       <div className="agenda-list">
-        {todays.map((e) => (
-          <div key={e.id} className="agenda-row" style={{ ['--cal' as never]: e.color }}>
-            <span className="t">{e.allDay ? 'all day' : formatTime(new Date(e.start))}</span>
-            <span className="ttl">
-              <span className="dot" /> {e.title}
-              <MergeBadge event={e} />
-            </span>
-          </div>
-        ))}
+        {todays.map((e) => {
+          const rc = rsvpClass(e);
+          return (
+            <div
+              key={e.id}
+              className={'agenda-row' + (rc ? ' ' + rc : '')}
+              style={{ ['--cal' as never]: e.color }}
+            >
+              <span className="t">{e.allDay ? 'all day' : formatTime(new Date(e.start))}</span>
+              <span className="ttl">
+                <span className="dot" /> {e.title}
+                <MergeBadge event={e} />
+              </span>
+            </div>
+          );
+        })}
         {todays.length === 0 && (
           <div className="agenda-row">
             <span className="t">—</span>
@@ -238,6 +247,7 @@ export function Sidebar(props: Props) {
           setAnchor={props.setAnchor}
           setSelected={props.setSelected}
           hasEvents={hasEvents}
+          showWeekNums={props.showWeekNums}
         />
       ),
     },
