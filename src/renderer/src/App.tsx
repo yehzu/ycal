@@ -17,7 +17,7 @@ import { EventPopover } from './components/EventPopover';
 import { DayEventsModal } from './components/DayEventsModal';
 import { SettingsModal } from './components/SettingsModal';
 import { UpdateOverlay } from './components/UpdateOverlay';
-import { roleOfEvent } from './calRoles';
+import { isFullyReadOnlyEvent, presentForVisibleCalendars } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
   'almanac', 'agenda', 'calendars',
@@ -119,9 +119,18 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
 
   // Effective event list — drop read-only/subscribed entries when the master
   // toggle is on. Other filters (account / calendar visibility) live in store.
+  // A merged event survives if any of its sources is on a non-read-only
+  // calendar (dedup may have picked the read-only side as canonical); when it
+  // does survive, we re-canonicalize against the visible writable source so it
+  // doesn't render with the hidden read-only calendar's color/link.
   const visibleEvents = useMemo(() => {
     if (!hideReadOnly) return store.events;
-    return store.events.filter((e) => roleOfEvent(e, calRoles) !== 'subscribed');
+    const out: CalendarEvent[] = [];
+    for (const e of store.events) {
+      if (isFullyReadOnlyEvent(e, calRoles)) continue;
+      out.push(presentForVisibleCalendars(e, calRoles));
+    }
+    return out;
   }, [store.events, hideReadOnly, calRoles]);
 
   // Persist the four UI slices on change. Skip the initial render so we
