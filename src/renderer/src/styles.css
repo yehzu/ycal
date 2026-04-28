@@ -880,7 +880,6 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   font-style: italic;
   color: var(--ink-soft);
 }
-.event-desc br + br { display: none; } /* collapse double <br><br> noise */
 
 /* Cross-calendar merge indicator. Compact variant (icon-only) lives inside
    small in-cell pills; the full variant adds an "×N" count for popover and
