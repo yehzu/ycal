@@ -166,6 +166,36 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     setSelected(now);
   }, []);
 
+  // Pull fresh events when the user comes back to the window and on a slow
+  // 5-minute poll. Without this, a Google Calendar edit made elsewhere never
+  // appears in an open yCal session — the renderer's fetchedRangeRef thinks
+  // the visible window is already covered and short-circuits.
+  // A simple timestamp throttle prevents focus + visibilitychange + interval
+  // from stacking redundant fetches when several fire in quick succession.
+  const lastRefreshRef = useRef(0);
+  const REFRESH_THROTTLE_MS = 30_000;
+  const refreshEvents = store.refreshEvents;
+  useEffect(() => {
+    const tryRefresh = () => {
+      const now = Date.now();
+      if (now - lastRefreshRef.current < REFRESH_THROTTLE_MS) return;
+      lastRefreshRef.current = now;
+      void refreshEvents();
+    };
+    const onFocus = () => tryRefresh();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') tryRefresh();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    const id = window.setInterval(tryRefresh, 5 * 60_000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(id);
+    };
+  }, [refreshEvents]);
+
   // Browser-style back/forward across (anchor, selected, view) snapshots.
   // The effect below detects user-initiated changes and pushes the previous
   // snapshot onto `back`; navigateHistory itself flips a flag so its own

@@ -6,7 +6,10 @@ import { IPC } from '@shared/types';
 import { isConfigured } from './config';
 import { startAddAccount } from './auth';
 import { removeAccount } from './tokenStore';
-import { fetchColors, listAccountSummaries, listAllCalendars, listEvents } from './calendar';
+import {
+  fetchColors, listAccountSummaries, listAllCalendars, listEvents,
+  invalidateCalendarCache, invalidateEventsCache,
+} from './calendar';
 import {
   getWeatherUrl, setWeatherUrl, getUiSettings, setUiSettings,
 } from './settings';
@@ -84,6 +87,8 @@ function registerIpc() {
   ipcMain.handle(IPC.AddAccount, async () => {
     try {
       const stored = await startAddAccount();
+      invalidateCalendarCache();
+      invalidateEventsCache();
       return {
         ok: true as const,
         account: {
@@ -101,6 +106,8 @@ function registerIpc() {
 
   ipcMain.handle(IPC.RemoveAccount, (_e, id: string) => {
     removeAccount(id);
+    invalidateCalendarCache();
+    invalidateEventsCache();
     return { ok: true as const };
   });
 

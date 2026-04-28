@@ -26,13 +26,23 @@ import { isConfigured } from './config';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { listAccounts } from './tokenStore';
 import { fetchWeather } from './weather';
+import { getUiSettings } from './settings';
 import { dedupEvents } from '@shared/dedup';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import type {
   AccountSummary,
   CalendarSummary,
   CalendarEvent,
+  CalRolePersisted,
+  UiSettings,
 } from '@shared/types';
+
+// Mirror the renderer's `calKey` so we can index UiSettings.calVisible /
+// calRoles the same way the GUI does. Imported logic kept tiny on purpose;
+// importing from `@renderer/*` would pull React into main.
+function calKey(accountId: string, calendarId: string): string {
+  return `${accountId}|${calendarId}`;
+}
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -425,17 +435,32 @@ async function cmdCalendars(args: ParsedArgs, io: CliIo): Promise<number> {
     .filter((c) => !wanted || wanted.has(c.accountId));
   const accounts = listAccountSummaries();
   const accById = new Map(accounts.map((a) => [a.id, a]));
+  const ui = getUiSettings();
 
-  const shaped = calendars.map((c) => ({
-    id: c.id,
-    name: c.name,
-    account: accById.get(c.accountId)?.email ?? null,
-    accountId: c.accountId,
-    primary: c.primary,
-    selected: c.selected,
-    accessRole: c.accessRole,
-    description: c.description,
-  }));
+  // Annotate each calendar with the GUI's view of it: per-account active
+  // toggle, per-calendar visibility, and role (normal/subscribed/holiday).
+  // `included` summarizes whether `ycal events` would query this calendar
+  // by default — useful debug aid for "why isn't event X showing up".
+  const shaped = calendars.map((c) => {
+    const accountActive = ui.accountsActive[c.accountId] !== false;
+    const visible = ui.calVisible[calKey(c.accountId, c.id)] ?? c.selected;
+    const role = roleOf(ui, c.accountId, c.id);
+    const included = accountActive && visible && role === 'normal';
+    return {
+      id: c.id,
+      name: c.name,
+      account: accById.get(c.accountId)?.email ?? null,
+      accountId: c.accountId,
+      primary: c.primary,
+      selected: c.selected,
+      visible,
+      accountActive,
+      role,
+      includedByDefault: included,
+      accessRole: c.accessRole,
+      description: c.description,
+    };
+  });
 
   const format = getFormat(args);
   emit(
@@ -445,12 +470,19 @@ async function cmdCalendars(args: ParsedArgs, io: CliIo): Promise<number> {
       if (format === 'markdown') {
         return [
           '## Calendars',
-          ...shaped.map((c) => `- ${c.primary ? '★ ' : ''}**${c.name}** — ${c.account ?? c.accountId} (\`${c.id}\`)`),
+          ...shaped.map((c) => {
+            const tag = c.role !== 'normal' ? ` _(${c.role})_` : '';
+            const off = !c.includedByDefault ? ' ⊘' : '';
+            return `- ${c.primary ? '★ ' : ''}**${c.name}**${tag}${off} — ${c.account ?? c.accountId} (\`${c.id}\`)`;
+          }),
         ].join('\n');
       }
       const w = Math.max(...shaped.map((c) => c.name.length), 4);
       return shaped
-        .map((c) => `${c.primary ? '★' : ' '} ${c.name.padEnd(w)}  ${c.account ?? ''}  ${c.id}`)
+        .map((c) => {
+          const flag = !c.includedByDefault ? '⊘' : c.role === 'subscribed' ? 'r' : c.role === 'holiday' ? 'h' : ' ';
+          return `${c.primary ? '★' : ' '}${flag} ${c.name.padEnd(w)}  ${c.account ?? ''}  ${c.id}`;
+        })
         .join('\n');
     },
     io,
@@ -482,6 +514,14 @@ interface EventQueryOptions {
   dedup: boolean;
   calendarIds: string[] | null;
   accountIds: string[] | null;
+  // Calendar-set filtering. By default we mirror the GUI agenda: only the
+  // user's active accounts, only their visible calendars, and only "normal"
+  // role calendars (read-only/subscribed and holidays excluded).
+  // `--all-calendars` bypasses every UI filter; `--include-read-only` /
+  // `--include-holidays` selectively widen for planning use.
+  allCalendars: boolean;
+  includeReadOnly: boolean;
+  includeHolidays: boolean;
 }
 
 function readQueryOptions(args: ParsedArgs, fallback: EventRange): EventQueryOptions {
@@ -501,40 +541,84 @@ function readQueryOptions(args: ParsedArgs, fallback: EventRange): EventQueryOpt
     dedup: !args.flags['no-dedup'],
     calendarIds,
     accountIds,
+    allCalendars: !!args.flags['all-calendars'],
+    includeReadOnly: !!args.flags['include-read-only'],
+    includeHolidays: !!args.flags['include-holidays'],
   };
+}
+
+// Resolve role for a calendar key, falling back to 'normal' (matches renderer).
+function roleOf(ui: UiSettings, accountId: string, calendarId: string): CalRolePersisted {
+  return ui.calRoles[calKey(accountId, calendarId)] ?? 'normal';
 }
 
 async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]> {
   const accounts = listAccountSummaries();
   const allCalendars = await listAllCalendars();
+  const ui = getUiSettings();
 
-  // Resolve calendarIds: explicit list wins; otherwise filter to selected
-  // calendars (mirrors the GUI default), and then optionally narrow by account.
+  // Resolve target calendars. Precedence:
+  //   1. Explicit --calendar <id> always wins (user is being deliberate).
+  //   2. --all-calendars bypasses UI filters but still respects --account.
+  //   3. Default: mirror the GUI agenda — only active accounts, only
+  //      visible calendars, only "normal" role. Optional flags widen.
   let targets = allCalendars;
   if (opts.accountIds) {
     const set = new Set(opts.accountIds);
     targets = targets.filter((c) => set.has(c.accountId));
   }
-  let calendarIds = opts.calendarIds;
-  if (!calendarIds || calendarIds.length === 0) {
-    calendarIds = targets.filter((c) => c.selected).map((c) => c.id);
-  } else {
-    // Guard against typos.
+  // Resolve to (accountId, calendarId) pairs, then derive the calendarId list
+  // for the Google fetch (which is keyed by id only). We post-filter by pair
+  // to handle the shared-calendar-across-accounts case correctly: e.g. account
+  // A has the shared calendar visible while account B has it hidden — both
+  // would otherwise come back together.
+  let targetPairs: Array<{ accountId: string; calendarId: string }>;
+  if (opts.calendarIds && opts.calendarIds.length > 0) {
     const allowed = new Set(targets.map((c) => c.id));
-    const bad = calendarIds.filter((id) => !allowed.has(id));
+    const bad = opts.calendarIds.filter((id) => !allowed.has(id));
     if (bad.length > 0) {
       throw new CliError(`unknown calendar id(s): ${bad.join(', ')}`);
     }
+    const wanted = new Set(opts.calendarIds);
+    targetPairs = targets
+      .filter((c) => wanted.has(c.id))
+      .map((c) => ({ accountId: c.accountId, calendarId: c.id }));
+  } else if (opts.allCalendars) {
+    // Still respect Google's `selected` so we don't pull from calendars the
+    // user has hidden in Google Calendar itself — same behaviour as the
+    // legacy CLI default.
+    targetPairs = targets
+      .filter((c) => c.selected)
+      .map((c) => ({ accountId: c.accountId, calendarId: c.id }));
+  } else {
+    targetPairs = targets
+      .filter((c) => {
+        // accountsActive: missing key defaults to true (matches store.ts).
+        if (ui.accountsActive[c.accountId] === false) return false;
+        // calVisible: missing key defaults to Google's `selected` flag
+        // (matches refreshCalendars in store.ts).
+        const k = calKey(c.accountId, c.id);
+        const visible = ui.calVisible[k] ?? c.selected;
+        if (!visible) return false;
+        const role = roleOf(ui, c.accountId, c.id);
+        if (role === 'subscribed' && !opts.includeReadOnly) return false;
+        if (role === 'holiday' && !opts.includeHolidays) return false;
+        return true;
+      })
+      .map((c) => ({ accountId: c.accountId, calendarId: c.id }));
   }
-  if (calendarIds.length === 0) {
+  if (targetPairs.length === 0) {
     return [];
   }
+  const calendarIds = Array.from(new Set(targetPairs.map((p) => p.calendarId)));
+  const pairKeys = new Set(targetPairs.map((p) => calKey(p.accountId, p.calendarId)));
 
   let events = await listEvents({
     timeMin: opts.range.from.toISOString(),
     timeMax: opts.range.to.toISOString(),
     calendarIds,
   });
+  events = events.filter((ev) => pairKeys.has(calKey(ev.accountId, ev.calendarId)));
   // Google's timeMin is documented as exclusive on event end, but multi-day
   // all-day events whose exclusive end.date equals our local midnight still
   // come back (e.g. an event whose last day is "yesterday" leaks into today).
@@ -549,8 +633,8 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
   if (opts.dedup) {
     // Same cross-calendar collapse the GUI applies. Keeps tokens manageable
     // when the user subscribes to the same shared calendar from multiple
-    // accounts.
-    events = dedupEvents(events, allCalendars, DEFAULT_MERGE_CRITERIA);
+    // accounts. Honour the user's persisted mergeCriteria when present.
+    events = dedupEvents(events, allCalendars, ui.mergeCriteria ?? DEFAULT_MERGE_CRITERIA);
   }
 
   const lookup = buildLookup(allCalendars, accounts);
@@ -743,6 +827,9 @@ COMMANDS
                                    --search <text>,
                                    --limit <n>,
                                    --include-declined,
+                                   --include-read-only,
+                                   --include-holidays,
+                                   --all-calendars,
                                    --no-dedup
   today                     Shortcut for --from today --to today.
   tomorrow                  Shortcut for --from tomorrow --to tomorrow.
@@ -750,6 +837,19 @@ COMMANDS
   next [N]                  Next N (default 5) upcoming events.
   find <query>              Search events (default: -7d to +90d).
   weather                   Forecast from the configured weather iCal feed.
+
+CALENDAR FILTERING
+  By default, events commands mirror the GUI agenda:
+    • only active accounts (per the title-bar account stack)
+    • only visible calendars (per the sidebar toggles)
+    • only "normal" role calendars (read-only and holidays excluded)
+  Flags to widen the set:
+    --include-read-only     Include calendars marked read-only (subscribed)
+                            — useful while planning, to see colleague schedules.
+    --include-holidays      Include calendars marked as holiday calendars.
+    --all-calendars         Bypass GUI filters entirely; behave like a fresh
+                            install (only Google's \`selected\` flag respected).
+    --calendar <id>         Explicit calendar list — bypasses every filter.
 
 GLOBAL FLAGS
   --format json|text|markdown   Output format. Default: json (LLM-friendly).
@@ -769,6 +869,7 @@ EXAMPLES
   ycal find "1:1" --from -30d
   ycal calendars --account 1042... --format text
   ycal events --calendar primary@gmail.com --include-declined
+  ycal week --include-read-only          # planning: see read-only calendars too
 
 JSON OUTPUT
   Every JSON document has at minimum: { "command", "count" } plus a payload

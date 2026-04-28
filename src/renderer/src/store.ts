@@ -38,6 +38,10 @@ export interface Store {
   refreshAccounts: () => Promise<void>;
   refreshCalendars: () => Promise<void>;
   loadEventsForRange: (start: Date, end: Date) => Promise<void>;
+  // Force-refetch the currently held events range, bypassing both the
+  // renderer-side fetchedRangeRef cache and the main-side eventsCache.
+  // No-op if no range has been fetched yet (caller should await initial load).
+  refreshEvents: () => Promise<void>;
   signIn: () => Promise<{ ok: boolean; error?: string }>;
   signOut: (id: string) => Promise<void>;
 
@@ -137,18 +141,19 @@ export function useStore(
   // network round-trip when the requested window is already covered.
   const fetchedRangeRef = useRef<{ start: number; end: number } | null>(null);
 
-  const loadEventsForRange = useCallback(async (start: Date, end: Date) => {
-    const startTs = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
-    const endTs = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
-    const cached = fetchedRangeRef.current;
-    if (cached && startTs >= cached.start && endTs <= cached.end) {
-      return;
-    }
+  const inFlightRef = useRef(false);
+
+  const fetchRange = useCallback(async (
+    startTs: number, endTs: number, force: boolean,
+  ): Promise<void> => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setLoading(true);
     try {
       const res = await window.ycal.listEvents({
         timeMin: new Date(startTs).toISOString(),
         timeMax: new Date(endTs).toISOString(),
+        force,
       });
       if (!res.ok) {
         setError(res.error);
@@ -159,8 +164,25 @@ export function useStore(
       setError(null);
     } finally {
       setLoading(false);
+      inFlightRef.current = false;
     }
   }, []);
+
+  const loadEventsForRange = useCallback(async (start: Date, end: Date) => {
+    const startTs = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+    const endTs = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
+    const cached = fetchedRangeRef.current;
+    if (cached && startTs >= cached.start && endTs <= cached.end) {
+      return;
+    }
+    await fetchRange(startTs, endTs, false);
+  }, [fetchRange]);
+
+  const refreshEvents = useCallback(async () => {
+    const cached = fetchedRangeRef.current;
+    if (!cached) return;
+    await fetchRange(cached.start, cached.end, true);
+  }, [fetchRange]);
 
   const signIn = useCallback(async () => {
     const res = await window.ycal.addAccount();
@@ -273,6 +295,7 @@ export function useStore(
     refreshAccounts,
     refreshCalendars,
     loadEventsForRange,
+    refreshEvents,
     signIn,
     signOut,
     weatherUrl,

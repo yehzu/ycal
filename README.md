@@ -169,9 +169,24 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 --search <text>          Substring match against title/description/location.
 --limit <n>              Cap result count after sorting by start.
 --include-declined       Keep events you've declined (default: drop).
+--include-read-only      Include read-only / subscribed calendars (default: drop).
+--include-holidays       Include calendars marked as holiday (default: drop).
+--all-calendars          Bypass GUI filters; mirror only Google's `selected` flag.
 --no-dedup               Disable cross-calendar duplicate collapsing.
 --format json|text|markdown    Default: json.
 ```
+
+### Calendar filtering
+
+By default the events commands mirror the GUI agenda — only your active accounts, only the calendars you have visible in the sidebar, and only "normal" role calendars (read-only / subscribed and holidays excluded). This keeps `ycal today` focused on the same events the app shows you.
+
+When planning your schedule and you want to see colleague availability, add `--include-read-only`:
+
+```bash
+ycal week --include-read-only
+```
+
+`--calendar <id>` always wins — passing an explicit calendar bypasses every GUI filter.
 
 #### Date shorthand
 
@@ -248,8 +263,10 @@ ycal events --calendar primary@gmail.com --include-declined
 
 - **Cross-calendar duplicates are collapsed by default.** Same `(title + start)` events on multiple calendars become one row. Pass `--no-dedup` to see all rows.
 - **Declined events are hidden by default.** Pass `--include-declined` to include them.
+- **GUI filters apply by default** (read-only, holidays, hidden calendars are dropped). See "Calendar filtering" above for the opt-in flags.
 - **Stderr is for diagnostics only.** stdout receives exactly one JSON document (or one text/markdown block). Pipe-safe.
 - **Default range** for `events` is today through 7 days out. Override with `--from`/`--to`.
+- **Caching:** the GUI process keeps a 5-minute calendar-list cache and a 30-second events cache, so back-to-back CLI calls in interactive use are near-instant. Caches are busted on account add/remove.
 
 ---
 

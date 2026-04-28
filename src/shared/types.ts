@@ -74,6 +74,9 @@ export interface ListEventsRequest {
   timeMax: string;
   // Calendar IDs to fetch from. Empty = all selected calendars.
   calendarIds?: string[];
+  // Skip the in-memory events cache. Used by the renderer's focus/poll
+  // refresh so a Google-side edit shows up without a full app restart.
+  force?: boolean;
 }
 
 export interface WeatherDay {

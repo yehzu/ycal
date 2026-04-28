@@ -84,6 +84,27 @@ Two execution modes share `runCli()` from `src/main/cli.ts`:
 
 `runCli(argv, out, err)` writes to injected `Writable` streams — don't go back to `process.stdout.write`. The same function serves stdio (in-process mode) and `StringSink` buffers (socket mode), and the server can serve concurrent connections safely.
 
+**CLI mirrors GUI filtering by default.** `src/main/cli.ts` reads `settings.json` UI prefs (`accountsActive`, `calVisible`, `calRoles`) and applies them like the renderer's agenda would: only active accounts × visible calendars × `normal`-role calendars. Opt-in flags widen the set: `--include-read-only` (subscribed), `--include-holidays`, `--all-calendars` (full bypass). `--calendar <id>` always wins. Calendar-set filtering is account-scoped (pair-based) so a shared calendar visible on account A but hidden on account B fetches only the A copy.
+
+## Caching layers in main
+
+Two TTL'd caches live in `src/main/calendar.ts`:
+
+- `CALENDAR_CACHE_TTL_MS` (5 min) — `listAllCalendars()` result. Calendar lists rarely change; this kills the dominant per-call cost when the user has multiple accounts. Per-account fetch is parallelised.
+- `EVENTS_CACHE_TTL_MS` (30 s) — `listEvents()` keyed by `(timeMin|timeMax|sorted account|cal pairs)`. Lets back-to-back CLI calls and same-window UI re-renders skip Google.
+
+Both expose `invalidateCalendarCache()` / `invalidateEventsCache()` and are busted on AddAccount / RemoveAccount. `ListEventsRequest.force` lets the renderer's auto-refresh skip the events cache while still re-warming it.
+
+## Renderer auto-refresh
+
+`useStore.refreshEvents()` re-fetches the held range with `force: true` (busts both renderer-side `fetchedRangeRef` and main-side events cache). `App.tsx` wires three triggers, all gated by a 30 s timestamp throttle:
+
+- `window` `focus` — switch back to yCal after editing in Google Calendar.
+- `document` `visibilitychange` (visible) — covers macOS Spaces / minimised window cases that don't always fire `focus`.
+- 5-minute `setInterval` — slow poll for users who leave yCal in the foreground all day.
+
+An `inFlightRef` guard inside `useStore` blocks overlapping fetches if multiple triggers fire close together despite the throttle.
+
 ## Where to put new code
 
 - **Shared by main and renderer (types, pure helpers)** → `src/shared/`. Both ts-projects alias `@shared/*` here.
@@ -127,3 +148,4 @@ npm run release
 - **`fs.existsSync` on socket files reports the file, not a live listener.** A stale socket file + no listener still passes existsSync; you have to actually try `connect()`.
 - **macOS APFS is case-insensitive by default,** so `ycal/cli.sock` and `yCal/cli.sock` resolve identically — but case-sensitive volumes exist. Use the lowercase canonical path.
 - **Smoke testing the socket end-to-end requires the new app to be installed.** Typecheck + build catch type errors but not runtime protocol bugs. Plan for "release a fix and iterate" rather than expecting first-shot perfection on socket changes.
+- **The dev-tree `bin/ycal` is CommonJS but the project is `"type": "module"`,** so `node ./bin/ycal …` from this checkout fails with "require is not defined". Drive the in-process CLI via `./node_modules/.bin/electron . --cli …` for local smoke tests, or hit the socket directly. The installed `/Applications/yCal.app` binary is unaffected.

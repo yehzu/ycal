@@ -13,6 +13,28 @@ import type {
 // and we'd otherwise refetch it on every event load.
 let colorsCache: GoogleColors | null = null;
 
+// Calendar metadata cache. Calendar lists rarely change; refetching on every
+// CLI call is the dominant cost when the user has many accounts. The CLI
+// server lives inside the GUI process so the cache persists across CLI
+// invocations within the same yCal session.
+const CALENDAR_CACHE_TTL_MS = 5 * 60 * 1000;
+let calendarCache: { at: number; data: CalendarSummary[] } | null = null;
+
+export function invalidateCalendarCache(): void {
+  calendarCache = null;
+}
+
+// Short-TTL events cache, keyed by (timeMin|timeMax|sorted calendarIds).
+// Lets a follow-up `ycal today` immediately after `ycal events` skip the
+// Google round trip. Kept short (~30s) because events change often and we
+// don't want stale data in interactive use.
+const EVENTS_CACHE_TTL_MS = 30 * 1000;
+const eventsCache = new Map<string, { at: number; data: CalendarEvent[] }>();
+
+export function invalidateEventsCache(): void {
+  eventsCache.clear();
+}
+
 function cal(accountId: string): calendar_v3.Calendar {
   const acc = getAccount(accountId);
   if (!acc) throw new Error(`Unknown account: ${accountId}`);
@@ -49,32 +71,44 @@ export function listAccountSummaries(): AccountSummary[] {
 }
 
 export async function listAllCalendars(): Promise<CalendarSummary[]> {
-  const accounts = listAccounts();
-  const out: CalendarSummary[] = [];
-  for (const acc of accounts) {
-    const c = google.calendar({ version: 'v3', auth: authClientForAccount(acc) });
-    let pageToken: string | undefined;
-    do {
-      const res = await c.calendarList.list({ pageToken, maxResults: 250 });
-      for (const item of res.data.items ?? []) {
-        if (!item.id) continue;
-        out.push({
-          id: item.id,
-          accountId: acc.id,
-          name: item.summaryOverride ?? item.summary ?? item.id,
-          description: item.description ?? null,
-          primary: !!item.primary,
-          selected: item.selected !== false,
-          // backgroundColor reflects the user's per-calendar customization in
-          // Google Calendar; foregroundColor matches.
-          color: item.backgroundColor ?? '#616161',
-          foregroundColor: item.foregroundColor ?? '#ffffff',
-          accessRole: item.accessRole ?? 'reader',
-        });
-      }
-      pageToken = res.data.nextPageToken ?? undefined;
-    } while (pageToken);
+  const cached = calendarCache;
+  if (cached && Date.now() - cached.at < CALENDAR_CACHE_TTL_MS) {
+    return cached.data;
   }
+  const accounts = listAccounts();
+  // Fan out per account in parallel — the GUI typically has 1–3 accounts but
+  // each calendarList.list adds round-trip latency, so even small fan-out
+  // matters for CLI cold-start.
+  const perAccount = await Promise.all(
+    accounts.map(async (acc) => {
+      const rows: CalendarSummary[] = [];
+      const c = google.calendar({ version: 'v3', auth: authClientForAccount(acc) });
+      let pageToken: string | undefined;
+      do {
+        const res = await c.calendarList.list({ pageToken, maxResults: 250 });
+        for (const item of res.data.items ?? []) {
+          if (!item.id) continue;
+          rows.push({
+            id: item.id,
+            accountId: acc.id,
+            name: item.summaryOverride ?? item.summary ?? item.id,
+            description: item.description ?? null,
+            primary: !!item.primary,
+            selected: item.selected !== false,
+            // backgroundColor reflects the user's per-calendar customization in
+            // Google Calendar; foregroundColor matches.
+            color: item.backgroundColor ?? '#616161',
+            foregroundColor: item.foregroundColor ?? '#ffffff',
+            accessRole: item.accessRole ?? 'reader',
+          });
+        }
+        pageToken = res.data.nextPageToken ?? undefined;
+      } while (pageToken);
+      return rows;
+    }),
+  );
+  const out = perAccount.flat();
+  calendarCache = { at: Date.now(), data: out };
   return out;
 }
 
@@ -150,9 +184,6 @@ function isoFromGoogleDate(g: calendar_v3.Schema$EventDateTime | undefined): {
 }
 
 export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[]> {
-  const colors = await fetchColors();
-  const accounts = listAccounts();
-
   // Build the set of (accountId, calendarId) we need to query.
   const calendars = await listAllCalendars();
   const filterIds = req.calendarIds && req.calendarIds.length > 0
@@ -163,6 +194,23 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
     if (filterIds && !filterIds.has(c.id)) return false;
     return true;
   });
+
+  // Cache key: stable across calendarIds order so back-to-back queries with
+  // the same set hit the cache.
+  const cacheKey = JSON.stringify({
+    timeMin: req.timeMin,
+    timeMax: req.timeMax,
+    ids: targets.map((c) => `${c.accountId}|${c.id}`).sort(),
+  });
+  if (!req.force) {
+    const cached = eventsCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < EVENTS_CACHE_TTL_MS) {
+      return cached.data;
+    }
+  }
+
+  const colors = await fetchColors();
+  const accounts = listAccounts();
 
   const out: FlatEventRow[] = [];
 
@@ -218,5 +266,6 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
     }),
   );
 
+  eventsCache.set(cacheKey, { at: Date.now(), data: out });
   return out;
 }
