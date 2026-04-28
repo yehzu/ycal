@@ -27,11 +27,24 @@ interface Props {
   className?: string;
 }
 
+// Google Calendar's `description` field can be either rich HTML (when entered
+// via the web UI) or plain text with `\n` separators (when the event was
+// created by Zoom/Outlook/iCal imports). HTML rendering collapses raw
+// newlines to spaces, which produced unreadable "wall of text" notes for the
+// plain-text case. Detect block-ish HTML markers; if none, convert newlines
+// to `<br>` so paragraph breaks survive sanitization.
+const HTML_BLOCK_RE = /<(?:p|br|div|ul|ol|h[1-6]|blockquote|pre)\b/i;
+
+function preserveNewlines(input: string): string {
+  if (HTML_BLOCK_RE.test(input)) return input;
+  return input.replace(/\r\n?|\n/g, '<br>');
+}
+
 export function DescriptionHTML({ html, className }: Props) {
   installHook();
   const clean = useMemo(
     () =>
-      DOMPurify.sanitize(html, {
+      DOMPurify.sanitize(preserveNewlines(html), {
         ALLOWED_TAGS,
         ALLOWED_ATTR,
         ALLOW_DATA_ATTR: false,

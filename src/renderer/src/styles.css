@@ -831,6 +831,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   font-size: 12.5px;
   line-height: 1.55;
   color: var(--ink);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .event-desc p { margin: 0 0 6px; }
 .event-desc p:last-child { margin-bottom: 0; }
@@ -1364,6 +1366,15 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   gap: 10px;
   padding: 4px 0;
   font-size: 13px;
+}
+/* Long URLs (Zoom links, meeting agendas) routinely overflow the 400px
+   popover. Break inside the value column rather than letting the line
+   blow past the right edge. min-width:0 lets the grid track actually
+   shrink instead of hugging the longest unbroken token. */
+.popover .pp-row .v {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .popover .pp-row .k {
   font-family: var(--serif-body);

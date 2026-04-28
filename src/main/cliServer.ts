@@ -77,8 +77,13 @@ export function startCliServer(): void {
 
   server = s;
 
+  // Don't unlink the socket file on quit. During an electron-updater restart,
+  // the outgoing process's `will-quit` can fire AFTER the incoming process has
+  // already created its own socket file at the same path — and unlinkSync
+  // would then race-delete the successor's file, leaving the new server alive
+  // with no path the client can connect to. The line-37 cleanup at the next
+  // startup handles staleness, so leaving the file behind is harmless.
   app.on('will-quit', () => {
     try { s.close(); } catch { /* already closed */ }
-    try { fs.unlinkSync(sockPath); } catch { /* already gone */ }
   });
 }

@@ -294,45 +294,49 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           : addDays(a, dir),
         );
       };
-      if (ev.key === 'ArrowLeft' || ev.key === 'u') {
+      // Treat single-character shortcuts as case-insensitive: pressing
+      // Caps-Lock or holding Shift shouldn't break navigation. Multi-char
+      // keys like 'Escape' / 'ArrowLeft' pass through unchanged.
+      const k = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+      if (k === 'ArrowLeft' || k === 'u') {
         ev.preventDefault();
         stepAnchor(-1);
-      } else if (ev.key === 'ArrowRight' || ev.key === 'i') {
+      } else if (k === 'ArrowRight' || k === 'i') {
         ev.preventDefault();
         stepAnchor(1);
-      } else if (ev.key === 'h') {
+      } else if (k === 'h') {
         ev.preventDefault();
         moveSelection(-1);
-      } else if (ev.key === 'l') {
+      } else if (k === 'l') {
         ev.preventDefault();
         moveSelection(1);
-      } else if (ev.key === 'j') {
+      } else if (k === 'j') {
         ev.preventDefault();
         moveSelection(7);
-      } else if (ev.key === 'k') {
+      } else if (k === 'k') {
         ev.preventDefault();
         moveSelection(-7);
-      } else if (ev.key === ' ' && target?.tagName !== 'BUTTON') {
+      } else if (k === ' ' && target?.tagName !== 'BUTTON') {
         ev.preventDefault();
         setDayModal(selected);
-      } else if (ev.key === 's') {
+      } else if (k === 's') {
         ev.preventDefault();
         setView('month');
-      } else if (ev.key === 'd') {
+      } else if (k === 'd') {
         ev.preventDefault();
         setView('week');
-      } else if (ev.key === 'f') {
+      } else if (k === 'f') {
         ev.preventDefault();
         setView('day');
-      } else if (ev.key.toLowerCase() === 't') {
+      } else if (k === 't') {
         goToToday();
-      } else if (ev.key === 'w') {
+      } else if (k === 'w') {
         ev.preventDefault();
         setHideReadOnly((v) => !v);
-      } else if (ev.key === 'e') {
+      } else if (k === 'e') {
         ev.preventDefault();
         setHideDisabledCals((v) => !v);
-      } else if (ev.key === 'Escape') {
+      } else if (k === 'Escape') {
         setAcctPickerOpen(false);
       }
     };
