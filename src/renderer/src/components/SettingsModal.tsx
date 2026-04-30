@@ -1,12 +1,17 @@
 import { Fragment, useEffect, useState } from 'react';
 import type {
-  AccountSummary, CalendarSummary, MergeCriteria, TempUnits, UpdateStatus,
+  AccountSummary, CalendarSummary, CloudStorageInfo, MergeCriteria, RhythmData,
+  TaskProviderInfo, TempUnits, UpdateStatus,
 } from '@shared/types';
 import { calKey } from '../store';
 import { type CalRole, type CalRoles, ROLE_OPTIONS } from '../calRoles';
 import { avatarBg, initials } from './MacTitleBar';
+import { fmtDate } from '../dates';
+import { formatRhythmTime, resolveDefault } from '../rhythm';
 
-type TabId = 'general' | 'weather' | 'accounts' | 'shortcuts' | 'updates';
+type TabId =
+  | 'general' | 'tasks' | 'rhythm' | 'sync'
+  | 'weather' | 'accounts' | 'shortcuts' | 'updates';
 
 interface Props {
   onClose: () => void;
@@ -34,10 +39,23 @@ interface Props {
   setCalRole: (key: string, role: CalRole) => void;
   onAddAccount: () => void;
   onRemoveAccount: (id: string) => Promise<void> | void;
+  // Tasks (active provider)
+  taskProvider: TaskProviderInfo | null;
+  setTaskCredentials: (key: string | null) => Promise<void>;
+  refreshTasks: () => Promise<void>;
+  // Day rhythm
+  rhythmData: RhythmData | null;
+  setRhythmDefault: (fromDateStr: string, next: { wakeMin: number; sleepMin: number }) => Promise<void>;
+  // Cloud storage (rhythm + tasks schedule)
+  cloudStorage: CloudStorageInfo | null;
+  setCloudStorage: (pref: 'icloud' | 'local') => Promise<void>;
 }
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
+  { id: 'tasks', label: 'Tasks' },
+  { id: 'rhythm', label: 'Day rhythm' },
+  { id: 'sync', label: 'Sync' },
   { id: 'weather', label: 'Weather' },
   { id: 'accounts', label: 'Accounts' },
   { id: 'shortcuts', label: 'Shortcuts' },
@@ -46,6 +64,9 @@ const TABS: Array<{ id: TabId; label: string }> = [
 
 const TAB_TITLES: Record<TabId, string> = {
   general: 'General',
+  tasks: 'Tasks',
+  rhythm: 'Day rhythm',
+  sync: 'Sync',
   weather: 'Weather',
   accounts: 'Accounts',
   shortcuts: 'Shortcuts',
@@ -138,6 +159,25 @@ export function SettingsModal(props: Props) {
                 setCalRole={props.setCalRole}
                 onAddAccount={props.onAddAccount}
                 onRemoveAccount={props.onRemoveAccount}
+              />
+            )}
+            {tab === 'tasks' && (
+              <PrefsTasks
+                provider={props.taskProvider}
+                setCredentials={props.setTaskCredentials}
+                refresh={props.refreshTasks}
+              />
+            )}
+            {tab === 'rhythm' && (
+              <PrefsRhythm
+                rhythmData={props.rhythmData}
+                setDefault={props.setRhythmDefault}
+              />
+            )}
+            {tab === 'sync' && (
+              <PrefsSync
+                storage={props.cloudStorage}
+                setStorage={props.setCloudStorage}
               />
             )}
             {tab === 'shortcuts' && <PrefsShortcuts />}
@@ -717,4 +757,334 @@ function PrefsUpdates() {
       </div>
     </div>
   );
+}
+
+function PrefsTasks({
+  provider, setCredentials, refresh,
+}: {
+  provider: TaskProviderInfo | null;
+  setCredentials: (key: string | null) => Promise<void>;
+  refresh: () => Promise<void>;
+}) {
+  const hasKey = !!provider?.hasCredentials;
+  const [editing, setEditing] = useState(!hasKey);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const save = async () => {
+    if (!draft.trim()) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await setCredentials(draft.trim());
+      setDraft('');
+      setEditing(false);
+      await refresh();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await setCredentials(null);
+      setDraft('');
+      setEditing(true);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="pref-section">
+      <h3 className="pref-h">Provider</h3>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        yCal uses a pluggable task provider. The active provider is
+        <strong> {provider?.displayName ?? '—'}</strong>. Future providers
+        (Things, Reminders, plain markdown) will appear here once they ship.
+      </p>
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Credentials</h3>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        {provider?.credentialsHint ?? 'Provider not loaded yet.'}{' '}
+        Stored encrypted in your macOS Keychain — never leaves this machine.
+      </p>
+      <PrefRow label="Token" hint={hasKey ? 'A key is currently set.' : 'Not set.'}>
+        {!editing ? (
+          <div className="pref-feed-display">
+            <span className="pref-feed-url">{hasKey ? '••••••••••••••••' : '—'}</span>
+            <button className="pref-btn" onClick={() => setEditing(true)}>
+              {hasKey ? 'Change…' : 'Add…'}
+            </button>
+          </div>
+        ) : (
+          <div className="pref-feed-edit">
+            <input
+              type="password"
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              className="pref-feed-input"
+              placeholder="API token"
+              value={draft}
+              autoFocus
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void save();
+                if (e.key === 'Escape') setEditing(false);
+              }}
+            />
+            <div className="pref-feed-actions">
+              {hasKey && (
+                <button
+                  className="pref-btn pref-btn-danger"
+                  onClick={() => void clear()}
+                  disabled={saving}
+                >
+                  Clear
+                </button>
+              )}
+              <button
+                className="pref-btn"
+                onClick={() => setEditing(false)}
+                disabled={saving}
+              >
+                Cancel
+              </button>
+              <button
+                className="pref-btn pref-btn-primary"
+                onClick={() => void save()}
+                disabled={!draft.trim() || saving}
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+            {saveError && (
+              <div className="pref-feed-error">{saveError}</div>
+            )}
+          </div>
+        )}
+      </PrefRow>
+      <div className="pref-note">
+        Open the Tasks panel from the Week or Day view (right edge tab, or
+        Shift+T). Drag a task onto the calendar to schedule it; drop it back
+        into the panel to unschedule. Anything not completed by end of day
+        automatically returns to the inbox the next morning. The schedule
+        lives in iCloud (or local, see <em>Sync</em>) — it&apos;s never
+        pushed back to the provider.
+      </div>
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Labels</h3>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        yCal reads provider labels for Troika-style metadata: a duration
+        label like <code>30m</code> / <code>1h</code> / <code>1h30m</code>,
+        an energy label of <code>low</code> / <code>mid</code> /{' '}
+        <code>high</code>, and any other label is treated as a location
+        (<code>cafe</code>, <code>desk</code>, <code>home</code>, …). The
+        first label that doesn&apos;t match duration or energy wins as the
+        location.
+      </p>
+    </div>
+  );
+}
+
+function PrefsRhythm({
+  rhythmData, setDefault,
+}: {
+  rhythmData: RhythmData | null;
+  setDefault: (fromDateStr: string, next: { wakeMin: number; sleepMin: number }) => Promise<void>;
+}) {
+  const today = new Date();
+  const todayStr = fmtDate(today);
+  const cur = rhythmData
+    ? resolveDefault(rhythmData, todayStr)
+    : { wakeMin: 390, sleepMin: 1380 };
+  const [wakeDraft, setWakeDraft] = useState(minToHHMM(cur.wakeMin));
+  const [sleepDraft, setSleepDraft] = useState(minToHHMM(cur.sleepMin));
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setWakeDraft(minToHHMM(cur.wakeMin));
+    setSleepDraft(minToHHMM(cur.sleepMin));
+  }, [cur.wakeMin, cur.sleepMin]);
+
+  const save = async () => {
+    const wake = hhmmToMin(wakeDraft);
+    const sleep = hhmmToMin(sleepDraft);
+    if (wake === null || sleep === null) {
+      setSaveError('Use HH:MM format (24-hour).');
+      return;
+    }
+    if (wake >= sleep) {
+      setSaveError('Wake must be earlier than sleep.');
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await setDefault(todayStr, { wakeMin: wake, sleepMin: sleep });
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const history = rhythmData?.defaults ?? [];
+  // Skip the synthetic baseline so the history table only shows entries
+  // the user actually authored.
+  const userHistory = history.filter((d) => d.fromDate !== '0000-01-01');
+
+  return (
+    <div className="pref-section">
+      <h3 className="pref-h">Default wake / sleep</h3>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        These set the wake and sleep lines for any day without a per-day
+        override. Changing them here only affects today onwards — your past
+        days keep the rhythm they were planned with.
+      </p>
+      <PrefRow label="Wake">
+        <input
+          type="time"
+          className="pref-feed-input"
+          value={wakeDraft}
+          onChange={(e) => setWakeDraft(e.target.value)}
+          step={900}
+        />
+      </PrefRow>
+      <PrefRow label="Sleep">
+        <input
+          type="time"
+          className="pref-feed-input"
+          value={sleepDraft}
+          onChange={(e) => setSleepDraft(e.target.value)}
+          step={900}
+        />
+      </PrefRow>
+      <div className="pref-feed-actions" style={{ marginTop: 6 }}>
+        <button
+          className="pref-btn pref-btn-primary"
+          onClick={() => void save()}
+          disabled={saving}
+        >
+          {saving ? 'Saving…' : 'Save default'}
+        </button>
+      </div>
+      {saveError && (
+        <div className="pref-feed-error">{saveError}</div>
+      )}
+
+      {userHistory.length > 0 && (
+        <>
+          <h3 className="pref-h" style={{ marginTop: 24 }}>History</h3>
+          <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+            Each row is a default that applies to dates from <em>From</em> until
+            superseded by the next entry below. Older days resolve through the
+            entry above.
+          </p>
+          <table className="rhythm-history">
+            <thead>
+              <tr><th>From</th><th>Wake</th><th>Sleep</th></tr>
+            </thead>
+            <tbody>
+              {userHistory.map((d) => (
+                <tr key={d.fromDate}>
+                  <td>{d.fromDate}</td>
+                  <td>{formatRhythmTime(d.wakeMin)}</td>
+                  <td>{formatRhythmTime(d.sleepMin)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <div className="pref-note" style={{ marginTop: 16 }}>
+        Per-day overrides (drag a wake or sleep line in week or day view)
+        live alongside the defaults. Resetting an override snaps that date
+        back to whatever default was active when the day occurred —
+        historical dates aren&apos;t rewritten.{' '}
+        Storage location is shared with task scheduling, see <em>Sync</em>.
+      </div>
+    </div>
+  );
+}
+
+function PrefsSync({
+  storage, setStorage,
+}: {
+  storage: CloudStorageInfo | null;
+  setStorage: (pref: 'icloud' | 'local') => Promise<void>;
+}) {
+  return (
+    <div className="pref-section">
+      <h3 className="pref-h">Storage location</h3>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        These files travel with the toggle below: <code>rhythm.json</code>{' '}
+        (wake/sleep defaults + per-day overrides) and{' '}
+        <code>tasks-schedule.json</code> (which calendar slot you dropped
+        each task into, plus the per-task &ldquo;done today&rdquo; mirror).
+        OAuth tokens stay in the local Keychain on each machine — they
+        don&apos;t move.
+      </p>
+      <PrefRow
+        label="Storage"
+        hint={
+          storage?.icloudAvailable
+            ? 'iCloud Drive mirrors yCal data across your Macs.'
+            : 'iCloud Drive is not available on this machine.'
+        }
+      >
+        <PrefSegmented<'local' | 'icloud'>
+          value={storage?.preferred ?? 'local'}
+          options={[
+            { value: 'local', label: 'Local' },
+            { value: 'icloud', label: 'iCloud Drive' },
+          ]}
+          onChange={(v) => void setStorage(v)}
+        />
+      </PrefRow>
+      {storage && (
+        <div className="pref-note" style={{ wordBreak: 'break-all' }}>
+          Folder: <code>{storage.dir}</code>
+          {storage.preferred === 'icloud' && storage.effective !== 'icloud' && (
+            <>
+              <br />
+              <strong>Falling back to local</strong> — iCloud Drive
+              folder isn&apos;t available right now. Files will move
+              automatically once it is.
+            </>
+          )}
+        </div>
+      )}
+      <div className="pref-note">
+        Switching storage copies the existing files to the new location;
+        the old file stays put as a one-shot backup so a botched move can
+        be undone by hand.
+      </div>
+    </div>
+  );
+}
+
+function minToHHMM(m: number): string {
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function hhmmToMin(s: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const h = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return h * 60 + mm;
 }

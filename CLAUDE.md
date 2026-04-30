@@ -17,18 +17,37 @@ User-facing docs live in `README.md`. This file is for fast onboarding when Clau
 ```
 src/
 ├── main/         Electron main process (Node)
-│   ├── index.ts        Entry point, window creation, IPC registration, --cli dispatch
-│   ├── auth.ts         OAuth loopback flow (port 0, ephemeral)
-│   ├── tokenStore.ts   safeStorage-backed accounts.json (Keychain on macOS)
-│   ├── config.ts       Loads oauth-client.json from userData
-│   ├── calendar.ts     Google Calendar API client + event shaping
-│   ├── settings.ts     UI settings + weather URL persistence
-│   ├── weather.ts      iCal-format weather feed parser + cache
-│   ├── updater.ts      electron-updater wiring
-│   ├── cli.ts          Argv-driven CLI (LLM-friendly, JSON/text/markdown)
-│   └── cliServer.ts    Unix socket server bridging external clients to runCli
+│   ├── index.ts          Entry point, window creation, IPC registration, --cli dispatch
+│   ├── auth.ts           OAuth loopback flow (port 0, ephemeral)
+│   ├── tokenStore.ts     safeStorage-backed accounts.json (Keychain on macOS)
+│   ├── config.ts         Loads oauth-client.json from userData
+│   ├── calendar.ts       Google Calendar API client + event shaping
+│   ├── settings.ts       UI settings + weather URL + cloudStorage pref
+│   ├── weather.ts        iCal-format weather feed parser + cache
+│   ├── updater.ts        electron-updater wiring
+│   ├── cloudStore.ts     iCloud-Drive-or-local JSON file router (rhythm + tasks)
+│   ├── rhythm.ts         Wake/sleep defaults (time-versioned) + per-day overrides
+│   ├── tasksStore.ts     Local task overlay (schedule + done) backed by cloudStore
+│   ├── taskProviders/    Pluggable task backends
+│   │   ├── types.ts        TaskProvider interface
+│   │   ├── labels.ts       Troika label parser (duration / energy / location)
+│   │   ├── todoist.ts      Todoist /api/v1 client (only provider today)
+│   │   └── index.ts        Registry — drop new providers here
+│   ├── cli.ts            Argv-driven CLI (LLM-friendly, JSON/text/markdown)
+│   └── cliServer.ts      Unix socket server bridging external clients to runCli
 ├── preload/      contextBridge → window.ycal; the only renderer↔main surface
 ├── renderer/     React UI; styled in src/renderer/src/styles.css
+│   └── src/
+│       ├── App.tsx              Main shell, wires all stores + panels
+│       ├── store.ts             Calendar events + accounts + weather hook
+│       ├── tasks.ts             Tasks store hook (provider-agnostic)
+│       ├── rhythm.ts            Pure helpers — resolveRhythm / formatRhythmTime
+│       ├── dragController.tsx   Pointer + HTML5 hybrid drag controller
+│       └── components/
+│           ├── TimeView.tsx       Week/Day grid, task chips, rhythm lines, drops
+│           ├── TasksPanel.tsx     Right rail + TaskCard + edge tab
+│           ├── TaskSheet.tsx      Slide-in detail (description + comments)
+│           └── SettingsModal.tsx  Tabs: General/Tasks/Day rhythm/Sync/…
 └── shared/       Cross-process types and pure helpers
     ├── types.ts        IPC contract — change carefully
     └── dedup.ts        Cross-calendar duplicate collapsing (used by both)
@@ -37,11 +56,14 @@ bin/ycal         Plain-Node CLI client (no Electron import — talks to socket)
 
 ## Architectural invariants — don't break these
 
-1. **Renderer never sees Google credentials or makes network calls.** All Google API traffic happens in main. Renderer talks to main only via `IPC` channels declared in `@shared/types`. CSP in `index.html` blocks arbitrary network access.
-2. **Refresh tokens are encrypted at rest.** Always go through `tokenStore.ts`; never write a plaintext refresh token. `safeStorage` requires Electron runtime — that's why the CLI server lives inside the GUI process.
+1. **Renderer never sees Google or Todoist credentials or makes network calls.** All third-party API traffic happens in main. Renderer talks to main only via `IPC` channels declared in `@shared/types`. CSP in `index.html` blocks arbitrary network access.
+2. **All credentials are encrypted at rest.** Google refresh tokens go through `tokenStore.ts`; the Todoist API key goes through `taskProviders/todoist.ts` (`todoist.key`). Both use `safeStorage` (macOS Keychain). Never write a plaintext token. `safeStorage` requires Electron runtime — that's why the CLI server lives inside the GUI process.
 3. **OAuth scopes are read-only.** Adding write functionality requires dropping `.readonly` from `src/main/auth.ts` *and* re-consenting users. Don't broaden silently.
 4. **`@shared/types.ts` is the IPC contract.** Adding/removing fields ripples through main, preload, renderer. CLI socket protocol is a separate contract; see below.
 5. **`app.name` resolves to `"ycal"` (lowercase, from package.json `name`).** That's the userData dir name on disk: `~/Library/Application Support/ycal/`. The `productName` `"yCal"` only affects the .app bundle name. Don't call `app.setName('yCal')` — it would orphan existing users' tokens.
+6. **Tasks is a pluggable provider, not a Todoist integration.** The renderer talks to `getActiveProvider()` via IPC (`tasksList`, `tasksClose`, `tasksAddComment`, …). Adding a new backend means dropping a file in `src/main/taskProviders/` that implements the `TaskProvider` interface and registering it in `taskProviders/index.ts`. The renderer is provider-agnostic.
+7. **Task scheduling stays local-cloud — never round-trip to the upstream provider.** When a user drags a task onto a calendar slot, we record it in `tasks-schedule.json` (cloudStore-routed). We do NOT call Todoist's `update task due date`. Only completion (`closeTask`/`reopenTask`) and comments push upstream.
+8. **`cloudStore.ts` is the only thing that knows about iCloud Drive.** Anything that wants iCloud-or-local routing should go through `readJson` / `writeJson` and register its filename in `CLOUD_FILES` so the toggle in Settings → Sync moves it correctly. Today the routed files are `rhythm.json` and `tasks-schedule.json`.
 
 ## Common commands
 
@@ -139,6 +161,35 @@ npm run release
 - **Auto mode is the norm.** Don't ask before reading, building, committing, pushing to main, tagging, or publishing a release — those are all pre-authorized in `.claude/settings.json` for this repo. Solo personal project; the user wants velocity over ceremony.
 - **The full release flow is one autonomous block.** When the user says "ship X.Y.Z" or "release", the expected sequence is: bump → typecheck+build → commit → push main → tag → push tag → `npm run dist -- --publish always` → `gh release edit vX.Y.Z --draft=false`. No checkpoints.
 - **Force-push, hard reset, rm -rf, killing processes — still denied.** Those are how you lose work, and irreversible. Stop and ask.
+
+## Tasks subsystem — quick mental model
+
+The Tasks rail in Week + Day views is glued together by three files:
+
+- `src/main/taskProviders/<provider>.ts` — talks to the upstream backend (today: Todoist `/api/v1`). Implements the `TaskProvider` interface. Only the active provider runs.
+- `src/main/tasksStore.ts` — local schedule + done overlay, cloudStore-backed. Lives in iCloud Drive when preferred and available; falls back to userData. Migrates from a legacy `tasks` block in `settings.json` once.
+- `src/renderer/src/tasks.ts` — the `useTasks` hook. Hydrates tasks with the local overlay, computes `carryoverIds` (scheduled-in-the-past + not-done), surfaces `inboxTasks` and `scheduledById` for the calendar.
+
+**Auto-rollover** is purely a renderer-side derivation: if a task's `scheduledAt.date < today` and it isn't done, it shows in the inbox panel with the carry indicator. The local schedule entry stays put until the user reschedules or completes it.
+
+**Troika labels.** `parseTaskMeta` in `taskProviders/labels.ts` reads provider labels (and a few legacy inline tags in titles) and pulls out:
+- duration: `30m` / `1h` / `1h30m` / `2h`
+- energy: `low` / `mid` / `high` (optional `-energy` suffix)
+- location: anything else, first wins
+
+Pure-numeric labels are explicitly rejected as durations so a "2026" project label doesn't become 2026 minutes.
+
+## Day rhythm — time-versioned defaults
+
+`rhythm.json` (cloudStore-routed) holds:
+- `defaults: RhythmDefault[]` — sorted ascending by `fromDate`. Every default-change appends a new entry; **historical days resolve through the previous entry**, so changing wake/sleep today does not rewrite last week's planning.
+- `overrides: Record<dateStr, RhythmOverride>` — per-day explicit values from dragging the wake/sleep line in week or day view. These win over the default.
+
+`resolveDefault(data, dateStr)` walks the list and returns the latest entry whose `fromDate ≤ dateStr`. `resolveEffective` layers the override on top. The renderer mirrors these helpers in `src/renderer/src/rhythm.ts` so a frame can paint without bouncing off IPC.
+
+## Drag-and-drop bug to remember
+
+The task-drag system uses a custom pointer + HTML5 hybrid controller (`src/renderer/src/dragController.tsx`). The bug from the original prototype was: `useDragTarget`'s effect depended on inline arrow callbacks, so every render tore down + rebuilt the listeners, and a render landing between pointerup and the rebuild swallowed the drop. **The fix is to read callbacks through a `cbRef`** — see the comment block at the top of `dragController.tsx`. Don't undo this when refactoring.
 
 ## Things I learned the hard way (so future Claude doesn't have to)
 

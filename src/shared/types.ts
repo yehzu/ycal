@@ -149,6 +149,126 @@ export interface UpdateStatus {
   error?: string;
 }
 
+// ── Tasks (provider-backed) ──────────────────────────────────────────
+// A task provider is a backing store for tasks (Todoist today; could be
+// Things, Reminders, Linear, plain Markdown later). The renderer doesn't
+// know which provider is active — it just sees `TaskItem`s flowing through
+// IPC. To swap providers, drop a new file under `src/main/taskProviders/`
+// implementing the same interface and register it in the index.
+export type TaskProviderId = 'todoist';
+
+export interface TaskProviderInfo {
+  id: TaskProviderId;
+  displayName: string;
+  // True when credentials are configured (e.g. an API key has been set).
+  hasCredentials: boolean;
+  // Human-friendly hint about what to paste in the credentials field.
+  credentialsHint: string;
+}
+
+// We don't try to model every Todoist field. Just what the panel + sheet
+// need to render, plus whatever round-trips back to the provider's API.
+export interface TaskItem {
+  id: string;          // Todoist task id, kept as string
+  projectId: string | null;
+  project: string;     // resolved project name (used for grouping + color)
+  title: string;
+  description: string;
+  // Energy is purely a yCal nicety — the user can prefix the title with
+  // [low]/[mid]/[high] to drive the chip color. Default is 'mid'.
+  energy: 'low' | 'mid' | 'high';
+  location: string;    // pulled from a `@<text>` chunk in the Todoist content
+  // Estimated duration in minutes. Pulled from a `~30m` / `~1h` chunk in the
+  // Todoist content. 0 means "no estimate" — chip will use a default height.
+  dur: number;
+  // Todoist's due date string (YYYY-MM-DD) when present, else null.
+  due: string | null;
+  // recur.dow: array of 0–6 (Sun–Sat) when the task is a Todoist recurring
+  // task that fires on specific weekdays. null means non-recurring.
+  recur: { dow: number[] } | null;
+  // Comments inlined from Todoist's /comments endpoint.
+  comments: TaskComment[];
+  // True if Todoist marks the task complete. The panel hides these.
+  done: boolean;
+  // The local-only schedule slot, mirrored back to settings.json so it
+  // survives reloads and so the renderer doesn't need to refetch every time.
+  // null = unscheduled (lives in the inbox).
+  scheduledAt: { date: string; start: string } | null;
+}
+
+export interface TaskComment {
+  id: string;
+  author: string;
+  authorColor: string;
+  at: string;        // ISO datetime
+  text: string;
+}
+
+// Tasks store on disk — local schedule overlay + last-known cached tasks
+// so we can render instantly before the Todoist fetch resolves.
+export interface TasksLocalState {
+  // taskId → { date, start } (15-min snap)
+  scheduled: Record<string, { date: string; start: string }>;
+  // taskId → 'YYYY-MM-DD' the user marked it done (mirror of Todoist's
+  // completion state for the "Done today" footer; rebuilt on each fetch).
+  doneOn: Record<string, string>;
+  // Cache of last fetched tasks so the panel renders without a flash on
+  // restart. Refreshed in the background by the Todoist client.
+  cache?: TaskItem[];
+  cacheAt?: string;  // ISO timestamp
+}
+
+// Result of a Todoist fetch — note it returns ALL tasks regardless of
+// whether they're complete; renderer filters via the `done` flag.
+export interface TaskFetchResult {
+  tasks: TaskItem[];
+  // Bare project list — the renderer needs this for the grouped masthead.
+  projectOrder: string[];
+  // project → hex color
+  projectColor: Record<string, string>;
+}
+
+// ── Day rhythm (wake / sleep) ─────────────────────────────────────────
+// Rhythm changes are time-versioned: the user can swap their default at
+// any point and dates BEFORE the change keep their old default. Days
+// after the change pick up the new one. Per-day overrides win above both.
+export interface RhythmDefault {
+  // YYYY-MM-DD; this default applies to dates >= fromDate, until superseded
+  // by a later entry. The first entry in the list is the historical
+  // baseline (typically fromDate '0000-01-01').
+  fromDate: string;
+  wakeMin: number;   // minutes from midnight (0..1440)
+  sleepMin: number;
+}
+
+export interface RhythmOverride {
+  wakeMin?: number;
+  sleepMin?: number;
+}
+
+export interface RhythmData {
+  defaults: RhythmDefault[];                 // sorted ascending by fromDate
+  overrides: Record<string, RhythmOverride>; // YYYY-MM-DD → override
+}
+
+// Where to keep yCal's cloud-synced files (rhythm.json, tasks-schedule.json).
+// iCloud Drive on macOS lets the files follow the user across devices via
+// the system iCloud sync. Falls back to the local userData dir when
+// unavailable (non-macOS, or iCloud Drive disabled).
+export type CloudStorage = 'icloud' | 'local';
+
+export interface CloudStorageInfo {
+  // Effective storage in use right now. May differ from preference if iCloud
+  // Drive isn't available.
+  effective: CloudStorage;
+  // Preference the user picked. Always reflects the toggle's state.
+  preferred: CloudStorage;
+  // Resolved absolute directory holding cloud-stored yCal files.
+  dir: string;
+  // True if the iCloud Drive folder exists and is writable on this machine.
+  icloudAvailable: boolean;
+}
+
 // IPC channel names — typed once, shared.
 export const IPC = {
   AddAccount: 'ycal:addAccount',
@@ -167,4 +287,21 @@ export const IPC = {
   UpdateCheck: 'ycal:updateCheck',
   UpdateInstall: 'ycal:updateInstall',
   UpdateStatus: 'ycal:updateStatus', // main → renderer push
+  // Tasks (active provider does the talking)
+  TasksGetProviderInfo: 'ycal:tasksGetProviderInfo',
+  TasksSetCredentials: 'ycal:tasksSetCredentials',
+  TasksList: 'ycal:tasksList',
+  TasksClose: 'ycal:tasksClose',
+  TasksReopen: 'ycal:tasksReopen',
+  TasksAddComment: 'ycal:tasksAddComment',
+  TasksGetLocal: 'ycal:tasksGetLocal',     // schedule + done overlay (cloud)
+  TasksSetLocal: 'ycal:tasksSetLocal',
+  // Day rhythm
+  RhythmGet: 'ycal:rhythmGet',
+  RhythmSetOverride: 'ycal:rhythmSetOverride',
+  RhythmClearOverride: 'ycal:rhythmClearOverride',
+  RhythmSetDefault: 'ycal:rhythmSetDefault',
+  // Cloud (iCloud / local) — covers rhythm + task schedule + future files.
+  CloudGetStorageInfo: 'ycal:cloudGetStorageInfo',
+  CloudSetStorage: 'ycal:cloudSetStorage',
 } as const;

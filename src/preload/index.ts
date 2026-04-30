@@ -4,8 +4,15 @@ import type {
   AccountSummary,
   CalendarSummary,
   CalendarEvent,
+  CloudStorage,
+  CloudStorageInfo,
   GoogleColors,
   ListEventsRequest,
+  RhythmData,
+  TaskComment,
+  TaskFetchResult,
+  TaskProviderInfo,
+  TasksLocalState,
   UiSettings,
   UpdateStatus,
   WeatherDay,
@@ -34,8 +41,7 @@ const api = {
   getUiSettings: (): Promise<UiSettings> => ipcRenderer.invoke(IPC.GetUiSettings),
   setUiSettings: (patch: Partial<UiSettings>): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.SetUiSettings, patch),
-  // Auto-update: trigger an explicit check, install a downloaded update, or
-  // subscribe to the lifecycle stream pushed from main.
+  // Auto-update.
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke(IPC.UpdateCheck),
   installUpdate: (): Promise<void> => ipcRenderer.invoke(IPC.UpdateInstall),
   onUpdateStatus: (handler: (status: UpdateStatus) => void): (() => void) => {
@@ -43,6 +49,34 @@ const api = {
     ipcRenderer.on(IPC.UpdateStatus, listener);
     return () => ipcRenderer.removeListener(IPC.UpdateStatus, listener);
   },
+
+  // Tasks (provider-backed)
+  tasksGetProviderInfo: (): Promise<TaskProviderInfo> =>
+    ipcRenderer.invoke(IPC.TasksGetProviderInfo),
+  tasksSetCredentials: (key: string | null): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.TasksSetCredentials, key),
+  tasksList: (): Promise<Result<TaskFetchResult>> => ipcRenderer.invoke(IPC.TasksList),
+  tasksClose: (taskId: string): Promise<Result<{}>> => ipcRenderer.invoke(IPC.TasksClose, taskId),
+  tasksReopen: (taskId: string): Promise<Result<{}>> => ipcRenderer.invoke(IPC.TasksReopen, taskId),
+  tasksAddComment: (taskId: string, text: string): Promise<Result<{ comment: TaskComment }>> =>
+    ipcRenderer.invoke(IPC.TasksAddComment, taskId, text),
+  tasksGetLocal: (): Promise<TasksLocalState> => ipcRenderer.invoke(IPC.TasksGetLocal),
+  tasksSetLocal: (patch: Partial<TasksLocalState>): Promise<Result<{ state: TasksLocalState }>> =>
+    ipcRenderer.invoke(IPC.TasksSetLocal, patch),
+
+  // Day rhythm — wake/sleep with per-day overrides.
+  rhythmGet: (): Promise<RhythmData> => ipcRenderer.invoke(IPC.RhythmGet),
+  rhythmSetOverride: (dateStr: string, patch: { wakeMin?: number; sleepMin?: number }): Promise<Result<{ data: RhythmData }>> =>
+    ipcRenderer.invoke(IPC.RhythmSetOverride, dateStr, patch),
+  rhythmClearOverride: (dateStr: string): Promise<Result<{ data: RhythmData }>> =>
+    ipcRenderer.invoke(IPC.RhythmClearOverride, dateStr),
+  rhythmSetDefault: (fromDateStr: string, next: { wakeMin: number; sleepMin: number }): Promise<Result<{ data: RhythmData }>> =>
+    ipcRenderer.invoke(IPC.RhythmSetDefault, fromDateStr, next),
+
+  // Cloud (iCloud-or-local) storage shared by rhythm + tasks schedule.
+  cloudGetStorageInfo: (): Promise<CloudStorageInfo> => ipcRenderer.invoke(IPC.CloudGetStorageInfo),
+  cloudSetStorage: (pref: CloudStorage): Promise<Result<{ info: CloudStorageInfo }>> =>
+    ipcRenderer.invoke(IPC.CloudSetStorage, pref),
 };
 
 contextBridge.exposeInMainWorld('ycal', api);

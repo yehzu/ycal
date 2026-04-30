@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef } from 'react';
-import type { CalendarEvent, WeatherDay } from '@shared/types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CalendarEvent, RhythmData, TaskItem, WeatherDay } from '@shared/types';
 import {
   DOW_SHORT, addDays, fmtDate, formatTime, getISOWeek, sameYMD,
 } from '../dates';
@@ -8,12 +8,15 @@ import {
   type RibbonPlacement,
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
-import { dayHolidayInfo } from '../holidays';
+import { dayHolidayInfo, type DayHolidayInfo } from '../holidays';
 import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 import { WeatherChip } from './WeatherChip';
+import { useDragSource, useDragTarget } from '../dragController';
+import { resolveRhythm, formatRhythmTime, snap15 } from '../rhythm';
+import { formatDur } from './TasksPanel';
 
 interface Props {
   today: Date;
@@ -25,6 +28,16 @@ interface Props {
   showWeather: boolean;
   units: 'F' | 'C';
   weatherDays: WeatherDay[];
+  // Tasks layer — optional so legacy callers (none currently) don't break.
+  tasks?: TaskItem[];
+  scheduledById?: Record<string, { date: string; start: string }>;
+  onScheduleTask?: (taskId: string, date: string, start: string) => void;
+  onToggleTaskDone?: (taskId: string) => void;
+  onOpenTask?: (taskId: string) => void;
+  // Day rhythm — wake / sleep lines per column.
+  rhythmData?: RhythmData | null;
+  onSetRhythmOverride?: (dateStr: string, patch: { wakeMin?: number; sleepMin?: number }) => void;
+  onClearRhythmOverride?: (dateStr: string) => void;
 }
 
 const HOUR_HEIGHT = 56;
@@ -39,9 +52,6 @@ interface Placed {
   eMin: number;
 }
 
-// Sweep overlapping events into columns so 15-min slots don't crash into each other.
-// Minutes are clipped to [0, 1440] within `day` so an event spanning midnight
-// renders on both days with the right segment in each.
 function layoutColumns(items: CalendarEvent[], day: Date): Placed[] {
   const dayStartMs = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
   const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
@@ -100,13 +110,13 @@ function layoutColumns(items: CalendarEvent[], day: Date): Placed[] {
 export function TimeView({
   today, days, events, calRoles, onEventClick, showWeekNums,
   showWeather, units, weatherDays,
+  tasks, scheduledById, onScheduleTask, onToggleTaskDone, onOpenTask,
+  rhythmData, onSetRhythmOverride, onClearRhythmOverride,
 }: Props) {
   const hours = Array.from({ length: END_HOUR - START_HOUR + 1 }, (_, i) => i + START_HOUR);
   const colTemplate = `60px repeat(${days.length}, 1fr)`;
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
-  // Default scroll: park the visible window so "now" is roughly 90 minutes
-  // below the top edge. Falls back to 6am for past days / overnight.
   useEffect(() => {
     if (!bodyRef.current) return;
     const showsToday = days.some((d) => sameYMD(d, today));
@@ -115,16 +125,12 @@ export function TimeView({
       : 6 * 60;
     const targetMin = Math.max(0, Math.min(baseMin, (END_HOUR - START_HOUR) * 60));
     bodyRef.current.scrollTop = (targetMin / 60) * HOUR_HEIGHT;
-  // We intentionally re-scroll when the visible day-set or current time changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days[0]?.getTime(), days.length]);
 
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
   const nowOffset = ((nowMinutes / 60) - START_HOUR) * HOUR_HEIGHT;
 
-  // Single-day all-day events render inside their cell. Multi-day all-day
-  // events render as connected ribbons. Location indicators are pulled out
-  // of both — they show as date-adjacent chips.
   const allDayByDay = useMemo(() => {
     const m: Record<string, CalendarEvent[]> = {};
     for (const d of days) {
@@ -154,9 +160,6 @@ export function TimeView({
     for (const e of events) {
       if (e.allDay) continue;
       if (isLocationEvent(e)) continue;
-      // Cross-midnight events render in every day they touch, clipped per day
-      // by layoutColumns. Bucketing only by start day would leave the tail
-      // segment invisible on the next day.
       for (const d of days) {
         if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
       }
@@ -179,6 +182,26 @@ export function TimeView({
     }
     return m;
   }, [days, events]);
+
+  // Tasks bucketed by date for chip rendering.
+  const tasksByDay = useMemo(() => {
+    const m: Record<string, Array<{ task: TaskItem; start: string }>> = {};
+    for (const d of days) m[fmtDate(d)] = [];
+    if (!tasks || !scheduledById) return m;
+    const byId = new Map<string, TaskItem>();
+    for (const t of tasks) byId.set(t.id, t);
+    for (const [taskId, slot] of Object.entries(scheduledById)) {
+      const t = byId.get(taskId);
+      if (!t) continue;
+      if (!m[slot.date]) continue;
+      m[slot.date].push({ task: t, start: slot.start });
+    }
+    // Sort within each day by start time so chips don't render in random order.
+    for (const k of Object.keys(m)) {
+      m[k].sort((a, b) => a.start.localeCompare(b.start));
+    }
+    return m;
+  }, [days, tasks, scheduledById]);
 
   return (
     <div className="time-view">
@@ -312,7 +335,6 @@ export function TimeView({
                     style={{
                       ['--cal' as never]: e.color,
                       ...(holiday ? {} : { background: e.color }),
-                      // +2 because grid col 1 is the gutter "all day" label.
                       gridColumn: `${r.colStart + 2} / ${r.colEnd + 2}`,
                       gridRow: r.lane + 1,
                     }}
@@ -357,75 +379,345 @@ export function TimeView({
             const isToday = sameYMD(d, today);
             const hInfo = dayHolidayInfo(d, events, calRoles);
             const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-            const colCls = ['tv-col'];
-            if (isToday) colCls.push('today-col');
-            if (isWeekend && hInfo?.kind !== 'workday') colCls.push('weekend');
-            if (hInfo) colCls.push('h-' + hInfo.kind);
-            const dayTimed = timedByDay[fmtDate(d)] ?? [];
-            const laid = layoutColumns(dayTimed, d);
+            const dayTasks = tasksByDay[fmtDate(d)] ?? [];
             return (
-              <div
+              <DayColumn
                 key={fmtDate(d)}
-                className={colCls.join(' ')}
-                style={hInfo?.color ? ({ ['--h-color' as never]: hInfo.color }) : undefined}
-              >
-                {hours.map((h) => (
-                  <div
-                    key={h}
-                    className="tv-grid-row hour"
-                    style={{ height: HOUR_HEIGHT }}
-                  />
-                ))}
-                {laid.map(({ item: e, col, sMin, eMin, cols }) => {
-                  const top = ((sMin / 60) - START_HOUR) * HOUR_HEIGHT;
-                  const dur = eMin - sMin;
-                  const height = (dur / 60) * HOUR_HEIGHT;
-                  const widthPct = 100 / cols;
-                  const leftPct = widthPct * col;
-                  const startsHere = isEventStartDay(e, d);
-                  const cn = ['tv-event'];
-                  if (dur < 15) cn.push('tiny');
-                  else if (dur <= 30) cn.push('short');
-                  const rc = rsvpClass(e);
-                  if (rc) cn.push(rc);
-                  return (
-                    <button
-                      key={e.id}
-                      className={cn.join(' ')}
-                      style={{
-                        ['--cal' as never]: e.color,
-                        top,
-                        height: Math.max(height, 14),
-                        left: `calc(${leftPct}% + 1px)`,
-                        width: `calc(${widthPct}% - 2px)`,
-                      }}
-                      onClick={(ev) => onEventClick(e, ev.currentTarget)}
-                    >
-                      {startsHere && (
-                        <span className="et">
-                          {formatTime(new Date(e.start))}
-                          {cols === 1 && dur > 30
-                            ? `–${formatTime(new Date(e.end))}`
-                            : ''}
-                        </span>
-                      )}
-                      <span className="en">
-                        {e.title}
-                        <MergeBadge event={e} variant="compact" />
-                      </span>
-                    </button>
-                  );
-                })}
-                {isToday &&
-                  nowOffset > 0 &&
-                  nowOffset < (END_HOUR - START_HOUR + 1) * HOUR_HEIGHT && (
-                    <div className="now-line" style={{ top: nowOffset }} />
-                  )}
-              </div>
+                day={d}
+                isToday={isToday}
+                isWeekend={isWeekend}
+                hInfo={hInfo}
+                events={timedByDay[fmtDate(d)] ?? []}
+                onEventClick={onEventClick}
+                nowOffset={nowOffset}
+                tasks={dayTasks}
+                onScheduleTask={onScheduleTask}
+                onToggleTaskDone={onToggleTaskDone}
+                onOpenTask={onOpenTask}
+                rhythmData={rhythmData ?? null}
+                onSetRhythmOverride={onSetRhythmOverride}
+                onClearRhythmOverride={onClearRhythmOverride}
+              />
             );
           })}
         </div>
       </div>
     </div>
   );
+}
+
+interface DayColumnProps {
+  day: Date;
+  isToday: boolean;
+  isWeekend: boolean;
+  hInfo: DayHolidayInfo | null;
+  events: CalendarEvent[];
+  onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
+  nowOffset: number;
+  tasks: Array<{ task: TaskItem; start: string }>;
+  onScheduleTask?: (taskId: string, date: string, start: string) => void;
+  onToggleTaskDone?: (taskId: string) => void;
+  onOpenTask?: (taskId: string) => void;
+  rhythmData: RhythmData | null;
+  onSetRhythmOverride?: (dateStr: string, patch: { wakeMin?: number; sleepMin?: number }) => void;
+  onClearRhythmOverride?: (dateStr: string) => void;
+}
+
+function DayColumn({
+  day, isToday, isWeekend, hInfo, events, onEventClick, nowOffset,
+  tasks, onScheduleTask, onToggleTaskDone, onOpenTask,
+  rhythmData, onSetRhythmOverride, onClearRhythmOverride,
+}: DayColumnProps) {
+  const colRef = useRef<HTMLDivElement | null>(null);
+  const dateStr = fmtDate(day);
+  const laid = layoutColumns(events, day);
+
+  const [dropPreview, setDropPreview] = useState<{ y: number; min: number } | null>(null);
+
+  const yToMin = (y: number): number => {
+    const m = Math.round(((y / HOUR_HEIGHT) + START_HOUR) * 60);
+    return snap15(m);
+  };
+
+  useDragTarget(colRef as React.RefObject<HTMLElement>, {
+    accept: 'task',
+    onOver: ({ y, target }) => {
+      const rect = (target as HTMLElement).getBoundingClientRect();
+      const localY = y - rect.top;
+      const min = yToMin(localY);
+      const snappedY = ((min / 60) - START_HOUR) * HOUR_HEIGHT;
+      setDropPreview({ y: snappedY, min });
+    },
+    onLeave: () => setDropPreview(null),
+    onDrop: ({ y, payload, target }) => {
+      const rect = (target as HTMLElement).getBoundingClientRect();
+      const localY = y - rect.top;
+      const min = yToMin(localY);
+      const p = payload as { taskId: string };
+      if (onScheduleTask) {
+        const start = `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+        onScheduleTask(p.taskId, dateStr, start);
+      }
+      setDropPreview(null);
+    },
+  });
+
+  const colCls = ['tv-col'];
+  if (isToday) colCls.push('today-col');
+  if (isWeekend && hInfo?.kind !== 'workday') colCls.push('weekend');
+  if (hInfo) colCls.push('h-' + hInfo.kind);
+  if (dropPreview) colCls.push('drop-over');
+
+  const rhythm = useMemo(() => resolveRhythm(rhythmData, dateStr), [rhythmData, dateStr]);
+  const wakeY = ((rhythm.wakeMin / 60) - START_HOUR) * HOUR_HEIGHT;
+  const sleepY = ((rhythm.sleepMin / 60) - START_HOUR) * HOUR_HEIGHT;
+
+  return (
+    <div
+      ref={colRef}
+      className={colCls.join(' ')}
+      style={hInfo?.color ? ({ ['--h-color' as never]: hInfo.color }) : undefined}
+    >
+      {Array.from({ length: END_HOUR - START_HOUR + 1 }, (_, i) => i + START_HOUR).map((h) => (
+        <div
+          key={h}
+          className="tv-grid-row hour"
+          style={{ height: HOUR_HEIGHT }}
+        />
+      ))}
+
+      {/* Scheduled task chips. Drawn before events so events sit on top. */}
+      {tasks.map(({ task, start }) => (
+        <ScheduledTaskChip
+          key={task.id}
+          task={task}
+          dateStr={dateStr}
+          start={start}
+          onToggleDone={onToggleTaskDone}
+          onOpen={onOpenTask}
+        />
+      ))}
+
+      {laid.map(({ item: e, col, sMin, eMin, cols }) => {
+        const top = ((sMin / 60) - START_HOUR) * HOUR_HEIGHT;
+        const dur = eMin - sMin;
+        const height = (dur / 60) * HOUR_HEIGHT;
+        const widthPct = 100 / cols;
+        const leftPct = widthPct * col;
+        const startsHere = isEventStartDay(e, day);
+        const cn = ['tv-event'];
+        if (dur < 15) cn.push('tiny');
+        else if (dur <= 30) cn.push('short');
+        const rc = rsvpClass(e);
+        if (rc) cn.push(rc);
+        return (
+          <button
+            key={e.id}
+            className={cn.join(' ')}
+            style={{
+              ['--cal' as never]: e.color,
+              top,
+              height: Math.max(height, 14),
+              left: `calc(${leftPct}% + 1px)`,
+              width: `calc(${widthPct}% - 2px)`,
+            }}
+            onClick={(ev) => onEventClick(e, ev.currentTarget)}
+          >
+            {startsHere && (
+              <span className="et">
+                {formatTime(new Date(e.start))}
+                {cols === 1 && dur > 30
+                  ? `–${formatTime(new Date(e.end))}`
+                  : ''}
+              </span>
+            )}
+            <span className="en">
+              {e.title}
+              <MergeBadge event={e} variant="compact" />
+            </span>
+          </button>
+        );
+      })}
+
+      {isToday
+        && nowOffset > 0
+        && nowOffset < (END_HOUR - START_HOUR + 1) * HOUR_HEIGHT && (
+          <div className="now-line" style={{ top: nowOffset }} />
+      )}
+
+      <RhythmLine
+        kind="wake"
+        y={wakeY}
+        min={rhythm.wakeMin}
+        overridden={rhythm.overridden}
+        dateStr={dateStr}
+        onChange={onSetRhythmOverride}
+        onReset={onClearRhythmOverride}
+      />
+      <RhythmLine
+        kind="sleep"
+        y={sleepY}
+        min={rhythm.sleepMin}
+        overridden={rhythm.overridden}
+        dateStr={dateStr}
+        onChange={onSetRhythmOverride}
+        onReset={onClearRhythmOverride}
+      />
+
+      {dropPreview && (
+        <div className="drop-preview-line" style={{ top: dropPreview.y }}>
+          <span className="drop-preview-label">{minToLabel(dropPreview.min)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScheduledTaskChip({
+  task, dateStr, start, onToggleDone, onOpen,
+}: {
+  task: TaskItem;
+  dateStr: string;
+  start: string;
+  onToggleDone?: (id: string) => void;
+  onOpen?: (id: string) => void;
+}) {
+  const [h, m] = start.split(':').map((n) => parseInt(n, 10) || 0);
+  const sMin = h * 60 + m;
+  const dur = task.dur || 30;
+  const top = ((sMin / 60) - START_HOUR) * HOUR_HEIGHT;
+  const height = Math.max(20, (dur / 60) * HOUR_HEIGHT);
+
+  const drag = useDragSource({
+    type: 'task',
+    payload: { taskId: task.id, source: 'scheduled' },
+    makePreview: () => (
+      <div className="drag-preview-task">
+        <span className="drag-preview-glyph" />
+        <span className="drag-preview-ttl">{task.title}</span>
+        <span className="drag-preview-dur">{formatDur(dur)}</span>
+      </div>
+    ),
+  });
+
+  return (
+    <div
+      className={'tv-task-chip' + (task.done ? ' done' : '')}
+      style={{
+        top,
+        height,
+        left: 1,
+        right: 1,
+        ['--proj' as never]: '#5b7a8e',
+      }}
+      draggable={drag.draggable}
+      onDragStart={drag.onDragStart}
+      onPointerDown={drag.onPointerDown}
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest('.tv-task-tbox')) return;
+        onOpen?.(task.id);
+      }}
+      title={task.title + ' — drag to reschedule, drag back to inbox to unschedule'}
+      data-date={dateStr}
+    >
+      <button
+        className="tv-task-tbox"
+        onClick={(e) => { e.stopPropagation(); onToggleDone?.(task.id); }}
+        aria-label="Mark done"
+      />
+      <div className="tv-task-body">
+        <div className="tv-task-t">{minToLabel(sMin)} · {formatDur(dur)}</div>
+        <div className="tv-task-ttl">{task.title}</div>
+      </div>
+    </div>
+  );
+}
+
+interface RhythmLineProps {
+  kind: 'wake' | 'sleep';
+  y: number;
+  min: number;
+  overridden: boolean;
+  dateStr: string;
+  onChange?: (dateStr: string, patch: { wakeMin?: number; sleepMin?: number }) => void;
+  onReset?: (dateStr: string) => void;
+}
+
+function RhythmLine({
+  kind, y, min, overridden, dateStr, onChange, onReset,
+}: RhythmLineProps) {
+  const [active, setActive] = useState(false);
+  const [hover, setHover] = useState(min);
+
+  // Drag the line vertically — emit override on pointerup. We use raw
+  // pointer events directly here (no shared drag controller) because the
+  // rhythm line is its own little draggable widget, not a drop source.
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('.tv-rhythm-reset')) return;
+    e.preventDefault();
+    setActive(true);
+    const lineEl = e.currentTarget;
+    const colEl = lineEl.parentElement as HTMLElement;
+    const colRect = colEl.getBoundingClientRect();
+    let lastMin = min;
+    const onMove = (m: PointerEvent) => {
+      const localY = m.clientY - colRect.top;
+      const mins = snap15(Math.round(((localY / HOUR_HEIGHT) + START_HOUR) * 60));
+      lastMin = mins;
+      setHover(mins);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      setActive(false);
+      if (lastMin !== min && onChange) {
+        const patch = kind === 'wake'
+          ? { wakeMin: lastMin }
+          : { sleepMin: lastMin };
+        onChange(dateStr, patch);
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const displayY = active
+    ? ((hover / 60) - START_HOUR) * HOUR_HEIGHT
+    : y;
+  const displayMin = active ? hover : min;
+
+  const cls = ['tv-rhythm-line', kind];
+  if (active) cls.push('active');
+  if (overridden) cls.push('overridden');
+
+  return (
+    <div
+      className={cls.join(' ')}
+      style={{ top: displayY }}
+      onPointerDown={onPointerDown}
+      title={kind === 'wake' ? 'Wake — drag to adjust this day' : 'Sleep — drag to adjust this day'}
+    >
+      <span className="tv-rhythm-label">
+        <span className="tv-rhythm-glyph">{kind === 'wake' ? '☀' : '☾'}</span>
+        {kind} · {formatRhythmTime(displayMin)}
+        {overridden && onReset && (
+          <button
+            type="button"
+            className="tv-rhythm-reset"
+            title="Revert to default"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onReset(dateStr); }}
+          >↺</button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function minToLabel(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const fake = new Date(2000, 0, 1, h, m);
+  return formatTime(fake);
 }

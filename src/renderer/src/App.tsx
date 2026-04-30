@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  CalendarEvent, MergeCriteria, TempUnits, UiSettings,
+  CalendarEvent, CloudStorageInfo, MergeCriteria, RhythmData, TempUnits, UiSettings,
 } from '@shared/types';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import { addDays, addMonths, startOfMonth, startOfWeek } from './dates';
 import { useStore } from './store';
+import { useTasks } from './tasks';
 import type { CalRole, CalRoles } from './calRoles';
 import { MacTitleBar } from './components/MacTitleBar';
 import { AccountPicker } from './components/AccountPicker';
@@ -17,6 +18,8 @@ import { EventPopover } from './components/EventPopover';
 import { DayEventsModal } from './components/DayEventsModal';
 import { SettingsModal } from './components/SettingsModal';
 import { UpdateOverlay } from './components/UpdateOverlay';
+import { TasksPanel, TasksEdgeTab } from './components/TasksPanel';
+import { TaskSheet } from './components/TaskSheet';
 import { isFullyReadOnlyEvent, presentForVisibleCalendars } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
@@ -116,6 +119,62 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   }, []);
 
   const store = useStore(anchor, initialUi, mergeCriteria);
+  const tasks = useTasks(today);
+
+  // ── Tasks panel + sheet state ─────────────────────────────────────
+  const [tasksOpenWeek, setTasksOpenWeek] = useState(true);
+  const [tasksOpenDay, setTasksOpenDay] = useState(false);
+  const tasksOpen = view === 'day' ? tasksOpenDay : tasksOpenWeek;
+  const setTasksOpen = useCallback((next: boolean | ((prev: boolean) => boolean)) => {
+    if (view === 'day') {
+      setTasksOpenDay((prev) => typeof next === 'function' ? next(prev) : next);
+    } else {
+      setTasksOpenWeek((prev) => typeof next === 'function' ? next(prev) : next);
+    }
+  }, [view]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const selectedTask = useMemo(
+    () => tasks.tasks.find((t) => t.id === selectedTaskId) ?? null,
+    [tasks.tasks, selectedTaskId],
+  );
+
+  // ── Day rhythm + cloud storage state ──────────────────────────────
+  const [rhythmData, setRhythmData] = useState<RhythmData | null>(null);
+  const [cloudStorage, setCloudStorageInfo] = useState<CloudStorageInfo | null>(null);
+
+  useEffect(() => {
+    void window.ycal.rhythmGet().then(setRhythmData);
+    void window.ycal.cloudGetStorageInfo().then(setCloudStorageInfo);
+  }, []);
+
+  const setRhythmOverride = useCallback(async (
+    dateStr: string, patch: { wakeMin?: number; sleepMin?: number },
+  ) => {
+    const res = await window.ycal.rhythmSetOverride(dateStr, patch);
+    if (res.ok) setRhythmData(res.data);
+  }, []);
+  const clearRhythmOverride = useCallback(async (dateStr: string) => {
+    const res = await window.ycal.rhythmClearOverride(dateStr);
+    if (res.ok) setRhythmData(res.data);
+  }, []);
+  const setRhythmDefault = useCallback(async (
+    fromDateStr: string, next: { wakeMin: number; sleepMin: number },
+  ) => {
+    const res = await window.ycal.rhythmSetDefault(fromDateStr, next);
+    if (res.ok) setRhythmData(res.data);
+  }, []);
+  const setCloudStorage = useCallback(async (pref: 'icloud' | 'local') => {
+    const res = await window.ycal.cloudSetStorage(pref);
+    if (res.ok) {
+      setCloudStorageInfo(res.info);
+      // Files moved — re-read both rhythm and tasks-local from new location.
+      const data = await window.ycal.rhythmGet();
+      setRhythmData(data);
+      // The tasks store internally re-fetches via its own hooks on next
+      // refresh; trigger one so the panel reflects the move.
+      void tasks.refresh();
+    }
+  }, []);
 
   // Effective event list — drop read-only/subscribed entries when the master
   // toggle is on. Other filters (account / calendar visibility) live in store.
@@ -330,6 +389,14 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
         setView('day');
       } else if (k === 't') {
         goToToday();
+      } else if (ev.key === 'T') {
+        // Capital T (Shift+T) toggles the tasks rail. We branch on raw key
+        // here because the lower-cased `k` collapses Shift+T into "t" and
+        // would steal the "go to today" binding above.
+        if (view === 'week' || view === 'day') {
+          ev.preventDefault();
+          setTasksOpen((o) => !o);
+        }
       } else if (k === 'w') {
         ev.preventDefault();
         setHideReadOnly((v) => !v);
@@ -342,7 +409,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, popover, dayModal, settingsOpen, selected, goToToday, moveSelection]);
+  }, [view, popover, dayModal, settingsOpen, selected, goToToday, moveSelection, setTasksOpen]);
 
   // Mouse buttons 3 (XBUTTON1 / Back) and 4 (XBUTTON2 / Forward) navigate
   // the per-app history stack. Suppress on mousedown too — Electron would
@@ -480,17 +547,44 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 weatherDays={store.weatherDays}
               />
             ) : view === 'week' ? (
-              <TimeView
-                today={today}
-                days={weekDays}
-                events={visibleEvents}
-                calRoles={calRoles}
-                onEventClick={onEventClick}
-                showWeekNums={showWeekNums}
-                showWeather={showWeather}
-                units={units}
-                weatherDays={store.weatherDays}
-              />
+              <div className="tv-with-tasks">
+                <TimeView
+                  today={today}
+                  days={weekDays}
+                  events={visibleEvents}
+                  calRoles={calRoles}
+                  onEventClick={onEventClick}
+                  showWeekNums={showWeekNums}
+                  showWeather={showWeather}
+                  units={units}
+                  weatherDays={store.weatherDays}
+                  tasks={tasks.tasks}
+                  scheduledById={tasks.scheduledById}
+                  onScheduleTask={tasks.scheduleTask}
+                  onToggleTaskDone={tasks.toggleDone}
+                  onOpenTask={setSelectedTaskId}
+                  rhythmData={rhythmData}
+                  onSetRhythmOverride={(d, p) => void setRhythmOverride(d, p)}
+                  onClearRhythmOverride={(d) => void clearRhythmOverride(d)}
+                />
+                <TasksPanel
+                  open={tasksOpen}
+                  today={today}
+                  tasks={tasks.inboxTasks}
+                  projectOrder={tasks.projectOrder}
+                  projectColor={tasks.projectColor}
+                  doneTodayCount={tasks.doneTodayIds.size}
+                  carryoverIds={tasks.carryoverIds}
+                  onClose={() => setTasksOpen(false)}
+                  onUnschedule={(id) => void tasks.unscheduleTask(id)}
+                  onToggleDone={(id) => void tasks.toggleDone(id)}
+                  onOpenTask={setSelectedTaskId}
+                  apiKeySet={!!tasks.provider?.hasCredentials}
+                  loading={tasks.loading}
+                  errorMessage={tasks.error}
+                />
+                {!tasksOpen && <TasksEdgeTab onOpen={() => setTasksOpen(true)} />}
+              </div>
             ) : (
               <div className="day-view-layout">
                 <TimeView
@@ -503,6 +597,14 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   showWeather={showWeather}
                   units={units}
                   weatherDays={store.weatherDays}
+                  tasks={tasks.tasks}
+                  scheduledById={tasks.scheduledById}
+                  onScheduleTask={tasks.scheduleTask}
+                  onToggleTaskDone={tasks.toggleDone}
+                  onOpenTask={setSelectedTaskId}
+                  rhythmData={rhythmData}
+                  onSetRhythmOverride={(d, p) => void setRhythmOverride(d, p)}
+                  onClearRhythmOverride={(d) => void clearRhythmOverride(d)}
                 />
                 <DayDetailPanel
                   date={anchor}
@@ -512,6 +614,23 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   calRoles={calRoles}
                   onEventClick={onEventClick}
                 />
+                <TasksPanel
+                  open={tasksOpen}
+                  today={today}
+                  tasks={tasks.inboxTasks}
+                  projectOrder={tasks.projectOrder}
+                  projectColor={tasks.projectColor}
+                  doneTodayCount={tasks.doneTodayIds.size}
+                  carryoverIds={tasks.carryoverIds}
+                  onClose={() => setTasksOpen(false)}
+                  onUnschedule={(id) => void tasks.unscheduleTask(id)}
+                  onToggleDone={(id) => void tasks.toggleDone(id)}
+                  onOpenTask={setSelectedTaskId}
+                  apiKeySet={!!tasks.provider?.hasCredentials}
+                  loading={tasks.loading}
+                  errorMessage={tasks.error}
+                />
+                {!tasksOpen && <TasksEdgeTab onOpen={() => setTasksOpen(true)} />}
               </div>
             )}
           </main>
@@ -573,6 +692,25 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setCalRole={setCalRole}
           onAddAccount={handleSignIn}
           onRemoveAccount={store.signOut}
+          taskProvider={tasks.provider}
+          setTaskCredentials={tasks.setCredentials}
+          refreshTasks={tasks.refresh}
+          rhythmData={rhythmData}
+          setRhythmDefault={setRhythmDefault}
+          cloudStorage={cloudStorage}
+          setCloudStorage={setCloudStorage}
+        />
+      )}
+
+      {selectedTask && (
+        <TaskSheet
+          task={selectedTask}
+          today={today}
+          projColor={tasks.projectColor[selectedTask.project] ?? '#5b7a8e'}
+          isDone={selectedTask.done}
+          onClose={() => setSelectedTaskId(null)}
+          onAddComment={tasks.addComment}
+          onToggleDone={(id) => void tasks.toggleDone(id)}
         />
       )}
 

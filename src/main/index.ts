@@ -19,6 +19,15 @@ import {
 } from './updater';
 import { runCli, extractCliArgs, isCliInvocation } from './cli';
 import { startCliServer } from './cliServer';
+import {
+  getRhythm, setOverride, clearOverride, setDefault,
+} from './rhythm';
+import {
+  CLOUD_FILES, getStorageInfo, setStorage,
+} from './cloudStore';
+import { getActiveProvider } from './taskProviders';
+import { describe } from './taskProviders/types';
+import { getTasksLocal, setTasksLocal } from './tasksStore';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -177,6 +186,97 @@ function registerIpc() {
 
   ipcMain.handle(IPC.UpdateInstall, () => {
     requestInstall();
+  });
+
+  // ── Tasks (active provider) ───────────────────────────────────────
+  ipcMain.handle(IPC.TasksGetProviderInfo, () => describe(getActiveProvider()));
+  ipcMain.handle(IPC.TasksSetCredentials, (_e, key: string | null) => {
+    try {
+      getActiveProvider().setCredentials(key);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksList, async () => {
+    try {
+      const result = await getActiveProvider().listTasks();
+      setTasksLocal({ cache: result.tasks, cacheAt: new Date().toISOString() });
+      return { ok: true as const, ...result };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksClose, async (_e, taskId: string) => {
+    try {
+      await getActiveProvider().closeTask(taskId);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksReopen, async (_e, taskId: string) => {
+    try {
+      await getActiveProvider().reopenTask(taskId);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksAddComment, async (_e, taskId: string, text: string) => {
+    try {
+      const comment = await getActiveProvider().addComment(taskId, text);
+      return { ok: true as const, comment };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksGetLocal, () => getTasksLocal());
+  ipcMain.handle(IPC.TasksSetLocal, (_e, patch) => {
+    try {
+      const next = setTasksLocal(patch);
+      return { ok: true as const, state: next };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Day rhythm ────────────────────────────────────────────────────
+  ipcMain.handle(IPC.RhythmGet, () => getRhythm());
+  ipcMain.handle(IPC.RhythmSetOverride, (_e, dateStr: string, patch: { wakeMin?: number; sleepMin?: number }) => {
+    try {
+      const data = setOverride(dateStr, patch);
+      return { ok: true as const, data };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.RhythmClearOverride, (_e, dateStr: string) => {
+    try {
+      const data = clearOverride(dateStr);
+      return { ok: true as const, data };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.RhythmSetDefault, (_e, fromDateStr: string, next: { wakeMin: number; sleepMin: number }) => {
+    try {
+      const data = setDefault(fromDateStr, next);
+      return { ok: true as const, data };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Cloud storage (rhythm.json + tasks-schedule.json) ─────────────
+  ipcMain.handle(IPC.CloudGetStorageInfo, () => getStorageInfo());
+  ipcMain.handle(IPC.CloudSetStorage, (_e, pref: 'icloud' | 'local') => {
+    try {
+      const info = setStorage(pref, CLOUD_FILES);
+      return { ok: true as const, info };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
   });
 }
 
