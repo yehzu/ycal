@@ -5,6 +5,7 @@ import { rsvpClass, rsvpLabel } from '../rsvp';
 import { avatarBg, initials } from './MacTitleBar';
 import { DescriptionHTML } from './DescriptionHTML';
 import { MergeBadge } from './MergeBadge';
+import { PopoverAttendees } from './PopoverAttendees';
 
 interface Props {
   event: CalendarEvent;
@@ -103,6 +104,40 @@ export function EventPopover({ event, anchorRect, calendars, accounts, onClose }
             <span className="k">Where</span>
             <span className="v" style={{ fontStyle: 'italic' }}>{event.location}</span>
           </div>
+        )}
+        {event.meetUrl && (
+          <div className="pp-row">
+            <span className="k">Video</span>
+            <span className="v">
+              <a
+                className="pp-meet"
+                href={'https://' + event.meetUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(ev) => ev.stopPropagation()}
+              >
+                <span className="pp-meet-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="14" height="14">
+                    <path
+                      fill="#00897b"
+                      d="M2 6.5A1.5 1.5 0 0 1 3.5 5h11A1.5 1.5 0 0 1 16 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 2 17.5v-11Z"
+                    />
+                    <path
+                      fill="#fbbc04"
+                      d="M16 9.5 21.2 6.4a.5.5 0 0 1 .8.4v10.4a.5.5 0 0 1-.8.4L16 14.5v-5Z"
+                    />
+                  </svg>
+                </span>
+                <span className="pp-meet-text">
+                  Join with {event.meetLabel || 'Google Meet'}
+                </span>
+                <span className="pp-meet-url">{event.meetUrl}</span>
+              </a>
+            </span>
+          </div>
+        )}
+        {event.attendees && event.attendees.length > 0 && (
+          <PopoverAttendees attendees={event.attendees} />
         )}
         {event.description && (
           <div className="pp-row">

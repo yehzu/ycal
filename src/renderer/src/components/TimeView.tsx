@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CalendarEvent, RhythmData, TaskItem, WeatherDay } from '@shared/types';
+import type {
+  CalendarEvent, LoadBands, LoadWindowSettings, RhythmData, TaskItem, WeatherDay,
+} from '@shared/types';
 import {
   DOW_SHORT, addDays, fmtDate, formatTime, getISOWeek, sameYMD,
 } from '../dates';
@@ -18,6 +20,8 @@ import { useDragSource, useDragTarget } from '../dragController';
 import { resolveRhythm, formatRhythmTime, snap15 } from '../rhythm';
 import { formatDur } from './TasksPanel';
 import { renderInlineCode } from '../inlineCode';
+import { DayLoadGauge, DayLoadReadout } from './DayLoad';
+import { computeDayLoad } from '../dayLoad';
 
 interface Props {
   today: Date;
@@ -39,6 +43,9 @@ interface Props {
   rhythmData?: RhythmData | null;
   onSetRhythmOverride?: (dateStr: string, patch: { wakeMin?: number; sleepMin?: number }) => void;
   onClearRhythmOverride?: (dateStr: string) => void;
+  // Window for the day-load calculation (defaults to active hours).
+  loadWindow?: LoadWindowSettings;
+  loadBands?: LoadBands;
 }
 
 const HOUR_HEIGHT = 56;
@@ -113,6 +120,7 @@ export function TimeView({
   showWeather, units, weatherDays,
   tasks, scheduledById, onScheduleTask, onToggleTaskDone, onOpenTask,
   rhythmData, onSetRhythmOverride, onClearRhythmOverride,
+  loadWindow, loadBands,
 }: Props) {
   const hours = Array.from({ length: END_HOUR - START_HOUR + 1 }, (_, i) => i + START_HOUR);
   const colTemplate = `60px repeat(${days.length}, 1fr)`;
@@ -222,11 +230,23 @@ export function TimeView({
             const isToday = sameYMD(d, today);
             const hInfo = dayHolidayInfo(d, events, calRoles);
             const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+            const locs = locationsByDay[fmtDate(d)] ?? [];
+            const isOOO = locs.some((le) => locKindOf(le) === 'ooo');
             const headCls = ['tv-col-head'];
             if (isToday) headCls.push('today');
             if (isWeekend && hInfo?.kind !== 'workday') headCls.push('weekend');
             if (hInfo) headCls.push('h-' + hInfo.kind);
-            const locs = locationsByDay[fmtDate(d)] ?? [];
+            if (isOOO) headCls.push('is-ooo');
+            const dayLoad = computeDayLoad({
+              date: d,
+              events,
+              calRoles,
+              tasks,
+              scheduledById,
+              rhythmData,
+              loadWindow,
+              loadBands,
+            });
             return (
               <div
                 key={fmtDate(d)}
@@ -269,6 +289,8 @@ export function TimeView({
                     ))}
                   </div>
                 )}
+                <DayLoadGauge load={dayLoad} variant="head" />
+                <DayLoadReadout load={dayLoad} />
               </div>
             );
           })}
@@ -381,12 +403,15 @@ export function TimeView({
             const hInfo = dayHolidayInfo(d, events, calRoles);
             const isWeekend = d.getDay() === 0 || d.getDay() === 6;
             const dayTasks = tasksByDay[fmtDate(d)] ?? [];
+            const dayLocs = locationsByDay[fmtDate(d)] ?? [];
+            const isOOO = dayLocs.some((le) => locKindOf(le) === 'ooo');
             return (
               <DayColumn
                 key={fmtDate(d)}
                 day={d}
                 isToday={isToday}
                 isWeekend={isWeekend}
+                isOOO={isOOO}
                 hInfo={hInfo}
                 events={timedByDay[fmtDate(d)] ?? []}
                 onEventClick={onEventClick}
@@ -411,6 +436,7 @@ interface DayColumnProps {
   day: Date;
   isToday: boolean;
   isWeekend: boolean;
+  isOOO: boolean;
   hInfo: DayHolidayInfo | null;
   events: CalendarEvent[];
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
@@ -425,7 +451,7 @@ interface DayColumnProps {
 }
 
 function DayColumn({
-  day, isToday, isWeekend, hInfo, events, onEventClick, nowOffset,
+  day, isToday, isWeekend, isOOO, hInfo, events, onEventClick, nowOffset,
   tasks, onScheduleTask, onToggleTaskDone, onOpenTask,
   rhythmData, onSetRhythmOverride, onClearRhythmOverride,
 }: DayColumnProps) {
@@ -467,6 +493,7 @@ function DayColumn({
   if (isToday) colCls.push('today-col');
   if (isWeekend && hInfo?.kind !== 'workday') colCls.push('weekend');
   if (hInfo) colCls.push('h-' + hInfo.kind);
+  if (isOOO) colCls.push('is-ooo');
   if (dropPreview) colCls.push('drop-over');
 
   const rhythm = useMemo(() => resolveRhythm(rhythmData, dateStr), [rhythmData, dateStr]);

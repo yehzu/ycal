@@ -1,5 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import type { CalendarEvent, WeatherDay } from '@shared/types';
+import type {
+  CalendarEvent, LoadBands, LoadWindowSettings, RhythmData, TaskItem, WeatherDay,
+} from '@shared/types';
 import {
   DOW_SHORT, MONTH_SHORT, addDays, fmtDate, formatTime, getISOWeek, sameYMD,
   startOfMonth, startOfWeek,
@@ -15,6 +17,8 @@ import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
 import { WeatherChip } from './WeatherChip';
+import { DayLoadGauge } from './DayLoad';
+import { computeDayLoad } from '../dayLoad';
 
 interface Props {
   today: Date;
@@ -31,6 +35,12 @@ interface Props {
   showWeather: boolean;
   units: 'F' | 'C';
   weatherDays: WeatherDay[];
+  // Load gauge inputs — optional so older callers don't break.
+  tasks?: TaskItem[];
+  scheduledById?: Record<string, { date: string; start: string }>;
+  rhythmData?: RhythmData | null;
+  loadWindow?: LoadWindowSettings;
+  loadBands?: LoadBands;
 }
 
 const DAY_HEAD_PX = 24;
@@ -50,6 +60,7 @@ function fitsForLanes(cellHeight: number, ribbonLanes: number): number {
 export function MonthGrid({
   today, anchor, selected, setSelected, setAnchor, events, calRoles, goToDayView,
   onEventClick, openDayModal, showWeekNums, showWeather, units, weatherDays,
+  tasks, scheduledById, rhythmData, loadWindow, loadBands,
 }: Props) {
   const weeks = useMemo(() => {
     const gridStart = startOfWeek(startOfMonth(anchor), 0);
@@ -124,6 +135,12 @@ export function MonthGrid({
           showWeather={showWeather}
           units={units}
           weatherDays={weatherDays}
+          allEvents={events}
+          tasks={tasks}
+          scheduledById={scheduledById}
+          rhythmData={rhythmData}
+          loadWindow={loadWindow}
+          loadBands={loadBands}
         />
       ))}
     </div>
@@ -148,12 +165,19 @@ interface WeekRowProps {
   showWeather: boolean;
   units: 'F' | 'C';
   weatherDays: WeatherDay[];
+  allEvents: CalendarEvent[];
+  tasks?: TaskItem[];
+  scheduledById?: Record<string, { date: string; start: string }>;
+  rhythmData?: RhythmData | null;
+  loadWindow?: LoadWindowSettings;
+  loadBands?: LoadBands;
 }
 
 const WeekRow = memo(function WeekRow({
   week, anchor, today, selected, setSelected, setAnchor, eventsByDay, ribbonEvents,
   calRoles, cellHeight, goToDayView, onEventClick, openDayModal, showWeekNums,
-  showWeather, units, weatherDays,
+  showWeather, units, weatherDays, allEvents, tasks, scheduledById, rhythmData,
+  loadWindow, loadBands,
 }: WeekRowProps) {
   const ribbons = useMemo(
     () => layoutWeekRibbons(ribbonEvents, week[0]),
@@ -201,6 +225,12 @@ const WeekRow = memo(function WeekRow({
             showWeather={showWeather}
             units={units}
             weatherDays={weatherDays}
+            allEvents={allEvents}
+            tasks={tasks}
+            scheduledById={scheduledById}
+            rhythmData={rhythmData}
+            loadWindow={loadWindow}
+            loadBands={loadBands}
           />
         );
       })}
@@ -267,14 +297,32 @@ interface CellProps {
   showWeather: boolean;
   units: 'F' | 'C';
   weatherDays: WeatherDay[];
+  allEvents: CalendarEvent[];
+  tasks?: TaskItem[];
+  scheduledById?: Record<string, { date: string; start: string }>;
+  rhythmData?: RhythmData | null;
+  loadWindow?: LoadWindowSettings;
+  loadBands?: LoadBands;
 }
 
 const Cell = memo(function Cell({
   day, inMonth, isToday, isSelected, setSelected, dayEvents, calRoles, maxPerCell,
   goToDayView, onEventClick, openDayModal, showWeather, units, weatherDays,
+  allEvents, tasks, scheduledById, rhythmData, loadWindow, loadBands,
 }: CellProps) {
   const isWeekend = day.getDay() === 0 || day.getDay() === 6;
   const hInfo = dayHolidayInfo(day, dayEvents, calRoles);
+  const isOOO = dayEvents.some((e) => isLocationEvent(e) && locKindOf(e) === 'ooo');
+  const dayLoad = computeDayLoad({
+    date: day,
+    events: allEvents,
+    calRoles,
+    tasks,
+    scheduledById,
+    rhythmData,
+    loadWindow,
+    loadBands,
+  });
 
   const touching = dayEvents;
   const holidayEvents = touching.filter((e) => isHolidayEvent(e, calRoles));
@@ -316,6 +364,7 @@ const Cell = memo(function Cell({
   // 補班 promotes a weekend INTO a workday — don't apply weekend tint.
   if (isWeekend && hInfo?.kind !== 'workday') cls.push('weekend');
   if (hInfo) cls.push('h-' + hInfo.kind);
+  if (isOOO) cls.push('is-ooo');
 
   return (
     <div
@@ -361,6 +410,7 @@ const Cell = memo(function Cell({
           ))}
         </div>
       </div>
+      <DayLoadGauge load={dayLoad} variant="compact" />
       <div className="day-events">
         {shown.map((e) => {
           const cn = ['evt'];

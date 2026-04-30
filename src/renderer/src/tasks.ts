@@ -9,11 +9,11 @@
 //   * `scheduledById`— map for the calendar grid to look up the chip slot.
 //
 // AUTO-ROLLOVER: any task scheduled to a date earlier than today that
-// hasn't been completed is shown back in the inbox (as "carry over"). The
-// scheduled record stays on disk, so if the user reschedules, drag-from-
-// inbox can move it to a new slot and we just overwrite the entry. When a
-// task is completed via Todoist's "close", we drop its scheduled entry on
-// the next fetch so it doesn't drift.
+// hasn't been completed is shown back in the inbox (as "carry over"). With
+// the autoRollover setting on (default), the schedule entry is also
+// cleared on the next render so the chip disappears from the calendar
+// grid. With the setting off, the entry stays parked on its original day
+// and the inbox shows a soft "↻" carry hint instead.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
@@ -53,7 +53,7 @@ export interface TasksStore {
   addComment: (taskId: string, text: string) => Promise<TaskComment | null>;
 }
 
-export function useTasks(today: Date): TasksStore {
+export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   const [provider, setProvider] = useState<TaskProviderInfo | null>(null);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
@@ -228,9 +228,31 @@ export function useTasks(today: Date): TasksStore {
 
   const todayStr = fmtDate(today);
 
-  // Carryover: scheduled in the past, not yet done. Auto-rollover means
-  // these still appear in the inbox panel until the user either marks them
-  // done or reschedules.
+  // Auto-rollover sweep: when the toggle is on, any past-dated scheduled
+  // entry whose task isn't done loses its slot. We do this idempotently
+  // here (next render reflects the cleared state) so the chip vanishes
+  // from the calendar grid and the task surfaces as a regular inbox row.
+  // Skip until the initial fetch has resolved so we don't accidentally
+  // wipe entries for tasks that just haven't loaded yet.
+  useEffect(() => {
+    if (!autoRollover) return;
+    if (!initialLoadedRef.current) return;
+    const idsToClear: string[] = [];
+    for (const t of hydrated) {
+      if (t.done) continue;
+      if (!t.scheduledAt) continue;
+      if (t.scheduledAt.date >= todayStr) continue;
+      idsToClear.push(t.id);
+    }
+    if (idsToClear.length === 0) return;
+    const nextScheduled = { ...local.scheduled };
+    for (const id of idsToClear) delete nextScheduled[id];
+    void persistLocal({ scheduled: nextScheduled });
+  }, [autoRollover, hydrated, todayStr, local.scheduled, persistLocal]);
+
+  // Carryover: scheduled in the past, not yet done. With auto-rollover off,
+  // these still show in the inbox panel as a soft "↻ carry" hint while
+  // their schedule entry stays parked on the original day.
   const carryoverIds = useMemo(() => {
     const out = new Set<string>();
     for (const t of hydrated) {

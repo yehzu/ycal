@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState } from 'react';
 import type {
-  AccountSummary, CalendarSummary, CloudStorageInfo, MergeCriteria, RhythmData,
-  TaskProviderInfo, TempUnits, UpdateStatus,
+  AccountSummary, CalendarSummary, CloudStorageInfo, LoadBands, LoadWindowSettings,
+  MergeCriteria, RhythmData, TaskProviderInfo, TempUnits, UpdateStatus,
 } from '@shared/types';
+import { DEFAULT_LOAD_BANDS } from '@shared/types';
 import { calKey } from '../store';
 import { type CalRole, type CalRoles, ROLE_OPTIONS } from '../calRoles';
 import { avatarBg, initials } from './MacTitleBar';
@@ -43,6 +44,13 @@ interface Props {
   taskProvider: TaskProviderInfo | null;
   setTaskCredentials: (key: string | null) => Promise<void>;
   refreshTasks: () => Promise<void>;
+  autoRolloverPastTasks: boolean;
+  setAutoRolloverPastTasks: (v: boolean) => void;
+  // Day-load gauge window
+  loadWindow: LoadWindowSettings;
+  setLoadWindow: (next: LoadWindowSettings) => void;
+  loadBands: LoadBands;
+  setLoadBands: (next: LoadBands) => void;
   // Day rhythm
   rhythmData: RhythmData | null;
   setRhythmDefault: (fromDateStr: string, next: { wakeMin: number; sleepMin: number }) => Promise<void>;
@@ -166,6 +174,12 @@ export function SettingsModal(props: Props) {
                 provider={props.taskProvider}
                 setCredentials={props.setTaskCredentials}
                 refresh={props.refreshTasks}
+                autoRollover={props.autoRolloverPastTasks}
+                setAutoRollover={props.setAutoRolloverPastTasks}
+                loadWindow={props.loadWindow}
+                setLoadWindow={props.setLoadWindow}
+                loadBands={props.loadBands}
+                setLoadBands={props.setLoadBands}
               />
             )}
             {tab === 'rhythm' && (
@@ -761,10 +775,18 @@ function PrefsUpdates() {
 
 function PrefsTasks({
   provider, setCredentials, refresh,
+  autoRollover, setAutoRollover, loadWindow, setLoadWindow,
+  loadBands, setLoadBands,
 }: {
   provider: TaskProviderInfo | null;
   setCredentials: (key: string | null) => Promise<void>;
   refresh: () => Promise<void>;
+  autoRollover: boolean;
+  setAutoRollover: (v: boolean) => void;
+  loadWindow: LoadWindowSettings;
+  setLoadWindow: (next: LoadWindowSettings) => void;
+  loadBands: LoadBands;
+  setLoadBands: (next: LoadBands) => void;
 }) {
   const hasKey = !!provider?.hasCredentials;
   const [editing, setEditing] = useState(!hasKey);
@@ -875,11 +897,34 @@ function PrefsTasks({
       <div className="pref-note">
         Open the Tasks panel from the Week or Day view (right edge tab, or
         Shift+T). Drag a task onto the calendar to schedule it; drop it back
-        into the panel to unschedule. Anything not completed by end of day
-        automatically returns to the inbox the next morning. The schedule
-        lives in iCloud (or local, see <em>Sync</em>) — it&apos;s never
-        pushed back to the provider.
+        into the panel to unschedule. The schedule lives in iCloud (or local,
+        see <em>Sync</em>) — it&apos;s never pushed back to the provider.
       </div>
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Rollover</h3>
+      <PrefRow
+        label="Auto-rollover unfinished tasks"
+        hint={
+          autoRollover
+            ? 'Tasks scheduled to a past day that you didn’t finish are unscheduled and returned to the inbox.'
+            : 'Tasks stay parked on their original day with a “↻ carry” marker in the inbox until you reschedule or finish them.'
+        }
+      >
+        <PrefSwitch value={autoRollover} onChange={setAutoRollover} />
+      </PrefRow>
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Day-load gauge</h3>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        The capacity bar under each date measures committed time against an
+        active window. <strong>Free</strong> = window length minus committed
+        minutes. <strong>Energy</strong> = equivalent meeting hours: meetings
+        count 1.0×/h; tasks weighted by label — <code>low</code> 0.5×,{' '}
+        <code>mid</code> 1.0×, <code>high</code> 1.5×. Events outside the
+        window are clipped — a 7am breakfast doesn&apos;t count if the window
+        starts at 9.
+      </p>
+      <LoadWindowEditor value={loadWindow} onChange={setLoadWindow} />
+      <LoadBandsEditor value={loadBands} onChange={setLoadBands} />
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Labels</h3>
       <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
@@ -1071,6 +1116,196 @@ function PrefsSync({
         be undone by hand.
       </div>
     </div>
+  );
+}
+
+function LoadWindowEditor({
+  value, onChange,
+}: {
+  value: LoadWindowSettings;
+  onChange: (next: LoadWindowSettings) => void;
+}) {
+  const [startDraft, setStartDraft] = useState(minToHHMM(value.startMin));
+  const [endDraft, setEndDraft] = useState(minToHHMM(value.endMin));
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setStartDraft(minToHHMM(value.startMin));
+    setEndDraft(minToHHMM(value.endMin));
+  }, [value.startMin, value.endMin]);
+
+  const commit = (next: { startMin?: number; endMin?: number }) => {
+    const startMin = next.startMin ?? value.startMin;
+    const endMin = next.endMin ?? value.endMin;
+    if (startMin >= endMin) {
+      setError('Start must be earlier than end.');
+      return;
+    }
+    setError(null);
+    onChange({ ...value, mode: 'fixed', startMin, endMin });
+  };
+
+  const useRhythm = value.mode === 'rhythm';
+
+  return (
+    <>
+      <PrefRow
+        label="Use my full day rhythm"
+        hint="When on, free time and energy span wake → sleep. When off, only the active window below counts."
+      >
+        <PrefSwitch
+          value={useRhythm}
+          onChange={(v) => onChange({ ...value, mode: v ? 'rhythm' : 'fixed' })}
+        />
+      </PrefRow>
+      <PrefRow label="Active window — start">
+        <input
+          type="time"
+          className="pref-feed-input"
+          disabled={useRhythm}
+          value={startDraft}
+          step={900}
+          onChange={(e) => setStartDraft(e.target.value)}
+          onBlur={() => {
+            const m = hhmmToMin(startDraft);
+            if (m === null) {
+              setError('Use HH:MM format (24-hour).');
+              return;
+            }
+            commit({ startMin: m });
+          }}
+        />
+      </PrefRow>
+      <PrefRow label="Active window — end">
+        <input
+          type="time"
+          className="pref-feed-input"
+          disabled={useRhythm}
+          value={endDraft}
+          step={900}
+          onChange={(e) => setEndDraft(e.target.value)}
+          onBlur={() => {
+            const m = hhmmToMin(endDraft);
+            if (m === null) {
+              setError('Use HH:MM format (24-hour).');
+              return;
+            }
+            commit({ endMin: m });
+          }}
+        />
+      </PrefRow>
+      {error && <div className="pref-feed-error">{error}</div>}
+    </>
+  );
+}
+
+function LoadBandsEditor({
+  value, onChange,
+}: {
+  value: LoadBands;
+  onChange: (next: LoadBands) => void;
+}) {
+  const [calm, setCalm] = useState(String(value.calmMax));
+  const [steady, setSteady] = useState(String(value.steadyMax));
+  const [full, setFull] = useState(String(value.fullMax));
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCalm(String(value.calmMax));
+    setSteady(String(value.steadyMax));
+    setFull(String(value.fullMax));
+  }, [value.calmMax, value.steadyMax, value.fullMax]);
+
+  const commit = (next: Partial<LoadBands>) => {
+    const candidate: LoadBands = {
+      calmMax: next.calmMax ?? value.calmMax,
+      steadyMax: next.steadyMax ?? value.steadyMax,
+      fullMax: next.fullMax ?? value.fullMax,
+    };
+    if (
+      !Number.isFinite(candidate.calmMax)
+      || !Number.isFinite(candidate.steadyMax)
+      || !Number.isFinite(candidate.fullMax)
+    ) {
+      setError('Use a number of hours.');
+      return;
+    }
+    if (candidate.calmMax <= 0) {
+      setError('Calm cap must be greater than 0.');
+      return;
+    }
+    if (candidate.calmMax >= candidate.steadyMax
+      || candidate.steadyMax >= candidate.fullMax) {
+      setError('Thresholds must increase: calm < steady < full.');
+      return;
+    }
+    setError(null);
+    onChange(candidate);
+  };
+
+  const reset = () => {
+    onChange(DEFAULT_LOAD_BANDS);
+  };
+
+  return (
+    <>
+      <h4 className="pref-h" style={{ marginTop: 14, fontSize: 12 }}>
+        Energy bands
+      </h4>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        Day energy (in equivalent meeting hours) maps to a color band.
+        Adjust the cutoffs to taste — the heavy band catches anything above
+        the full cap.
+      </p>
+      <PrefRow
+        label="Calm cap"
+        hint="Days at or below this many energy hours read as calm (green)."
+      >
+        <input
+          type="number"
+          step={0.5}
+          min={0.5}
+          className="pref-feed-input"
+          value={calm}
+          onChange={(e) => setCalm(e.target.value)}
+          onBlur={() => commit({ calmMax: parseFloat(calm) })}
+        />
+      </PrefRow>
+      <PrefRow
+        label="Steady cap"
+        hint="Up to this is steady (yellow). Past it is full or heavier."
+      >
+        <input
+          type="number"
+          step={0.5}
+          min={0.5}
+          className="pref-feed-input"
+          value={steady}
+          onChange={(e) => setSteady(e.target.value)}
+          onBlur={() => commit({ steadyMax: parseFloat(steady) })}
+        />
+      </PrefRow>
+      <PrefRow
+        label="Full cap"
+        hint="Up to this is full (orange). Anything above tips into heavy (red)."
+      >
+        <input
+          type="number"
+          step={0.5}
+          min={0.5}
+          className="pref-feed-input"
+          value={full}
+          onChange={(e) => setFull(e.target.value)}
+          onBlur={() => commit({ fullMax: parseFloat(full) })}
+        />
+      </PrefRow>
+      {error && <div className="pref-feed-error">{error}</div>}
+      <div className="pref-feed-actions" style={{ marginTop: 6 }}>
+        <button className="pref-btn" onClick={reset}>
+          Reset to defaults
+        </button>
+      </div>
+    </>
   );
 }
 

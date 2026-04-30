@@ -1,4 +1,7 @@
-import type { CalendarEvent, AccountSummary, CalendarSummary } from '@shared/types';
+import type {
+  CalendarEvent, AccountSummary, CalendarSummary, LoadBands, LoadWindowSettings,
+  RhythmData, TaskItem,
+} from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import {
@@ -8,6 +11,8 @@ import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
+import { DayLoadSummary } from './DayLoad';
+import { computeDayLoad } from '../dayLoad';
 
 interface Props {
   date: Date;
@@ -16,11 +21,21 @@ interface Props {
   calendars: CalendarSummary[];
   calRoles: CalRoles;
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
+  tasks?: TaskItem[];
+  scheduledById?: Record<string, { date: string; start: string }>;
+  rhythmData?: RhythmData | null;
+  loadWindow?: LoadWindowSettings;
+  loadBands?: LoadBands;
 }
 
 export function DayDetailPanel({
   date, events, accounts, calendars, calRoles, onEventClick,
+  tasks, scheduledById, rhythmData, loadWindow, loadBands,
 }: Props) {
+  const dayLoad = computeDayLoad({
+    date, events, calRoles, tasks, scheduledById, rhythmData, loadWindow,
+    loadBands,
+  });
   const todays = eventsTouchingDay(events, date);
 
   // Holidays render as a margin note above the journal. Dedupe by title.
@@ -103,6 +118,8 @@ export function DayDetailPanel({
         </small>
       </div>
       <hr className="dd-rule" />
+
+      {dayLoad && <DayLoadSummary load={dayLoad} />}
 
       {locations.length > 0 && (
         <div className="dd-locations">

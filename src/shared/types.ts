@@ -50,6 +50,18 @@ export interface CalendarEvent {
     kind: 'office' | 'home' | 'ooo' | 'other';
     label: string;
   };
+  // Google Meet (or other conference) URL pulled from conferenceData or
+  // hangoutLink. Stored without the protocol prefix so the popover can
+  // render it as a label and append "https://" when opening externally.
+  meetUrl?: string;
+  // Pretty-printed conference name when it isn't Google Meet (e.g. Zoom).
+  // Falls back to "Video call" when Google didn't tell us the type.
+  meetLabel?: string;
+  // Other attendees on the invite — modeled after Google's attendee object.
+  // The "self" record is excluded (RSVP is on the parent CalendarEvent),
+  // but the organizer is kept even when the user is the organizer so the
+  // popover can show "you · organizer".
+  attendees?: EventAttendee[];
   // When events with the same title + slot are duplicated across calendars,
   // we collapse them into one for rendering and stash the originals here.
   // Includes the kept event itself, so length ≥ 1 after merging.
@@ -60,6 +72,20 @@ export interface CalendarEvent {
     color: string;
     htmlLink: string | null;
   }>;
+}
+
+// Attendee on a CalendarEvent. Email is the identity key (display name may be
+// missing for external invitees). `additionalGuests` mirrors Google's "+N
+// guests" feature so the popover counts can include the bring-along headcount.
+export interface EventAttendee {
+  email: string;
+  name: string | null;
+  organizer: boolean;
+  self: boolean;
+  rsvp: 'accepted' | 'tentative' | 'declined' | 'needsAction';
+  optional: boolean;
+  resource: boolean;
+  additionalGuests: number;
 }
 
 // Google's 11-color event palette + 24 calendar palette, fetched once per session.
@@ -124,7 +150,53 @@ export interface UiSettings {
   units?: TempUnits;
   // Hide calendar rows that the user has toggled off in the sidebar.
   hideDisabledCals?: boolean;
+  // When true, unfinished scheduled tasks from previous days are
+  // automatically unscheduled and returned to the inbox. When false, they
+  // stay parked on their original day with a "↻ carry" indicator.
+  autoRolloverPastTasks?: boolean;
+  // Window used to compute the day-load gauge (free time, energy, intensity).
+  loadWindow?: LoadWindowSettings;
+  // Energy thresholds for the day-load gauge intensity bands.
+  loadBands?: LoadBands;
 }
+
+// Energy bands for the day-load intensity color. Thresholds are in
+// equivalent-meeting-hours: meetings count 1.0×/h, tasks scale by their
+// declared energy (low 0.5×, mid 1.0×, high 1.5×). A day's energyScore
+// falls into:
+//   ≤ calmMax    → calm   (green)
+//   ≤ steadyMax  → steady (yellow)
+//   ≤ fullMax    → full   (orange)
+//   > fullMax    → heavy  (red)
+export interface LoadBands {
+  calmMax: number;    // hours
+  steadyMax: number;
+  fullMax: number;
+}
+
+export const DEFAULT_LOAD_BANDS: LoadBands = {
+  calmMax: 3,
+  steadyMax: 6,
+  fullMax: 9,
+};
+
+// Day-load calculation window. Two modes:
+//   'rhythm'  — wake→sleep from the per-day rhythm. Largest window, ~16h.
+//   'fixed'   — a fixed start/end (minutes from midnight). Defaults to
+//               9 AM – 6 PM so the gauge reflects "work hours" rather than
+//               whole-day capacity, which makes packed work days actually
+//               read as packed.
+export interface LoadWindowSettings {
+  mode: 'rhythm' | 'fixed';
+  startMin: number;  // 0..1440, only used when mode === 'fixed'
+  endMin: number;
+}
+
+export const DEFAULT_LOAD_WINDOW: LoadWindowSettings = {
+  mode: 'fixed',
+  startMin: 9 * 60,
+  endMin: 18 * 60,
+};
 
 // Auto-update lifecycle, mirrored from electron-updater's events into a
 // renderer-friendly union. `idle` is the boot state and what we fall back

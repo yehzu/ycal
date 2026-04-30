@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  CalendarEvent, CloudStorageInfo, MergeCriteria, RhythmData, TempUnits, UiSettings,
+  CalendarEvent, CloudStorageInfo, LoadBands, LoadWindowSettings,
+  MergeCriteria, RhythmData, TempUnits, UiSettings,
 } from '@shared/types';
-import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
+import {
+  DEFAULT_LOAD_BANDS, DEFAULT_LOAD_WINDOW, DEFAULT_MERGE_CRITERIA,
+} from '@shared/types';
 import { addDays, addMonths, startOfMonth, startOfWeek } from './dates';
 import { useStore } from './store';
 import { useTasks } from './tasks';
@@ -113,13 +116,22 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [units, setUnits] = useState<TempUnits>(
     () => initialUi.units ?? 'F',
   );
+  const [autoRolloverPastTasks, setAutoRolloverPastTasks] = useState<boolean>(
+    () => initialUi.autoRolloverPastTasks ?? true,
+  );
+  const [loadWindow, setLoadWindow] = useState<LoadWindowSettings>(
+    () => ({ ...DEFAULT_LOAD_WINDOW, ...(initialUi.loadWindow ?? {}) }),
+  );
+  const [loadBands, setLoadBands] = useState<LoadBands>(
+    () => ({ ...DEFAULT_LOAD_BANDS, ...(initialUi.loadBands ?? {}) }),
+  );
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
     setCalRoles((prev) => ({ ...prev, [key]: role }));
   }, []);
 
   const store = useStore(anchor, initialUi, mergeCriteria);
-  const tasks = useTasks(today);
+  const tasks = useTasks(today, autoRolloverPastTasks);
 
   // ── Tasks panel + sheet state ─────────────────────────────────────
   const [tasksOpenWeek, setTasksOpenWeek] = useState(true);
@@ -213,10 +225,14 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       showWeather,
       units,
       hideDisabledCals,
+      autoRolloverPastTasks,
+      loadWindow,
+      loadBands,
     });
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
+    autoRolloverPastTasks, loadWindow, loadBands,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -551,6 +567,11 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                 showWeather={showWeather}
                 units={units}
                 weatherDays={store.weatherDays}
+                tasks={tasks.tasks}
+                scheduledById={tasks.scheduledById}
+                rhythmData={rhythmData}
+                loadWindow={loadWindow}
+                loadBands={loadBands}
               />
             ) : view === 'week' ? (
               <div className="tv-with-tasks">
@@ -572,6 +593,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   rhythmData={rhythmData}
                   onSetRhythmOverride={(d, p) => void setRhythmOverride(d, p)}
                   onClearRhythmOverride={(d) => void clearRhythmOverride(d)}
+                  loadWindow={loadWindow}
+                  loadBands={loadBands}
                 />
                 <TasksPanel
                   open={tasksOpen}
@@ -611,6 +634,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   rhythmData={rhythmData}
                   onSetRhythmOverride={(d, p) => void setRhythmOverride(d, p)}
                   onClearRhythmOverride={(d) => void clearRhythmOverride(d)}
+                  loadWindow={loadWindow}
+                  loadBands={loadBands}
                 />
                 <DayDetailPanel
                   date={anchor}
@@ -619,6 +644,11 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   calendars={store.calendars}
                   calRoles={calRoles}
                   onEventClick={onEventClick}
+                  tasks={tasks.tasks}
+                  scheduledById={tasks.scheduledById}
+                  rhythmData={rhythmData}
+                  loadWindow={loadWindow}
+                  loadBands={loadBands}
                 />
                 <TasksPanel
                   open={tasksOpen}
@@ -701,6 +731,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           taskProvider={tasks.provider}
           setTaskCredentials={tasks.setCredentials}
           refreshTasks={tasks.refresh}
+          autoRolloverPastTasks={autoRolloverPastTasks}
+          setAutoRolloverPastTasks={setAutoRolloverPastTasks}
+          loadWindow={loadWindow}
+          setLoadWindow={setLoadWindow}
+          loadBands={loadBands}
+          setLoadBands={setLoadBands}
           rhythmData={rhythmData}
           setRhythmDefault={setRhythmDefault}
           cloudStorage={cloudStorage}

@@ -2352,6 +2352,382 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   text-decoration: line-through;
 }
 
+/* ── Popover: Google Meet link ─────────────────────────────────────────── */
+.pp-meet {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--ink);
+  padding: 6px 10px;
+  border: 0.5px solid var(--rule);
+  background: var(--paper);
+  font-family: var(--serif-body);
+  font-size: 12.5px;
+  transition: background 90ms ease, border-color 90ms ease;
+}
+.pp-meet:hover { background: var(--paper-2); border-color: var(--ink-mute); }
+.pp-meet-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+.pp-meet-text { font-weight: 600; letter-spacing: 0.01em; }
+.pp-meet-url {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-mute);
+  margin-left: 4px;
+  border-left: 0.5px solid var(--rule);
+  padding-left: 8px;
+}
+
+/* ── Popover: attendees ─────────────────────────────────────────────────── */
+.pp-att-row .v { padding-top: 0; }
+.pp-att-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.pp-att-count {
+  font-family: var(--serif-body);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.pp-att-counts { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.pp-att-pill {
+  font-family: var(--serif-body);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 1px 6px 2px;
+  border: 0.5px solid var(--rule);
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.pp-att-pill .pp-att-pill-l { font-style: italic; color: var(--ink-mute); }
+.pp-att-pill.yes      { border-color: color-mix(in srgb, #0b8043 40%, var(--rule)); color: #0b8043; }
+.pp-att-pill.maybe    { border-color: color-mix(in srgb, #f4511e 35%, var(--rule)); color: #b8451a; }
+.pp-att-pill.awaiting { border-style: dashed; }
+.pp-att-pill.no       {
+  color: var(--ink-mute);
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+
+.pp-att-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+.pp-att-row-item {
+  display: grid;
+  grid-template-columns: 22px 1fr 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12.5px;
+}
+.pp-att-row-item.declined .pp-att-name {
+  color: var(--ink-mute);
+  text-decoration: line-through;
+  text-decoration-thickness: 0.5px;
+}
+.pp-att-row-item.tentative .pp-att-name { font-style: italic; }
+.pp-att-row-item.awaiting .pp-att-av { opacity: 0.7; }
+.pp-att-av {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 10px;
+  color: #fff;
+  letter-spacing: 0;
+}
+.pp-att-name {
+  font-family: var(--serif-body);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pp-att-tag {
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 10px;
+  color: var(--ink-mute);
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+  border: 0.5px solid var(--rule);
+}
+.pp-att-rsvp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pp-att-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 50%;
+}
+.pp-att-mark.yes      { color: #0b8043; }
+.pp-att-mark.maybe    { color: #b8451a; }
+.pp-att-mark.no       { color: var(--ink-mute); }
+.pp-att-mark.awaiting { color: var(--ink-mute); font-size: 16px; line-height: 1; }
+
+.pp-att-more {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 4px 0;
+  margin-left: 30px;
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 11.5px;
+  color: var(--ink-mute);
+  text-align: left;
+  cursor: pointer;
+}
+.pp-att-more:hover { color: var(--ink); text-decoration: underline; }
+
+/* ── Day load gauge ──────────────────────────────────────────────────────
+   The capacity bar that appears below the day-num in month cells, in the
+   week/day column header, and (richer variant) in the day detail panel.
+   Five intensity levels map to ink-tinted colors that read as "weight" on
+   the cream paper without introducing new chart colors.
+*/
+.day-load-gauge {
+  --i-color: var(--ink-faint);
+  position: relative;
+  height: 4px;
+  margin: 3px 4px 4px;
+  background: rgba(26, 24, 20, 0.10);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.day-load-gauge.v-head {
+  margin: 4px 8px 0;
+  height: 5px;
+  display: flex;
+  align-items: stretch;
+}
+.day-load-gauge .day-load-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--i-color);
+  border-radius: inherit;
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+}
+/* Color ramp — green ➜ yellow ➜ orange ➜ red so the gauge reads
+   intuitively as load increases. Calm/steady/full/heavy are all desaturated
+   enough to live on cream paper without screaming. */
+.day-load-gauge.i-calm    { --i-color: #5a7e5e; }
+.day-load-gauge.i-steady  { --i-color: #c2a23a; }
+.day-load-gauge.i-full    { --i-color: #b86b3e; }
+.day-load-gauge.i-heavy   { --i-color: #9c3a2a; }
+.day-load-gauge.packed .day-load-fill {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 2px,
+    rgba(255, 255, 255, 0.4) 2px 3px
+  );
+  background-color: var(--i-color);
+}
+
+.day-load-readout {
+  --i-color: var(--ink-mute);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--i-color);
+  margin: 3px 0 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.day-load-readout.i-calm    { --i-color: #4a6a4f; }
+.day-load-readout.i-steady  { --i-color: #997d20; }
+.day-load-readout.i-full    { --i-color: #a05a30; }
+.day-load-readout.i-heavy,
+.day-load-readout.i-packed  { --i-color: #8c2e22; font-weight: 700; }
+
+.day-load-summary {
+  --i-color: var(--ink-faint);
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--rule-soft, var(--rule));
+  border-radius: 3px;
+  background: rgba(255, 253, 247, 0.5);
+  font-family: var(--serif-body);
+}
+.day-load-summary.compact { padding: 8px 10px; margin-bottom: 10px; }
+.day-load-summary.i-calm    { --i-color: #6b8a6e; }
+.day-load-summary.i-steady  { --i-color: #b89c2e; }
+.day-load-summary.i-full    { --i-color: #b86b3e; }
+.day-load-summary.i-heavy   { --i-color: #9c3a2a; }
+.day-load-summary .dls-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.day-load-summary .dls-headline em {
+  font-style: italic;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--ink-mute);
+  letter-spacing: 0.04em;
+  margin-left: 2px;
+}
+.day-load-summary .dls-free {
+  font-weight: 500;
+  color: var(--i-color);
+}
+.day-load-summary .dls-occ { color: var(--ink-soft); }
+.day-load-summary .dls-sep {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+.day-load-summary .dls-bar {
+  position: relative;
+  height: 6px;
+  background: rgba(26, 24, 20, 0.07);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.day-load-summary .dls-bar-occ {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--i-color);
+  border-radius: inherit;
+}
+.day-load-summary .dls-bar-tick {
+  position: absolute;
+  top: -1px; bottom: -1px;
+  width: 0.5px;
+  background: var(--ink-faint);
+  pointer-events: none;
+}
+.day-load-summary .dls-meta {
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--ink-mute);
+  margin-top: 6px;
+  letter-spacing: 0.02em;
+}
+
+/* ── OOO day treatment ──────────────────────────────────────────────────
+   When a working-location event with locKind=ooo lands on a day, the cell
+   should read "you're not here" at a glance. Three things at once: a warm
+   wash that's clearly off-cream, a diagonal stripe overlay, and a small
+   "OOO" tab in the corner. */
+.month-cell.is-ooo {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 7px,
+      rgba(184, 107, 62, 0.10) 7px 9px
+    ),
+    color-mix(in srgb, #b86b3e 11%, var(--paper));
+  position: relative;
+}
+.month-cell.is-ooo .day-num {
+  color: #8c4a26;
+  font-style: italic;
+}
+.month-cell.is-ooo::after {
+  content: "OOO";
+  position: absolute;
+  top: 4px; right: 4px;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #b86b3e;
+  background: var(--paper);
+  border: 0.5px solid #b86b3e;
+  padding: 1px 4px 0;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+  line-height: 1.4;
+}
+.month-cell.is-ooo .day-meta { padding-right: 28px; }
+
+.tv-col-head.is-ooo {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(184, 107, 62, 0.12) 8px 10px
+    ),
+    color-mix(in srgb, #b86b3e 14%, var(--paper));
+  position: relative;
+}
+.tv-col-head.is-ooo .num,
+.tv-col-head.is-ooo .dow { color: #8c4a26; }
+.tv-col-head.is-ooo::before {
+  content: "OOO";
+  position: absolute;
+  top: 4px; left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--paper);
+  background: #b86b3e;
+  padding: 2px 6px 1px;
+  border-radius: 2px;
+  line-height: 1.2;
+  z-index: 2;
+}
+.tv-col-head.is-ooo .dow,
+.tv-col-head.is-ooo .num { margin-top: 14px; }
+.tv-col-head.is-ooo::after {
+  content: "";
+  position: absolute;
+  left: 4px; right: 4px; bottom: 0;
+  height: 3px;
+  background: repeating-linear-gradient(
+    -45deg,
+    #b86b3e 0 3px,
+    color-mix(in srgb, #b86b3e 30%, transparent) 3px 6px
+  );
+}
+
+.tv-col.is-ooo {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(184, 107, 62, 0.05) 8px 10px
+    ),
+    color-mix(in srgb, #b86b3e 5%, var(--paper));
+}
+
 /* ── Auto-update overlay ────────────────────────────────────────────────
    Toast for downloading/available, full-bleed splash for ready-to-relaunch.
    Visual language matches the rest of the app: paper, serif, dotted rules. */

@@ -4,6 +4,7 @@ import { listAccounts, getAccount } from './tokenStore';
 import type {
   CalendarSummary,
   CalendarEvent,
+  EventAttendee,
   GoogleColors,
   ListEventsRequest,
   AccountSummary,
@@ -171,6 +172,61 @@ function resolveRsvp(
   }
 }
 
+// Extract a Google Meet (or other) conference link plus a label. We prefer
+// `conferenceData` when present (it carries entryPoints with explicit URIs and
+// a solution name), and fall back to the legacy `hangoutLink` field. The URL
+// is stored without protocol so the popover can render it as a compact label.
+function resolveMeet(
+  ev: calendar_v3.Schema$Event,
+): { meetUrl?: string; meetLabel?: string } {
+  const cd = ev.conferenceData;
+  if (cd) {
+    const entries = cd.entryPoints ?? [];
+    const video = entries.find((e) => e.entryPointType === 'video');
+    if (video?.uri) {
+      const solution = cd.conferenceSolution?.name ?? null;
+      return {
+        meetUrl: stripProto(video.uri),
+        ...(solution ? { meetLabel: solution } : {}),
+      };
+    }
+  }
+  if (ev.hangoutLink) {
+    return { meetUrl: stripProto(ev.hangoutLink), meetLabel: 'Google Meet' };
+  }
+  return {};
+}
+
+function stripProto(url: string): string {
+  return url.replace(/^https?:\/\//, '');
+}
+
+function resolveAttendees(ev: calendar_v3.Schema$Event): EventAttendee[] | undefined {
+  const list = ev.attendees;
+  if (!list || list.length === 0) return undefined;
+  const out: EventAttendee[] = [];
+  for (const a of list) {
+    if (!a.email && !a.displayName) continue;
+    const status = a.responseStatus;
+    const rsvp: EventAttendee['rsvp']
+      = status === 'accepted' || status === 'tentative'
+        || status === 'declined' || status === 'needsAction'
+        ? status
+        : 'needsAction';
+    out.push({
+      email: a.email ?? '',
+      name: a.displayName ?? null,
+      organizer: !!a.organizer,
+      self: !!a.self,
+      rsvp,
+      optional: !!a.optional,
+      resource: !!a.resource,
+      additionalGuests: a.additionalGuests ?? 0,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function isoFromGoogleDate(g: calendar_v3.Schema$EventDateTime | undefined): {
   iso: string;
   allDay: boolean;
@@ -242,6 +298,8 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
             : cal.color;
           const eventType = ev.eventType ?? 'default';
           const workingLocation = resolveWorkingLocation(ev, eventType);
+          const meet = resolveMeet(ev);
+          const attendees = resolveAttendees(ev);
           out.push({
             id: ev.id,
             calendarId: cal.id,
@@ -259,6 +317,9 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
             eventType,
             rsvp: resolveRsvp(ev),
             ...(workingLocation ? { workingLocation } : {}),
+            ...(meet.meetUrl ? { meetUrl: meet.meetUrl } : {}),
+            ...(meet.meetLabel ? { meetLabel: meet.meetLabel } : {}),
+            ...(attendees ? { attendees } : {}),
           });
         }
         pageToken = res.data.nextPageToken ?? undefined;

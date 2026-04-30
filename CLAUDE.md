@@ -42,11 +42,15 @@ src/
 │       ├── store.ts             Calendar events + accounts + weather hook
 │       ├── tasks.ts             Tasks store hook (provider-agnostic)
 │       ├── rhythm.ts            Pure helpers — resolveRhythm / formatRhythmTime
+│       ├── dayLoad.ts           Pure helper — computeDayLoad (free / energy / intensity)
 │       ├── dragController.tsx   Pointer + HTML5 hybrid drag controller
 │       └── components/
 │           ├── TimeView.tsx       Week/Day grid, task chips, rhythm lines, drops
 │           ├── TasksPanel.tsx     Right rail + TaskCard + edge tab
 │           ├── TaskSheet.tsx      Slide-in detail (description + comments)
+│           ├── EventPopover.tsx   Event detail popover (Meet link + attendees)
+│           ├── PopoverAttendees.tsx  Sorted guest list for the popover
+│           ├── DayLoad.tsx        DayLoadGauge / Readout / Summary (capacity bar)
 │           └── SettingsModal.tsx  Tabs: General/Tasks/Day rhythm/Sync/…
 └── shared/       Cross-process types and pure helpers
     ├── types.ts        IPC contract — change carefully
@@ -170,7 +174,7 @@ The Tasks rail in Week + Day views is glued together by three files:
 - `src/main/tasksStore.ts` — local schedule + done overlay, cloudStore-backed. Lives in iCloud Drive when preferred and available; falls back to userData. Migrates from a legacy `tasks` block in `settings.json` once.
 - `src/renderer/src/tasks.ts` — the `useTasks` hook. Hydrates tasks with the local overlay, computes `carryoverIds` (scheduled-in-the-past + not-done), surfaces `inboxTasks` and `scheduledById` for the calendar.
 
-**Auto-rollover** is purely a renderer-side derivation: if a task's `scheduledAt.date < today` and it isn't done, it shows in the inbox panel with the carry indicator. The local schedule entry stays put until the user reschedules or completes it.
+**Auto-rollover** is gated by the `autoRolloverPastTasks` UI setting (default on). When on, `useTasks` runs an idempotent sweep: any past-dated scheduled entry whose task isn't done has its slot cleared via `persistLocal`, so the chip vanishes from the calendar grid and the task surfaces as a regular inbox row. When off, the schedule entry stays parked on its original day and `carryoverIds` flags it in the inbox with a soft "↻" hint. Either way the panel shows the task — the toggle just decides whether the calendar chip lingers.
 
 **Troika labels.** `parseTaskMeta` in `taskProviders/labels.ts` reads provider labels (and a few legacy inline tags in titles) and pulls out:
 - duration: `30m` / `1h` / `1h30m` / `2h`
@@ -186,6 +190,32 @@ Pure-numeric labels are explicitly rejected as durations so a "2026" project lab
 - `overrides: Record<dateStr, RhythmOverride>` — per-day explicit values from dragging the wake/sleep line in week or day view. These win over the default.
 
 `resolveDefault(data, dateStr)` walks the list and returns the latest entry whose `fromDate ≤ dateStr`. `resolveEffective` layers the override on top. The renderer mirrors these helpers in `src/renderer/src/rhythm.ts` so a frame can paint without bouncing off IPC.
+
+## Day-load gauge — energy + free-time indicator
+
+`src/renderer/src/dayLoad.ts#computeDayLoad` is the single source of truth for the capacity bar that appears under each date (month cell, week/day column header) and as a richer summary in the day detail panel. Three rendering surfaces in `components/DayLoad.tsx`: `DayLoadGauge` (compact bar + head variant), `DayLoadReadout` ("5h free" / "PACKED"), `DayLoadSummary` (free + committed + meta block).
+
+Two metrics come out of one pass over a configurable **active window**:
+
+- `occupiedMin` — timed events + scheduled tasks, clipped to the window. RSVP-declined / holiday / location events don't count.
+- `energyScore` — equivalent meeting hours: meetings 1.0×/h, tasks weighted by their declared energy (low 0.5×, mid 1.0×, high 1.5×).
+
+**Active window** is the `loadWindow` UI setting:
+- `mode: 'fixed'` (default) — `startMin` / `endMin` from midnight. Default is **9 AM – 6 PM** so packed work days actually read as packed instead of looking 60% free against a 16-hour wake-to-sleep span.
+- `mode: 'rhythm'` — falls back to wake → sleep from the per-day rhythm.
+
+**Energy bands** are the `loadBands` UI setting (default 3 / 6 / 9 equivalent meeting hours = calm / steady / full / heavy). `resolveBands` snaps misordered values up so calm < steady < full always holds and no bucket is unreachable. Color ramp is green → yellow → orange → red (calm → heavy), driven by the `i-<intensity>` class on each component. Don't change the order without updating the CSS variables in `styles.css` (search for `.day-load-gauge.i-`).
+
+A null return from `computeDayLoad` means "nothing scheduled" — callers skip rendering the gauge entirely so empty days stay quiet on the page.
+
+## Event popover — Meet link + attendees
+
+`EventPopover.tsx` renders the "Video" row when `event.meetUrl` is set and the "Guests" row via `PopoverAttendees.tsx` when `event.attendees` is non-empty. Both fields are populated in `main/calendar.ts`:
+
+- `meetUrl` comes from `conferenceData.entryPoints[type=video].uri` (preferred — carries the conference solution name) or the legacy `hangoutLink`. We strip `https://` so the popover can render it as a compact label and re-add the protocol when opening externally.
+- `attendees` mirrors Google's attendee object, including `additionalGuests` so "+47 others" rows roll up correctly into the count pills.
+
+`PopoverAttendees` sorts organizer → self → accepted → tentative → needsAction → declined and folds long lists past 5 with an expand/collapse. Avatar background is a stable hash of the email clamped to the 130–290 hue range so dots never collide with the warm calendar palette.
 
 ## Drag-and-drop bug to remember
 
