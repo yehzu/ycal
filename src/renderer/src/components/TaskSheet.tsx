@@ -7,19 +7,26 @@
 import { useEffect, useRef, useState } from 'react';
 import type { TaskItem } from '@shared/types';
 import { DOW_SHORT, MONTH_SHORT, fmtDate, formatTime } from '../dates';
+import { renderInlineCode } from '../inlineCode';
 
 interface Props {
   task: TaskItem | null;
   today: Date;
   projColor: string;
   isDone: boolean;
+  // Direct children of `task` (Todoist subtasks). Each is itself a TaskItem
+  // so we can re-use the same toggle/open handlers.
+  subtasks: TaskItem[];
   onClose: () => void;
   onAddComment: (taskId: string, text: string) => Promise<unknown>;
   onToggleDone: (taskId: string) => void;
+  // Open a different task in the same sheet (drilling into a subtask).
+  onOpenTask: (taskId: string) => void;
 }
 
 export function TaskSheet({
-  task, today, projColor, isDone, onClose, onAddComment, onToggleDone,
+  task, today, projColor, isDone, subtasks,
+  onClose, onAddComment, onToggleDone, onOpenTask,
 }: Props) {
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -88,7 +95,9 @@ export function TaskSheet({
             aria-label="Toggle done"
             title="Mark done"
           />
-          <h2 className={'ts-title' + (isDone ? ' done' : '')}>{task.title}</h2>
+          <h2 className={'ts-title' + (isDone ? ' done' : '')}>
+            {renderInlineCode(task.title)}
+          </h2>
         </div>
 
         <div className="ts-meta">
@@ -110,7 +119,7 @@ export function TaskSheet({
           {desc ? (
             <div className="ts-desc">
               {desc.split('\n').map((line, i) => (
-                <p key={i}>{line || ' '}</p>
+                <p key={i}>{line ? renderInlineCode(line) : ' '}</p>
               ))}
             </div>
           ) : (
@@ -122,6 +131,37 @@ export function TaskSheet({
             </button>
           )}
         </section>
+
+        {subtasks.length > 0 && (
+          <section className="ts-section">
+            <div className="ts-section-label">
+              Subtasks <span className="ts-count">{subtasks.length}</span>
+            </div>
+            <ul className="ts-subtasks">
+              {subtasks.map((sub) => (
+                <li
+                  key={sub.id}
+                  className={'ts-subtask' + (sub.done ? ' done' : '')}
+                >
+                  <button
+                    className={'ts-tbox' + (sub.done ? ' done' : '')}
+                    onClick={() => onToggleDone(sub.id)}
+                    aria-label="Toggle done"
+                    title="Mark done"
+                  />
+                  <button
+                    type="button"
+                    className="ts-subtask-title"
+                    onClick={() => onOpenTask(sub.id)}
+                    title="Open subtask"
+                  >
+                    {renderInlineCode(sub.title)}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section className="ts-section">
           <div className="ts-section-label">

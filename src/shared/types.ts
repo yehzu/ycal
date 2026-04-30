@@ -171,6 +171,10 @@ export interface TaskProviderInfo {
 export interface TaskItem {
   id: string;          // Todoist task id, kept as string
   projectId: string | null;
+  // Parent task id when this is a subtask, else null. Provider-supplied —
+  // the renderer builds the nesting tree from this. Children inherit
+  // `project` from their parent on the wire.
+  parentId: string | null;
   project: string;     // resolved project name (used for grouping + color)
   title: string;
   description: string;

@@ -137,6 +137,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     () => tasks.tasks.find((t) => t.id === selectedTaskId) ?? null,
     [tasks.tasks, selectedTaskId],
   );
+  const selectedSubtasks = useMemo(
+    () => (selectedTask
+      ? tasks.tasks.filter((t) => t.parentId === selectedTask.id)
+      : []),
+    [tasks.tasks, selectedTask],
+  );
 
   // ── Day rhythm + cloud storage state ──────────────────────────────
   const [rhythmData, setRhythmData] = useState<RhythmData | null>(null);
@@ -708,9 +714,11 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           today={today}
           projColor={tasks.projectColor[selectedTask.project] ?? '#5b7a8e'}
           isDone={selectedTask.done}
+          subtasks={selectedSubtasks}
           onClose={() => setSelectedTaskId(null)}
           onAddComment={tasks.addComment}
           onToggleDone={(id) => void tasks.toggleDone(id)}
+          onOpenTask={setSelectedTaskId}
         />
       )}
 

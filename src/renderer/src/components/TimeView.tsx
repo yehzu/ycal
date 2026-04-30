@@ -17,6 +17,7 @@ import { WeatherChip } from './WeatherChip';
 import { useDragSource, useDragTarget } from '../dragController';
 import { resolveRhythm, formatRhythmTime, snap15 } from '../rhythm';
 import { formatDur } from './TasksPanel';
+import { renderInlineCode } from '../inlineCode';
 
 interface Props {
   today: Date;
@@ -627,7 +628,7 @@ function ScheduledTaskChip({
       />
       <div className="tv-task-body">
         <div className="tv-task-t">{minToLabel(sMin)} · {formatDur(dur)}</div>
-        <div className="tv-task-ttl">{task.title}</div>
+        <div className="tv-task-ttl">{renderInlineCode(task.title)}</div>
       </div>
     </div>
   );

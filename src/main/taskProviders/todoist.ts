@@ -73,6 +73,7 @@ interface RestDue {
 interface RestTask {
   id: string;
   project_id: string | null;
+  parent_id?: string | null;
   content: string;
   description?: string;
   is_completed?: boolean;
@@ -292,6 +293,7 @@ export const todoistProvider: TaskProvider = {
       return {
         id: t.id,
         projectId: t.project_id,
+        parentId: t.parent_id ?? null,
         project: proj?.name ?? 'Inbox',
         title: meta.title || (t.content ?? ''),
         description: t.description ?? '',

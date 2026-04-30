@@ -9,6 +9,7 @@ import type { TaskItem } from '@shared/types';
 import { useDragSource, useDragTarget } from '../dragController';
 import { DOW_SHORT, fmtDate, formatTime } from '../dates';
 import { taskOccursOn } from '../tasks';
+import { renderInlineCode } from '../inlineCode';
 
 interface Props {
   open: boolean;
@@ -41,15 +42,35 @@ export function TasksPanel(props: Props) {
   const inboxTasks = tasks.filter((t) => !t.recur || fireToday(t));
   const routineTasks = tasks.filter((t) => t.recur && !fireToday(t));
 
+  // Nesting: build a parent → children index across the visible inbox set.
+  // A task whose parentId points to something we don't display (parent done,
+  // or parent on a hidden project) is treated as a top-level orphan so it
+  // still shows up.
+  const inboxIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of inboxTasks) s.add(t.id);
+    return s;
+  }, [inboxTasks]);
+  const childrenByParent = useMemo(() => {
+    const m: Record<string, TaskItem[]> = {};
+    for (const t of inboxTasks) {
+      if (t.parentId && inboxIds.has(t.parentId)) {
+        (m[t.parentId] ??= []).push(t);
+      }
+    }
+    return m;
+  }, [inboxTasks, inboxIds]);
+
   const grouped = useMemo(() => {
     const out: Record<string, TaskItem[]> = {};
     for (const p of projectOrder) out[p] = [];
     for (const t of inboxTasks) {
+      if (t.parentId && inboxIds.has(t.parentId)) continue;
       if (!out[t.project]) out[t.project] = [];
       out[t.project].push(t);
     }
     return out;
-  }, [inboxTasks, projectOrder]);
+  }, [inboxTasks, projectOrder, inboxIds]);
 
   const totalOpen = inboxTasks.length;
   const totalAll = inboxTasks.length + doneTodayCount;
@@ -122,14 +143,16 @@ export function TasksPanel(props: Props) {
               </div>
               <div className="tp-stack">
                 {list.map((task) => (
-                  <TaskCard
+                  <TaskTree
                     key={task.id}
                     task={task}
                     today={today}
                     projColor={projColor}
-                    carry={carryoverIds.has(task.id)}
-                    onToggleDone={() => onToggleDone(task.id)}
-                    onOpen={() => onOpenTask(task.id)}
+                    carryoverIds={carryoverIds}
+                    childrenByParent={childrenByParent}
+                    onToggleDone={onToggleDone}
+                    onOpenTask={onOpenTask}
+                    depth={0}
                   />
                 ))}
               </div>
@@ -163,7 +186,9 @@ export function TasksPanel(props: Props) {
                       title="Open task"
                     >
                       <span className="tp-routine-glyph" />
-                      <span className="tp-routine-title">{task.title}</span>
+                      <span className="tp-routine-title">
+                        {renderInlineCode(task.title)}
+                      </span>
                       <span className="tp-routine-dow">{formatRecurDow(task.recur)}</span>
                     </button>
                   );
@@ -181,22 +206,73 @@ export function TasksPanel(props: Props) {
   );
 }
 
+interface TreeProps {
+  task: TaskItem;
+  today: Date;
+  projColor: string;
+  carryoverIds: Set<string>;
+  childrenByParent: Record<string, TaskItem[]>;
+  onToggleDone: (taskId: string) => void;
+  onOpenTask: (taskId: string) => void;
+  depth: number;
+}
+
+function TaskTree(props: TreeProps) {
+  const {
+    task, today, projColor, carryoverIds, childrenByParent,
+    onToggleDone, onOpenTask, depth,
+  } = props;
+  const kids = childrenByParent[task.id] ?? [];
+  return (
+    <div className={'tp-tree' + (depth > 0 ? ' nested' : '')}>
+      <TaskCard
+        task={task}
+        today={today}
+        projColor={projColor}
+        carry={carryoverIds.has(task.id)}
+        nested={depth > 0}
+        onToggleDone={() => onToggleDone(task.id)}
+        onOpen={() => onOpenTask(task.id)}
+      />
+      {kids.length > 0 && (
+        <div className="tp-children">
+          {kids.map((c) => (
+            <TaskTree
+              key={c.id}
+              task={c}
+              today={today}
+              projColor={projColor}
+              carryoverIds={carryoverIds}
+              childrenByParent={childrenByParent}
+              onToggleDone={onToggleDone}
+              onOpenTask={onOpenTask}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface CardProps {
   task: TaskItem;
   today: Date;
   projColor: string;
   carry: boolean;
+  nested?: boolean;
   onToggleDone: () => void;
   onOpen: () => void;
 }
 
-function TaskCard({ task, today, projColor, carry, onToggleDone, onOpen }: CardProps) {
+function TaskCard({ task, today, projColor, carry, nested, onToggleDone, onOpen }: CardProps) {
   const dur = formatDur(task.dur);
   const dueLabel = formatDueLabel(task.due, today);
   const isScheduled = !!task.scheduledAt;
   const cls = ['tp-card'];
   if (carry) cls.push('carry');
   if (isScheduled) cls.push('scheduled');
+  if (nested) cls.push('nested');
 
   const drag = useDragSource({
     type: 'task',
@@ -238,7 +314,7 @@ function TaskCard({ task, today, projColor, carry, onToggleDone, onOpen }: CardP
         />
       </div>
       <div className="tp-center">
-        <div className="tp-ttl">{task.title}</div>
+        <div className="tp-ttl">{renderInlineCode(task.title)}</div>
         {(task.energy || task.location || dueLabel || isScheduled
           || task.description || task.comments.length > 0) && (
           <div className="tp-meta">
