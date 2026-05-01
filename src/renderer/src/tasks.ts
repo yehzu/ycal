@@ -141,6 +141,34 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     };
   }, [apiKeySet, refresh]);
 
+  // Cross-device sync: when iCloud delivers a tasks-schedule.json edit
+  // from another Mac, replace the local overlay wholesale. We DON'T
+  // round-trip via persistLocal — the file already has the new state,
+  // and persistLocal would write back (cloudStore would dedupe but
+  // it's still a wasted call).
+  useEffect(() => {
+    const off = window.ycal.onTasksLocalChanged((next) => {
+      setLocal({
+        scheduled: next.scheduled ?? {},
+        doneOn: next.doneOn ?? {},
+        cache: next.cache,
+        cacheAt: next.cacheAt,
+      });
+    });
+    return off;
+  }, []);
+
+  // Cross-device sync: when tasks.md changes on disk (markdown provider
+  // active, another Mac edited it), trigger a refresh so the panel
+  // reflects new tasks/projects. We re-check provider id at fire time
+  // because the user could have switched providers since boot.
+  useEffect(() => {
+    const off = window.ycal.onTasksProviderDataChanged((info) => {
+      if (provider?.id === info.providerId) void refresh();
+    });
+    return off;
+  }, [provider?.id, refresh]);
+
   const setCredentials = useCallback(async (key: string | null) => {
     const res = await window.ycal.tasksSetCredentials(key);
     if (!res.ok) throw new Error(res.error);

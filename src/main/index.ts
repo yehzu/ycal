@@ -11,7 +11,7 @@ import {
   invalidateCalendarCache, invalidateEventsCache,
 } from './calendar';
 import {
-  getWeatherUrl, setWeatherUrl, getUiSettings, setUiSettings,
+  getWeatherUrl, setWeatherUrl, getUiSettings, setUiSettings, getTaskProviderId,
 } from './settings';
 import { clearWeatherCache, fetchWeather } from './weather';
 import {
@@ -23,7 +23,8 @@ import {
   getRhythm, setOverride, clearOverride, setDefault,
 } from './rhythm';
 import {
-  CLOUD_FILES, getStorageInfo, migrateMissingToCloud, setStorage,
+  CLOUD_FILES, getStorageInfo, migrateMissingToCloud, onCloudFileChange,
+  setStorage, startCloudWatcher,
 } from './cloudStore';
 import {
   getActiveProvider, getActiveProviderInfo, listProviders, revealMarkdownFile,
@@ -347,6 +348,7 @@ if (isCliInvocation(process.argv)) {
     const win = createWindow();
     setupAutoUpdater(win);
     startCliServer();
+    startCloudSync(win);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -355,5 +357,43 @@ if (isCliInvocation(process.argv)) {
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+  });
+}
+
+// Cross-device sync: watch every cloud-routed file. When iCloud Drive
+// delivers an edit from another Mac, the file's mtime changes, the
+// watcher reads the new body, and we push the relevant slice to the
+// renderer over IPC. cloudStore dedupes by content so our own writes
+// don't echo back as fake remote events.
+function startCloudSync(win: BrowserWindow): void {
+  startCloudWatcher();
+  onCloudFileChange((filename) => {
+    if (win.isDestroyed()) return;
+    try {
+      switch (filename) {
+        case 'settings.json':
+          win.webContents.send(IPC.SettingsChanged, {
+            ui: getUiSettings(),
+            weatherIcsUrl: getWeatherUrl(),
+            taskProviderId: getTaskProviderId(),
+          });
+          break;
+        case 'rhythm.json':
+          win.webContents.send(IPC.RhythmChanged, getRhythm());
+          break;
+        case 'tasks-schedule.json':
+          win.webContents.send(IPC.TasksLocalChanged, getTasksLocal());
+          break;
+        case 'tasks.md':
+          // No payload — renderer just calls tasks.refresh() if the
+          // markdown provider is currently active.
+          win.webContents.send(IPC.TasksProviderDataChanged, {
+            providerId: 'markdown',
+          });
+          break;
+      }
+    } catch (e) {
+      console.error('[yCal] cloud-sync push failed for', filename, e);
+    }
   });
 }

@@ -61,6 +61,17 @@ export function setTasksLocal(patch: Partial<TasksLocalState>): TasksLocalState 
     cache: patch.cache ?? cur.cache,
     cacheAt: patch.cacheAt ?? cur.cacheAt,
   };
+  // Dedupe excluding cacheAt — every TasksList poll bumps cacheAt even
+  // when nothing else changed, which would otherwise echo across Macs
+  // every 5 minutes via the cloud watcher. cloudStore.writeJson dedupes
+  // by full body too, but with cacheAt updated the body would always
+  // differ. Skip the write here when only cacheAt would change.
+  if (
+    JSON.stringify({ ...cur, cacheAt: undefined }) ===
+      JSON.stringify({ ...next, cacheAt: undefined })
+  ) {
+    return cur;
+  }
   writeJson(FILE, next);
   return next;
 }

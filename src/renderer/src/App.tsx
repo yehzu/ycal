@@ -167,6 +167,40 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     void window.ycal.cloudGetStorageInfo().then(setCloudStorageInfo);
   }, []);
 
+  // Cross-device sync: live-apply remote rhythm + settings edits. The
+  // file watcher in main runs at ~1.5s polling — that's the worst-case
+  // cross-Mac latency on top of iCloud Drive's own delivery window
+  // (typically a few seconds while both Macs are awake).
+  useEffect(() => {
+    const off = window.ycal.onRhythmChanged((data) => setRhythmData(data));
+    return off;
+  }, []);
+  useEffect(() => {
+    const off = window.ycal.onSettingsChanged((next) => {
+      // Apply every slice the renderer owns. The auto-save effect below
+      // will fire from these state changes — that write is content-
+      // deduped at cloudStore so it round-trips as a no-op rather than
+      // looping us back through the watcher.
+      const ui = { ...DEFAULT_UI, ...next.ui };
+      setShowWeekNums(ui.showWeekNums ?? true);
+      setShowWeather(ui.showWeather ?? true);
+      setUnits(ui.units ?? 'F');
+      setMergeCriteria({ ...DEFAULT_MERGE_CRITERIA, ...(ui.mergeCriteria ?? {}) });
+      setCalRoles({ ...ui.calRoles });
+      setSectionOrder((ui.sectionOrder as SidebarSectionKey[]) ?? DEFAULT_SECTION_ORDER);
+      setHideDisabledCals(ui.hideDisabledCals ?? false);
+      setAutoRolloverPastTasks(ui.autoRolloverPastTasks ?? true);
+      setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
+      setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
+      // Slices owned by the events store (account / calendar visibility,
+      // weather URL) need explicit imperative setters — they're not
+      // react state in App.
+      store.applyRemoteUi(ui);
+      store.applyRemoteWeatherUrl(next.weatherIcsUrl);
+    });
+    return off;
+  }, [store]);
+
   const setRhythmOverride = useCallback(async (
     dateStr: string, patch: { wakeMin?: number; sleepMin?: number },
   ) => {

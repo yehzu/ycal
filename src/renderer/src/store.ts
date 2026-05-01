@@ -49,6 +49,14 @@ export interface Store {
   weatherDays: WeatherDay[];
   weatherError: string | null;
   setWeatherUrl: (url: string | null) => Promise<void>;
+
+  // Cross-device sync hooks. The App-level subscriber to SettingsChanged
+  // calls these to imperatively replace the slices the store owns. They
+  // do NOT round-trip back to disk (the data already came from disk via
+  // the file watcher), and the auto-save effect upstream is content-
+  // deduped at cloudStore so a no-op write would be skipped anyway.
+  applyRemoteUi: (ui: UiSettings) => void;
+  applyRemoteWeatherUrl: (url: string | null) => void;
 }
 
 // Visible range a given anchor needs (6-row month grid + buffer for
@@ -223,6 +231,22 @@ export function useStore(
     }
   }, [refreshWeather]);
 
+  const applyRemoteUi = useCallback((ui: UiSettings) => {
+    // Replace the visibility maps wholesale — Mac A's view of which
+    // accounts/calendars are active is the truth, and a partial merge
+    // would leave stale toggles around if Mac A explicitly turned one
+    // off.
+    setAccountsActiveState({ ...ui.accountsActive });
+    setCalVisibleState({ ...ui.calVisible });
+  }, []);
+
+  const applyRemoteWeatherUrl = useCallback((url: string | null) => {
+    setWeatherUrlState(url);
+    // Don't refetch weather here — the App-level effect that watches
+    // weatherUrl already does that, and it'd race with the upstream
+    // refresh otherwise.
+  }, []);
+
   // First-load: configured? then accounts → calendars → events.
   useEffect(() => {
     let cancelled = false;
@@ -302,5 +326,7 @@ export function useStore(
     weatherDays,
     weatherError,
     setWeatherUrl: updateWeatherUrl,
+    applyRemoteUi,
+    applyRemoteWeatherUrl,
   };
 }

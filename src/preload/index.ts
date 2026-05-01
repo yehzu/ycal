@@ -9,8 +9,10 @@ import type {
   GoogleColors,
   ListEventsRequest,
   RhythmData,
+  SettingsPushPayload,
   TaskComment,
   TaskFetchResult,
+  TaskProviderId,
   TaskProviderInfo,
   TasksLocalState,
   UiSettings,
@@ -82,6 +84,39 @@ const api = {
   cloudGetStorageInfo: (): Promise<CloudStorageInfo> => ipcRenderer.invoke(IPC.CloudGetStorageInfo),
   cloudSetStorage: (pref: CloudStorage): Promise<Result<{ info: CloudStorageInfo }>> =>
     ipcRenderer.invoke(IPC.CloudSetStorage, pref),
+
+  // Cross-device push events. Each subscribes to a main → renderer push
+  // channel and returns an unsubscribe fn. Fires when iCloud Drive
+  // delivers an edit from another Mac. cloudStore dedupes by content so
+  // our own writes don't echo back as fake remote events.
+  onSettingsChanged: (handler: (next: SettingsPushPayload) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: SettingsPushPayload): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.SettingsChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.SettingsChanged, listener);
+  },
+  onRhythmChanged: (handler: (next: RhythmData) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: RhythmData): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.RhythmChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.RhythmChanged, listener);
+  },
+  onTasksLocalChanged: (handler: (next: TasksLocalState) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: TasksLocalState): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.TasksLocalChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.TasksLocalChanged, listener);
+  },
+  onTasksProviderDataChanged: (
+    handler: (info: { providerId: TaskProviderId }) => void,
+  ): (() => void) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      payload: { providerId: TaskProviderId },
+    ): void => handler(payload);
+    ipcRenderer.on(IPC.TasksProviderDataChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.TasksProviderDataChanged, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('ycal', api);

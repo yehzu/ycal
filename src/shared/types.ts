@@ -368,6 +368,14 @@ export interface RhythmData {
   overrides: Record<string, RhythmOverride>; // YYYY-MM-DD → override
 }
 
+// Push payload for `IPC.SettingsChanged`. We send the full settings.json
+// shape so the renderer can apply slices without bouncing back to fetch.
+export interface SettingsPushPayload {
+  ui: UiSettings;
+  weatherIcsUrl: string | null;
+  taskProviderId: TaskProviderId;
+}
+
 // Where to keep yCal's cloud-synced files (rhythm.json, tasks-schedule.json).
 // iCloud Drive on macOS lets the files follow the user across devices via
 // the system iCloud sync. Falls back to the local userData dir when
@@ -424,4 +432,14 @@ export const IPC = {
   // Cloud (iCloud / local) — covers rhythm + task schedule + future files.
   CloudGetStorageInfo: 'ycal:cloudGetStorageInfo',
   CloudSetStorage: 'ycal:cloudSetStorage',
+  // Cross-device sync — main → renderer pushes when a synced file changes
+  // on disk (typically because iCloud Drive just delivered an edit from
+  // another Mac). Payload is the new state for the affected slice; the
+  // renderer applies it idempotently. cloudStore dedupes by content so
+  // we don't churn writes when a remote update equals what we already
+  // have. See `cloudStore.startCloudWatcher()`.
+  SettingsChanged: 'ycal:settingsChanged',
+  RhythmChanged: 'ycal:rhythmChanged',
+  TasksLocalChanged: 'ycal:tasksLocalChanged',
+  TasksProviderDataChanged: 'ycal:tasksProviderDataChanged',
 } as const;
