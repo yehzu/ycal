@@ -326,11 +326,6 @@ if (isCliInvocation(process.argv)) {
     if (process.platform === 'darwin' && process.env.ELECTRON_RENDERER_URL && app.dock) {
       try { app.dock.setIcon(DEV_ICON_PATH); } catch { /* dock icon is best-effort */ }
     }
-    // One-shot: when upgrading to a build that adds new entries to
-    // CLOUD_FILES (e.g. settings.json moves into the synced set), copy
-    // any pre-existing userData copies into iCloud so the first launch
-    // after the upgrade reads the right values instead of resetting.
-    try { migrateMissingToCloud(); } catch (e) { console.error('[yCal] cloud migration error', e); }
     registerIpc();
 
     if (!isConfigured()) {
@@ -348,7 +343,25 @@ if (isCliInvocation(process.argv)) {
     const win = createWindow();
     setupAutoUpdater(win);
     startCliServer();
-    startCloudSync(win);
+    // Defer cloud-sync work until AFTER the window is on-screen. Two
+    // things are deferred together:
+    //   1. migrateMissingToCloud — copies userData → iCloud for files
+    //      newly added to CLOUD_FILES on upgrade. Touches iCloud paths.
+    //   2. startCloudSync — attaches the file watcher.
+    // Both involve the iCloud Drive directory. On macOS, an unsigned
+    // app launched from Finder doesn't yet hold TCC for iCloud — so a
+    // sync read or stat against an iCloud placeholder during boot can
+    // hang the event loop before the window paints. Deferring past
+    // `ready-to-show` guarantees the user sees a window first; if any
+    // I/O does block, it blocks the watcher, not launch.
+    win.once('ready-to-show', () => {
+      try { migrateMissingToCloud(); } catch (e) {
+        console.error('[yCal] cloud migration error', e);
+      }
+      try { startCloudSync(win); } catch (e) {
+        console.error('[yCal] cloud sync setup failed', e);
+      }
+    });
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

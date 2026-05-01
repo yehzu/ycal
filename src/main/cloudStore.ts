@@ -23,9 +23,10 @@
 import { app } from 'electron';
 import {
   accessSync, constants, existsSync, mkdirSync, readFileSync,
-  renameSync, statSync, unlinkSync, unwatchFile, watchFile,
+  renameSync, unlinkSync, unwatchFile, watchFile,
   writeFileSync,
 } from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { CloudStorage, CloudStorageInfo } from '@shared/types';
@@ -246,23 +247,27 @@ export function onCloudFileChange(handler: CloudFileHandler): () => void {
 
 function pollListener(filename: string): () => void {
   return () => {
-    // statSync may race with iCloud's atomic rename; guard against
-    // transient absence and try again on the next tick.
-    let body: string;
-    try {
-      const { path: p } = pathFor(filename);
-      if (!existsSync(p)) return;
-      body = readFileSync(p, 'utf-8');
-    } catch {
-      return;
-    }
-    if (lastSeen.get(filename) === body) return;
-    lastSeen.set(filename, body);
-    for (const h of handlers) {
-      try { h(filename, body); } catch (e) {
-        console.error('[yCal] cloud file watcher handler error', e);
+    // ASYNC read deliberately. fs.watchFile fires from the main thread,
+    // and a sync readFile here would block the event loop while macOS
+    // materializes an iCloud Drive placeholder — which on an unsigned
+    // app launched from Finder can hang indefinitely waiting on TCC.
+    void (async () => {
+      let body: string;
+      try {
+        const { path: p } = pathFor(filename);
+        if (!existsSync(p)) return;
+        body = await readFileAsync(p, 'utf-8');
+      } catch {
+        return;
       }
-    }
+      if (lastSeen.get(filename) === body) return;
+      lastSeen.set(filename, body);
+      for (const h of handlers) {
+        try { h(filename, body); } catch (e) {
+          console.error('[yCal] cloud file watcher handler error', e);
+        }
+      }
+    })();
   };
 }
 
@@ -298,21 +303,22 @@ function attachWatcher(): void {
 }
 
 export function startCloudWatcher(): void {
+  // Just attach watchers — no synchronous file reads here. The seed
+  // step used to readFileSync each CLOUD_FILES entry to pre-populate
+  // lastSeen, but on macOS, an unsigned app launched from Finder
+  // doesn't yet hold TCC for iCloud Drive — so the FIRST sync read of
+  // any iCloud-routed file on first launch can block the event loop
+  // indefinitely while macOS materializes the placeholder. Result:
+  // app hangs before the window even shows.
+  //
+  // lastSeen is populated lazily instead — by the IPC handlers'
+  // existing readJson/readText calls (which run after the renderer is
+  // up and can survive a slow path), and by the watcher's own async
+  // pollListener if the file changes. The trade-off: on first boot
+  // the watcher may fire one "newly observed file" event per file
+  // before the IPC reads catch up. Renderer applies idempotently so
+  // it's a no-op render cost.
   attachWatcher();
-  // Seed lastSeen from existing files so the first poll doesn't fire
-  // a spurious "changed!" notification on every file we already know
-  // about. Without this, every file emits once on app boot.
-  for (const name of CLOUD_FILES) {
-    if (lastSeen.has(name)) continue;
-    const { path: p } = pathFor(name);
-    if (!existsSync(p)) continue;
-    try {
-      // stat first to avoid a read on a 0-byte placeholder.
-      const st = statSync(p);
-      if (st.size === 0) continue;
-      lastSeen.set(name, readFileSync(p, 'utf-8'));
-    } catch { /* best-effort */ }
-  }
 }
 
 // Repoint the watcher after the user toggles cloudStorage. Called from
@@ -324,5 +330,4 @@ export function rebuildCloudWatcher(): void {
   // renderer picks up the post-toggle state).
   lastSeen.clear();
   attachWatcher();
-  startCloudWatcher(); // re-seed from new dir
 }
