@@ -19,7 +19,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import type {
-  TaskComment, TaskFetchResult, TaskItem,
+  TaskComment, TaskFetchResult, TaskItem, TaskProjectNode,
 } from '@shared/types';
 import type { TaskProvider } from './types';
 import { parseTaskMeta } from './labels';
@@ -270,15 +270,30 @@ export const todoistProvider: TaskProvider = {
     const projById = new Map<string, RestProject>();
     for (const p of projectsRaw) projById.set(p.id, p);
 
+    // Top-level project order — only roots, in the user's manual order.
     const projectOrder = projectsRaw
+      .filter((p) => !p.parent_id)
       .slice()
       .sort((a, b) => (a.child_order ?? a.order ?? 0) - (b.child_order ?? b.order ?? 0))
       .map((p) => p.name);
 
     const projectColor: Record<string, string> = {};
     for (const p of projectsRaw) {
-      projectColor[p.name] = TODOIST_COLOR_MAP[p.color] ?? '#5b7a8e';
+      const hex = TODOIST_COLOR_MAP[p.color] ?? '#5b7a8e';
+      projectColor[p.name] = hex;
+      // Also index by id so renderers that group by leaf project (rather
+      // than top-level name) get the right color when two leaves share a
+      // name across different parents.
+      projectColor[p.id] = hex;
     }
+
+    const projects: TaskProjectNode[] = projectsRaw.map((p) => ({
+      id: p.id,
+      name: p.name,
+      color: TODOIST_COLOR_MAP[p.color] ?? '#5b7a8e',
+      parentId: p.parent_id ?? null,
+      childOrder: p.child_order ?? p.order ?? 0,
+    }));
 
     const taskIdsWithComments = tasksRaw
       .filter((t) => (t.comment_count ?? 0) > 0)
@@ -314,7 +329,7 @@ export const todoistProvider: TaskProvider = {
       };
     });
 
-    return { tasks, projectOrder, projectColor };
+    return { tasks, projects, projectOrder, projectColor };
   },
 
   async closeTask(taskId: string): Promise<void> {

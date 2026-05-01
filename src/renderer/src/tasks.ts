@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   TaskComment,
   TaskItem,
+  TaskProjectNode,
   TaskProviderInfo,
   TasksLocalState,
 } from '@shared/types';
@@ -37,6 +38,8 @@ export interface TasksStore {
   // Project ordering for the masthead. Empty until the first fetch lands.
   projectOrder: string[];
   projectColor: Record<string, string>;
+  // Project tree (flat list with parentId). Empty until the first fetch.
+  projects: TaskProjectNode[];
   // Carryover ids — scheduled in the past, still not done.
   carryoverIds: Set<string>;
   // Tasks to show in the right-rail panel (undone, plus carryover).
@@ -58,6 +61,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
   const [projectColor, setProjectColor] = useState<Record<string, string>>({});
+  const [projects, setProjects] = useState<TaskProjectNode[]>([]);
   const [local, setLocal] = useState<TasksLocalState>({ scheduled: {}, doneOn: {} });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +107,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
       setTasks(res.tasks);
       setProjectOrder(res.projectOrder);
       setProjectColor(res.projectColor);
+      setProjects(res.projects ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -137,6 +142,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
       setTasks([]);
       setProjectOrder([]);
       setProjectColor({});
+      setProjects([]);
     }
   }, []);
 
@@ -301,6 +307,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     refresh,
     tasks: hydrated,
     projectOrder,
+    projects,
     projectColor: useMemo(() => {
       // Fill in any missing project with a neutral fallback so renderers
       // can blindly index into projectColor[task.project].

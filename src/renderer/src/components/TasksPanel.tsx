@@ -6,6 +6,10 @@
 //   1. "Today"   — anything firing today: scheduled-today, due-today, or
 //                  a recurring task whose cadence lands today.
 //   2. Project sections — the regular inbox grouped by Todoist project.
+//      Every project (top-level and nested) is foldable; collapse state
+//      persists in localStorage. Nested sub-projects render as smaller,
+//      indented rows under their parent so the Todoist-style hierarchy
+//      (e.g. Work › Engineering › Reviews) is visible at a glance.
 //   3. "Routines" fold (collapsed) — every recurring task that isn't
 //      firing today, regardless of cadence shape (weekly dow, "every 3
 //      days", date-based — they all live here so they don't pollute the
@@ -15,8 +19,8 @@
 // drawn from Todoist's priority field. Default-priority tasks have no
 // flag.
 
-import { useMemo, useRef, useState } from 'react';
-import type { TaskItem } from '@shared/types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { TaskItem, TaskProjectNode } from '@shared/types';
 import { useDragSource, useDragTarget } from '../dragController';
 import { DOW_SHORT, fmtDate, formatTime } from '../dates';
 import { taskOccursOn } from '../tasks';
@@ -26,8 +30,15 @@ interface Props {
   open: boolean;
   today: Date;
   tasks: TaskItem[];
+  // Top-level project name list — used as the fallback ordering when the
+  // provider hasn't populated `projects` yet (e.g. cached-tasks-on-boot).
   projectOrder: string[];
   projectColor: Record<string, string>;
+  // Project tree as a flat list with parentId pointers. When this is
+  // populated we render the nested hierarchy. When empty (cache-only
+  // boot, or non-Todoist providers) we fall back to a flat-by-name
+  // grouping using `projectOrder`.
+  projects: TaskProjectNode[];
   doneTodayCount: number;
   carryoverIds: Set<string>;
   onClose: () => void;
@@ -41,9 +52,44 @@ interface Props {
   errorMessage?: string | null;
 }
 
+// Internal tree node assembled from the flat `TaskProjectNode[]`. The
+// fallback path (when `projects` is empty) synthesises nodes keyed by
+// project name, so the renderer always walks a tree.
+interface TreeNode {
+  id: string;
+  name: string;
+  color: string;
+  parentId: string | null;
+  children: TreeNode[];
+}
+
+const PROJ_NAME_PREFIX = '__name:';
+const NULL_PROJ_KEY = '__inbox__';
+
+function buildProjectTree(nodes: TaskProjectNode[]): TreeNode[] {
+  const byId = new Map<string, TreeNode>();
+  for (const n of nodes) {
+    byId.set(n.id, {
+      id: n.id, name: n.name, color: n.color, parentId: n.parentId,
+      children: [],
+    });
+  }
+  const sorted = [...nodes].sort((a, b) => a.childOrder - b.childOrder);
+  const roots: TreeNode[] = [];
+  for (const n of sorted) {
+    const tn = byId.get(n.id)!;
+    if (n.parentId && byId.has(n.parentId)) {
+      byId.get(n.parentId)!.children.push(tn);
+    } else {
+      roots.push(tn);
+    }
+  }
+  return roots;
+}
+
 export function TasksPanel(props: Props) {
   const {
-    open, today, tasks, projectOrder, projectColor,
+    open, today, tasks, projectOrder, projectColor, projects,
     doneTodayCount, carryoverIds, onClose, onUnschedule, onToggleDone,
     onOpenTask, apiKeySet, loading, errorMessage,
   } = props;
@@ -112,17 +158,69 @@ export function TasksPanel(props: Props) {
     return s;
   }, [childrenByParent]);
 
-  const grouped = useMemo(() => {
+  // Build the project tree we render. When the provider gave us a real
+  // hierarchy (Todoist nested projects), use it. Otherwise fall back to a
+  // flat list of name-keyed roots so cached-tasks-on-boot still groups.
+  const projectTree = useMemo<TreeNode[]>(() => {
+    if (projects.length > 0) return buildProjectTree(projects);
+    return projectOrder.map((name) => ({
+      id: PROJ_NAME_PREFIX + name,
+      name,
+      color: projectColor[name] ?? '#5b7a8e',
+      parentId: null,
+      children: [],
+    }));
+  }, [projects, projectOrder, projectColor]);
+
+  // Pick a stable bucket key for each task. With the tree we group by
+  // projectId so two leaves named the same don't collide. Without it we
+  // group by display name (the legacy flat path).
+  const tasksByNodeId = useMemo(() => {
+    const useIds = projects.length > 0;
     const out: Record<string, TaskItem[]> = {};
-    for (const p of projectOrder) out[p] = [];
     for (const t of projectPool) {
       if (childIds.has(t.id)) continue;
-      if (!out[t.project]) out[t.project] = [];
-      out[t.project].push(t);
+      const key = useIds
+        ? (t.projectId || NULL_PROJ_KEY)
+        : (PROJ_NAME_PREFIX + t.project);
+      (out[key] ??= []).push(t);
     }
-    for (const p of Object.keys(out)) out[p].sort(byPriorityDesc);
+    for (const k of Object.keys(out)) out[k].sort(byPriorityDesc);
     return out;
-  }, [projectPool, projectOrder, childIds]);
+  }, [projectPool, childIds, projects.length]);
+
+  // Subtree count per node — own tasks + every descendant's. A 0 here
+  // means we skip rendering that subtree entirely so empty Todoist
+  // projects don't clutter the panel.
+  const subtreeCount = useMemo(() => {
+    const out: Record<string, number> = {};
+    const walk = (node: TreeNode): number => {
+      let n = (tasksByNodeId[node.id] ?? []).length;
+      for (const c of node.children) n += walk(c);
+      out[node.id] = n;
+      return n;
+    };
+    for (const r of projectTree) walk(r);
+    return out;
+  }, [projectTree, tasksByNodeId]);
+
+  // Persisted collapse state, keyed by project id (or synth name id for
+  // the fallback path). Default = expanded for everyone — the user opts
+  // into folding rather than the panel hiding things by default.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem('ycal:tp-collapsed');
+      if (raw) return JSON.parse(raw) as Record<string, boolean>;
+    } catch { /* fall through to default */ }
+    return {};
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('ycal:tp-collapsed', JSON.stringify(collapsed));
+    } catch { /* localStorage may be unavailable in some contexts */ }
+  }, [collapsed]);
+  const toggleCollapsed = (id: string) =>
+    setCollapsed((c) => ({ ...c, [id]: !c[id] }));
 
   const totalOpen = tasks.filter((t) => !routineIdSet.has(t.id)).length;
   const totalAll = totalOpen + doneTodayCount;
@@ -145,6 +243,111 @@ export function TasksPanel(props: Props) {
   });
 
   if (!open) return null;
+
+  // Recursively render a project node. depth=0 keeps the masthead (the
+  // existing visual rhythm of the panel); deeper nodes render as smaller
+  // indented rows with their own caret + count + guide rail.
+  const renderNode = (node: TreeNode, depth: number, inheritedColor: string): React.ReactNode => {
+    const total = subtreeCount[node.id] ?? 0;
+    if (total === 0) return null;
+    const color = node.color || inheritedColor;
+    const isCollapsed = !!collapsed[node.id];
+    const ownTasks = tasksByNodeId[node.id] ?? [];
+
+    if (depth === 0) {
+      return (
+        <section
+          key={node.id}
+          className={'tp-section' + (isCollapsed ? ' is-collapsed' : '')}
+          style={{ ['--proj' as never]: color }}
+        >
+          <button
+            className="tp-mast tp-mast-btn"
+            onClick={() => toggleCollapsed(node.id)}
+            aria-expanded={!isCollapsed}
+            title={isCollapsed ? 'Expand ' + node.name : 'Collapse ' + node.name}
+          >
+            <span
+              className={'tp-fold-caret ' + (isCollapsed ? 'closed' : 'open')}
+              aria-hidden="true"
+            >▾</span>
+            <span className="tp-proj">{node.name}</span>
+            <span className="tp-rule" />
+            <span className="tp-pcnt">{total}</span>
+          </button>
+          {!isCollapsed && (
+            <div className="tp-section-body">
+              {ownTasks.length > 0 && (
+                <div className="tp-stack">
+                  {ownTasks.map((task) => (
+                    <TaskTree
+                      key={task.id}
+                      task={task}
+                      today={today}
+                      projColor={color}
+                      carryoverIds={carryoverIds}
+                      childrenByParent={childrenByParent}
+                      onToggleDone={onToggleDone}
+                      onOpenTask={onOpenTask}
+                      depth={0}
+                    />
+                  ))}
+                </div>
+              )}
+              {node.children.map((c) => renderNode(c, depth + 1, color))}
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    return (
+      <div
+        key={node.id}
+        className={`tp-sub depth-${depth}` + (isCollapsed ? ' is-collapsed' : '')}
+        style={{ ['--proj' as never]: color, ['--ind' as never]: depth + 'em' }}
+      >
+        <button
+          className="tp-sub-head"
+          onClick={() => toggleCollapsed(node.id)}
+          aria-expanded={!isCollapsed}
+          title={isCollapsed ? 'Expand ' + node.name : 'Collapse ' + node.name}
+        >
+          <span className="tp-sub-rail" aria-hidden="true" />
+          <span
+            className={'tp-fold-caret tp-fold-caret-sm ' + (isCollapsed ? 'closed' : 'open')}
+            aria-hidden="true"
+          >▾</span>
+          <span className="tp-sub-chev" aria-hidden="true">›</span>
+          <span className="tp-sub-name">{node.name}</span>
+          <span className="tp-sub-rule" />
+          <span className="tp-sub-cnt">{total}</span>
+        </button>
+        {!isCollapsed && (
+          <div className="tp-sub-body">
+            {ownTasks.length > 0 && (
+              <div className="tp-stack tp-sub-stack">
+                {ownTasks.map((task) => (
+                  <TaskTree
+                    key={task.id}
+                    task={task}
+                    today={today}
+                    projColor={color}
+                    carryoverIds={carryoverIds}
+                    childrenByParent={childrenByParent}
+                    onToggleDone={onToggleDone}
+                    onOpenTask={onOpenTask}
+                    depth={0}
+                  />
+                ))}
+              </div>
+            )}
+            {node.children.map((c) => renderNode(c, depth + 1, color))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <aside
@@ -207,39 +410,7 @@ export function TasksPanel(props: Props) {
           </section>
         )}
 
-        {projectOrder.map((project) => {
-          const list = grouped[project] || [];
-          if (list.length === 0) return null;
-          const projColor = projectColor[project] || '#5b7a8e';
-          return (
-            <section
-              key={project}
-              className="tp-section"
-              style={{ ['--proj' as never]: projColor }}
-            >
-              <div className="tp-mast">
-                <span className="tp-proj">{project}</span>
-                <span className="tp-rule" />
-                <span className="tp-pcnt">{list.length}</span>
-              </div>
-              <div className="tp-stack">
-                {list.map((task) => (
-                  <TaskTree
-                    key={task.id}
-                    task={task}
-                    today={today}
-                    projColor={projColor}
-                    carryoverIds={carryoverIds}
-                    childrenByParent={childrenByParent}
-                    onToggleDone={onToggleDone}
-                    onOpenTask={onOpenTask}
-                    depth={0}
-                  />
-                ))}
-              </div>
-            </section>
-          );
-        })}
+        {projectTree.map((root) => renderNode(root, 0, root.color || '#5b7a8e'))}
 
         {routineTasks.length > 0 && (
           <section className={'tp-routines' + (routinesOpen ? ' open' : '')}>

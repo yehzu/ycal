@@ -23,6 +23,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { UpdateOverlay } from './components/UpdateOverlay';
 import { TasksPanel, TasksEdgeTab } from './components/TasksPanel';
 import { TaskSheet } from './components/TaskSheet';
+import { SearchPalette } from './components/SearchPalette';
 import { isFullyReadOnlyEvent, presentForVisibleCalendars } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
@@ -145,6 +146,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     }
   }, [view]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const selectedTask = useMemo(
     () => tasks.tasks.find((t) => t.id === selectedTaskId) ?? null,
     [tasks.tasks, selectedTaskId],
@@ -355,7 +357,21 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
         setSettingsOpen(true);
         return;
       }
+      // Cmd/Ctrl+K opens the search palette from anywhere — also handle
+      // before the modifier guard. Toggles when already open.
+      if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'k' || ev.key === 'K')
+          && !ev.altKey && !ev.shiftKey) {
+        ev.preventDefault();
+        setSearchOpen((o) => !o);
+        return;
+      }
       if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (searchOpen) {
+        // SearchPalette owns its own keyboard handling once focused; here we
+        // just need to keep global shortcuts (j/k/l/Esc-the-popover) from
+        // stealing keystrokes meant for the search input.
+        return;
+      }
       if (settingsOpen) {
         if (ev.key === 'Escape') setSettingsOpen(false);
         return;
@@ -431,7 +447,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, popover, dayModal, settingsOpen, selected, goToToday, moveSelection, setTasksOpen]);
+  }, [view, popover, dayModal, settingsOpen, searchOpen, selected, goToToday, moveSelection, setTasksOpen]);
 
   // Mouse buttons 3 (XBUTTON1 / Back) and 4 (XBUTTON2 / Forward) navigate
   // the per-app history stack. Suppress on mousedown too — Electron would
@@ -459,6 +475,22 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const onEventClick = useCallback((event: CalendarEvent, anchorEl: HTMLElement) => {
     setPopover({ event, rect: anchorEl.getBoundingClientRect() });
   }, []);
+
+  // Picking an event from the search palette doesn't have a real DOM
+  // anchor (the row that triggered the pick is about to unmount with the
+  // palette). Synthesise a small rect at the top-center of the window so
+  // the popover lays itself out below it without flying offscreen.
+  const onPickSearchEvent = useCallback((event: CalendarEvent) => {
+    const dateOnly = event.start.slice(0, 10);
+    const d = new Date(dateOnly + 'T00:00:00');
+    if (!Number.isNaN(d.getTime())) {
+      setAnchor(d);
+      setSelected(d);
+      if (view === 'month') setView('day');
+    }
+    const rect = new DOMRect(window.innerWidth / 2 - 1, 96, 2, 2);
+    setPopover({ event, rect });
+  }, [view]);
 
   const openDayModal = useCallback((d: Date) => setDayModal(d), []);
 
@@ -547,6 +579,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
               goToToday={goToToday}
               loading={store.loading}
               onOpenSettings={() => setSettingsOpen(true)}
+              onOpenSearch={() => setSearchOpen(true)}
             />
 
             {store.accounts.length === 0 ? (
@@ -602,6 +635,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   tasks={tasks.inboxTasks}
                   projectOrder={tasks.projectOrder}
                   projectColor={tasks.projectColor}
+                  projects={tasks.projects}
                   doneTodayCount={tasks.doneTodayIds.size}
                   carryoverIds={tasks.carryoverIds}
                   onClose={() => setTasksOpen(false)}
@@ -656,6 +690,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   tasks={tasks.inboxTasks}
                   projectOrder={tasks.projectOrder}
                   projectColor={tasks.projectColor}
+                  projects={tasks.projects}
                   doneTodayCount={tasks.doneTodayIds.size}
                   carryoverIds={tasks.carryoverIds}
                   onClose={() => setTasksOpen(false)}
@@ -703,6 +738,17 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           onClose={() => setPopover(null)}
         />
       )}
+
+      <SearchPalette
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        events={visibleEvents}
+        calendars={store.calendars}
+        tasks={tasks.tasks}
+        today={today}
+        onPickEvent={onPickSearchEvent}
+        onPickTask={(id) => setSelectedTaskId(id)}
+      />
 
       {settingsOpen && (
         <SettingsModal

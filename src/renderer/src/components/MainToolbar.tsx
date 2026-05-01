@@ -12,11 +12,16 @@ interface Props {
   goToToday: () => void;
   loading: boolean;
   onOpenSettings: () => void;
+  onOpenSearch: () => void;
 }
 
 export function MainToolbar({
   view, setView, anchor, setAnchor, goToToday, loading, onOpenSettings,
+  onOpenSearch,
 }: Props) {
+  // macOS uses ⌘, Windows/Linux uses Ctrl. Detect once for the hint label.
+  const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+  const searchHint = isMac ? '⌘K' : '⌃K';
   const monthName = MONTH_NAMES[anchor.getMonth()];
   const yr = anchor.getFullYear();
 
@@ -69,6 +74,24 @@ export function MainToolbar({
     <div className="main-toolbar">
       <div className="main-title">{title}</div>
       <div className="main-toolbar-r">
+        <button
+          className="tb-search-btn"
+          onClick={onOpenSearch}
+          title={'Search events & todos (' + searchHint + ')'}
+          aria-label="Search events and todos"
+        >
+          <span className="ic" aria-hidden="true">
+            <svg
+              width="13" height="13" viewBox="0 0 16 16" fill="none"
+              stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"
+            >
+              <circle cx="7" cy="7" r="4.5" />
+              <path d="M10.5 10.5L14 14" />
+            </svg>
+          </span>
+          <span className="lbl">Search events &amp; todos</span>
+          <span className="kb">{searchHint}</span>
+        </button>
         {loading && <span className="sync-hint">syncing…</span>}
         <button className="icon-btn" onClick={stepBack}>‹</button>
         <button className="icon-btn today-btn" onClick={goToToday}>

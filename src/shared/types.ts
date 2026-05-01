@@ -305,13 +305,32 @@ export interface TasksLocalState {
   cacheAt?: string;  // ISO timestamp
 }
 
+// Project node from the provider. Todoist supports nested projects up to
+// ~4 levels; we model the tree as a flat list with parentId pointers so the
+// renderer can walk it without round-tripping recursive payloads. Order is
+// the user's manual ordering inside their parent (Todoist's `child_order`).
+export interface TaskProjectNode {
+  id: string;
+  name: string;
+  color: string;
+  parentId: string | null;
+  childOrder: number;
+}
+
 // Result of a Todoist fetch — note it returns ALL tasks regardless of
 // whether they're complete; renderer filters via the `done` flag.
 export interface TaskFetchResult {
   tasks: TaskItem[];
-  // Bare project list — the renderer needs this for the grouped masthead.
+  // Project tree (flat list with parentId). The renderer walks this to
+  // render nested folds. Includes every project the user has, even empty
+  // ones — the renderer skips them when their subtree count is zero.
+  projects: TaskProjectNode[];
+  // Top-level project name list — kept for legacy callers (drag preview,
+  // day detail panel) that still group by name. New code should walk the
+  // `projects` tree instead.
   projectOrder: string[];
-  // project → hex color
+  // project → hex color, keyed by both project name (legacy) and project
+  // id, so callers can index by whichever they have.
   projectColor: Record<string, string>;
 }
 
