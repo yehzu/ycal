@@ -260,8 +260,19 @@ export interface TaskItem {
   // Todoist's due date string (YYYY-MM-DD) when present, else null.
   due: string | null;
   // recur.dow: array of 0–6 (Sun–Sat) when the task is a Todoist recurring
-  // task that fires on specific weekdays. null means non-recurring.
+  // task that fires on specific weekdays. null when either non-recurring OR
+  // when the recurrence cadence isn't parsable as a weekday set ("every 3
+  // days", "every 2 weeks") — those still set `isRecurring` below so the
+  // panel can fold them away.
   recur: { dow: number[] } | null;
+  // True when Todoist marks this task as recurring (regardless of whether
+  // we managed to parse a dow). The Routines fold uses this so cadences
+  // like "every 3 days" don't leak into the regular project sections.
+  isRecurring: boolean;
+  // Todoist priority on the wire: 1 = none/default, 2 = P3, 3 = P2,
+  // 4 = P1 (highest). We pass it through unchanged so the Todoist user's
+  // mental model stays intact.
+  priority: 1 | 2 | 3 | 4;
   // Comments inlined from Todoist's /comments endpoint.
   comments: TaskComment[];
   // True if Todoist marks the task complete. The panel hides these.

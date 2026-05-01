@@ -3921,6 +3921,42 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   display: inline-block;
 }
 
+/* ── "Today" section header ──────────────────────────────────────── */
+/* Distinct from the project mast: the eyebrow tag uses paper-on-ink
+   so the section reads as the user's primary action shelf. */
+.tp-today { background: rgba(184, 37, 95, 0.04); }
+.tp-today .tp-mast { border-bottom-color: rgba(184, 37, 95, 0.32); }
+.tp-eyebrow-tag {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--ink);
+  padding: 2px 8px 3px;
+  border-radius: 1px;
+}
+
+/* ── Priority flag (Todoist priority 2/3/4 → P3/P2/P1) ──────────── */
+/* Skipped entirely when priority === 1 (default / no priority).   */
+.tp-pri-flag {
+  display: inline-block;
+  width: 3px;
+  height: 11px;
+  vertical-align: -1px;
+  margin-right: 6px;
+  border-radius: 1px;
+  background: var(--ink-faint);
+}
+.tp-pri-flag.pri-2 { background: #5b8aa1; }   /* P3 — blue */
+.tp-pri-flag.pri-3 { background: #c9772c; }   /* P2 — orange */
+.tp-pri-flag.pri-4 { background: #b8255f; }   /* P1 — red */
+
+/* Higher priorities also tint the checkbox border so the card has a
+   subtle second cue beyond the title flag. */
+.tp-card.pri-3 .tp-tbox { border-color: #c9772c; }
+.tp-card.pri-4 .tp-tbox { border-color: #b8255f; border-width: 1px; }
+
 /* ============================================================
    Task chips on the calendar grid
    ============================================================ */

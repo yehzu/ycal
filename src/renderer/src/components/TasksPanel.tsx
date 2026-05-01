@@ -1,8 +1,19 @@
 // yCal — Tasks panel (right rail of Week + Day views).
 //
 // Sits next to the calendar grid, hosts the Todoist inbox, and accepts
-// drops back from the calendar to unschedule. Routines that don't fire
-// today fold under a collapsed "Routines" group at the bottom.
+// drops back from the calendar to unschedule. Layout, top to bottom:
+//
+//   1. "Today"   — anything firing today: scheduled-today, due-today, or
+//                  a recurring task whose cadence lands today.
+//   2. Project sections — the regular inbox grouped by Todoist project.
+//   3. "Routines" fold (collapsed) — every recurring task that isn't
+//      firing today, regardless of cadence shape (weekly dow, "every 3
+//      days", date-based — they all live here so they don't pollute the
+//      project sections).
+//
+// Each card carries a small priority flag (P1 red / P2 orange / P3 blue)
+// drawn from Todoist's priority field. Default-priority tasks have no
+// flag.
 
 import { useMemo, useRef, useState } from 'react';
 import type { TaskItem } from '@shared/types';
@@ -37,43 +48,84 @@ export function TasksPanel(props: Props) {
     onOpenTask, apiKeySet, loading, errorMessage,
   } = props;
 
-  const fireToday = (task: TaskItem) => task.recur && taskOccursOn(task, today);
+  const todayStr = fmtDate(today);
 
-  const inboxTasks = tasks.filter((t) => !t.recur || fireToday(t));
-  const routineTasks = tasks.filter((t) => t.recur && !fireToday(t));
+  // "Fires today" covers three signals: parsed weekday recurrence (Mon/Wed),
+  // a Todoist-recurring task whose next due-date is today (catches "every 3
+  // days" / date cadences that we can't shape into a dow array), or a flat
+  // due === today.
+  const firesToday = (task: TaskItem): boolean => {
+    if (task.recur && taskOccursOn(task, today)) return true;
+    if (task.isRecurring && task.due === todayStr) return true;
+    return false;
+  };
 
-  // Nesting: build a parent → children index across the visible inbox set.
+  const isTodayTask = (task: TaskItem): boolean => {
+    if (task.scheduledAt && task.scheduledAt.date === todayStr) return true;
+    if (task.due === todayStr) return true;
+    return firesToday(task);
+  };
+
+  const todayTasks = useMemo(
+    () => tasks.filter(isTodayTask).sort(byPriorityDesc),
+    [tasks, todayStr],
+  );
+  const todayIdSet = useMemo(() => new Set(todayTasks.map((t) => t.id)), [todayTasks]);
+
+  // Routines fold: every recurring task that isn't already up in Today.
+  // Sorted alphabetically so a long list reads predictably.
+  const routineTasks = useMemo(() => {
+    return tasks
+      .filter((t) => t.isRecurring && !todayIdSet.has(t.id))
+      .slice()
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }, [tasks, todayIdSet]);
+  const routineIdSet = useMemo(() => new Set(routineTasks.map((t) => t.id)), [routineTasks]);
+
+  // Project-section pool: everything that's neither Today nor a (future)
+  // routine. This is what the user thinks of as their "real" inbox.
+  const projectPool = useMemo(() => {
+    return tasks.filter((t) => !todayIdSet.has(t.id) && !routineIdSet.has(t.id));
+  }, [tasks, todayIdSet, routineIdSet]);
+
+  // Nesting: build a parent → children index across each visible bucket.
   // A task whose parentId points to something we don't display (parent done,
   // or parent on a hidden project) is treated as a top-level orphan so it
   // still shows up.
-  const inboxIds = useMemo(() => {
-    const s = new Set<string>();
-    for (const t of inboxTasks) s.add(t.id);
-    return s;
-  }, [inboxTasks]);
   const childrenByParent = useMemo(() => {
+    const visibleIds = new Set<string>();
+    for (const t of todayTasks) visibleIds.add(t.id);
+    for (const t of projectPool) visibleIds.add(t.id);
     const m: Record<string, TaskItem[]> = {};
-    for (const t of inboxTasks) {
-      if (t.parentId && inboxIds.has(t.parentId)) {
+    for (const t of [...todayTasks, ...projectPool]) {
+      if (t.parentId && visibleIds.has(t.parentId)) {
         (m[t.parentId] ??= []).push(t);
       }
     }
     return m;
-  }, [inboxTasks, inboxIds]);
+  }, [todayTasks, projectPool]);
+  const childIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const arr of Object.values(childrenByParent)) {
+      for (const t of arr) s.add(t.id);
+    }
+    return s;
+  }, [childrenByParent]);
 
   const grouped = useMemo(() => {
     const out: Record<string, TaskItem[]> = {};
     for (const p of projectOrder) out[p] = [];
-    for (const t of inboxTasks) {
-      if (t.parentId && inboxIds.has(t.parentId)) continue;
+    for (const t of projectPool) {
+      if (childIds.has(t.id)) continue;
       if (!out[t.project]) out[t.project] = [];
       out[t.project].push(t);
     }
+    for (const p of Object.keys(out)) out[p].sort(byPriorityDesc);
     return out;
-  }, [inboxTasks, projectOrder, inboxIds]);
+  }, [projectPool, projectOrder, childIds]);
 
-  const totalOpen = inboxTasks.length;
-  const totalAll = inboxTasks.length + doneTodayCount;
+  const totalOpen = tasks.filter((t) => !routineIdSet.has(t.id)).length;
+  const totalAll = totalOpen + doneTodayCount;
   const [routinesOpen, setRoutinesOpen] = useState(false);
 
   const [dropActive, setDropActive] = useState(false);
@@ -126,6 +178,35 @@ export function TasksPanel(props: Props) {
           <div className="tp-empty-state tp-error">{errorMessage}</div>
         )}
 
+        {todayTasks.length > 0 && (
+          <section className="tp-section tp-today">
+            <div className="tp-mast">
+              <span className="tp-eyebrow-tag">Today</span>
+              <span className="tp-rule" />
+              <span className="tp-pcnt">{todayTasks.length}</span>
+            </div>
+            <div className="tp-stack">
+              {todayTasks.map((task) => {
+                if (childIds.has(task.id)) return null;
+                const projColor = projectColor[task.project] || '#5b7a8e';
+                return (
+                  <TaskTree
+                    key={task.id}
+                    task={task}
+                    today={today}
+                    projColor={projColor}
+                    carryoverIds={carryoverIds}
+                    childrenByParent={childrenByParent}
+                    onToggleDone={onToggleDone}
+                    onOpenTask={onOpenTask}
+                    depth={0}
+                  />
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {projectOrder.map((project) => {
           const list = grouped[project] || [];
           if (list.length === 0) return null;
@@ -176,6 +257,7 @@ export function TasksPanel(props: Props) {
               <div className="tp-stack tp-routines-stack">
                 {routineTasks.map((task) => {
                   const projColor = projectColor[task.project] || '#5b7a8e';
+                  const cadence = formatRoutineCadence(task, today);
                   return (
                     <button
                       key={task.id}
@@ -187,9 +269,12 @@ export function TasksPanel(props: Props) {
                     >
                       <span className="tp-routine-glyph" />
                       <span className="tp-routine-title">
+                        {task.priority > 1 && (
+                          <span className={'tp-pri-flag pri-' + task.priority} />
+                        )}
                         {renderInlineCode(task.title)}
                       </span>
-                      <span className="tp-routine-dow">{formatRecurDow(task.recur)}</span>
+                      <span className="tp-routine-dow">{cadence}</span>
                     </button>
                   );
                 })}
@@ -273,6 +358,7 @@ function TaskCard({ task, today, projColor, carry, nested, onToggleDone, onOpen 
   if (carry) cls.push('carry');
   if (isScheduled) cls.push('scheduled');
   if (nested) cls.push('nested');
+  cls.push('pri-' + task.priority);
 
   const drag = useDragSource({
     type: 'task',
@@ -314,7 +400,15 @@ function TaskCard({ task, today, projColor, carry, nested, onToggleDone, onOpen 
         />
       </div>
       <div className="tp-center">
-        <div className="tp-ttl">{renderInlineCode(task.title)}</div>
+        <div className="tp-ttl">
+          {task.priority > 1 && (
+            <span
+              className={'tp-pri-flag pri-' + task.priority}
+              title={'Priority P' + (5 - task.priority)}
+            />
+          )}
+          {renderInlineCode(task.title)}
+        </div>
         {(task.energy || task.location || dueLabel || isScheduled
           || task.description || task.comments.length > 0) && (
           <div className="tp-meta">
@@ -387,6 +481,31 @@ function formatRecurDow(recur: TaskItem['recur']): string {
   if (dow.length === 5 && dow.every((d) => d >= 1 && d <= 5)) return 'weekdays';
   if (dow.length === 2 && dow.includes(0) && dow.includes(6)) return 'weekends';
   return dow.map((d) => DOW_SHORT[d]).join(' · ');
+}
+
+// What to print on the right edge of a Routines row. Prefers a parsed
+// weekday cadence ("Mon · Wed"); falls back to the next due date so
+// "every 3 days" tasks still show *when* they next fire.
+function formatRoutineCadence(task: TaskItem, today: Date): string {
+  const dow = formatRecurDow(task.recur);
+  if (dow) return dow;
+  if (!task.due) return 'recurring';
+  const todayStr = fmtDate(today);
+  if (task.due === todayStr) return 'today';
+  const d = new Date(task.due + 'T00:00:00');
+  const diff = Math.round(
+    (d.getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86_400_000,
+  );
+  if (diff < 0) return 'overdue';
+  if (diff <= 6) return 'next ' + DOW_SHORT[d.getDay()];
+  return 'in ' + diff + 'd';
+}
+
+// Sort comparator for task lists. Higher Todoist priority surfaces first.
+// Within a priority bucket we keep Todoist's original order — that's
+// already meaningful (manual ranking inside a project).
+function byPriorityDesc(a: TaskItem, b: TaskItem): number {
+  return b.priority - a.priority;
 }
 
 export function TasksEdgeTab({ onOpen }: { onOpen: () => void }) {

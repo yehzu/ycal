@@ -80,6 +80,8 @@ interface RestTask {
   due?: RestDue | null;
   comment_count?: number;
   labels?: string[];
+  // Todoist priority: 1 (default) → 4 (highest, "P1" in the UI).
+  priority?: number;
 }
 
 interface RestComment {
@@ -290,6 +292,8 @@ export const todoistProvider: TaskProvider = {
         t.description ?? '',
         t.labels ?? [],
       );
+      const rawPri = typeof t.priority === 'number' ? t.priority : 1;
+      const priority = (rawPri >= 1 && rawPri <= 4 ? rawPri : 1) as 1 | 2 | 3 | 4;
       return {
         id: t.id,
         projectId: t.project_id,
@@ -302,6 +306,8 @@ export const todoistProvider: TaskProvider = {
         dur: meta.durMin,
         due: t.due?.date ?? null,
         recur: parseRecurDow(t.due),
+        isRecurring: !!t.due?.is_recurring,
+        priority,
         comments: commentsByTask[t.id] ?? [],
         done: !!t.is_completed,
         scheduledAt: null, // overlaid in renderer from local state
