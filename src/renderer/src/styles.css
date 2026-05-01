@@ -1715,6 +1715,13 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: var(--h-color, var(--ink));
   font-style: italic;
 }
+/* Today pill must win the color over weekend/holiday — same specificity, so
+   keep this after those rules. Weekend/holiday hue still leaks through via
+   the pill background being var(--ink); we just need the digit legible. */
+.tv-col-head.today.weekend .num,
+.tv-col-head.today.h-holiday .num {
+  color: var(--paper);
+}
 .tv-col-head.h-workday .num::after {
   content: '·';
   color: var(--h-color, var(--ink-soft));
