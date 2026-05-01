@@ -1,6 +1,6 @@
 {
   "name": "ycal",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "An editorial-styled macOS calendar with multi-Google-account support and per-event colors.",
   "main": "out/main/index.js",
   "author": "yCal",
@@ -25,7 +25,6 @@
   "dependencies": {
     "@types/dompurify": "^3.0.5",
     "dompurify": "^3.4.1",
-    "electron-updater": "^6.8.3",
     "googleapis": "^144.0.0"
   },
   "devDependencies": {

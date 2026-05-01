@@ -198,8 +198,9 @@ export const DEFAULT_LOAD_WINDOW: LoadWindowSettings = {
   endMin: 18 * 60,
 };
 
-// Auto-update lifecycle, mirrored from electron-updater's events into a
-// renderer-friendly union. `idle` is the boot state and what we fall back
+// Auto-update lifecycle. The updater (src/main/updater.ts) maps its
+// internal phases onto this renderer-friendly union. `idle` is the boot
+// state and what we fall back
 // to after a dismissal or an error.
 // `available` covers both "found, downloading silently" and "downloaded,
 // waiting for user". The renderer doesn't need to distinguish — the toast

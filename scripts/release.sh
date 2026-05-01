@@ -1,7 +1,7 @@
 #!/bin/sh
 # yCal release driver — turns a clean "bumped + committed" state into a
-# published GitHub release that triggers electron-updater for existing
-# installs. Designed to be called by `npm run release`.
+# published GitHub release that the in-app updater (src/main/updater.ts)
+# picks up on existing installs. Designed to be called by `npm run release`.
 #
 # Pre-conditions (caller's responsibility):
 #   • package.json version is what you want released
@@ -18,7 +18,8 @@
 #   5. `npm run dist -- --publish always` → builds dmg + zip, uploads to
 #      a draft GitHub release named after the tag.
 #   6. `gh release edit vX.Y.Z --draft=false` → promotes draft to live.
-#      electron-updater on existing installs picks it up within ~6h.
+#      Existing installs poll GitHub on launch / focus / every 30 min and
+#      pick it up within minutes of returning to the app.
 set -eu
 
 if ! command -v gh >/dev/null 2>&1; then

@@ -9,7 +9,7 @@ User-facing docs live in `README.md`. This file is for fast onboarding when Clau
 - **Electron 33** (main + preload + renderer separation enforced)
 - **electron-vite + Vite 5 + React 18 + TypeScript**
 - **googleapis** for Calendar v3 — read-only OAuth scopes
-- **electron-updater + GitHub releases** for auto-update
+- **GitHub releases** for auto-update (custom, no electron-updater — see "Auto-update" below)
 - **No tests, no lint config.** "Verified" means typecheck clean + build clean + smoke-tested manually. Don't introduce a test framework without asking.
 
 ## Layout
@@ -25,7 +25,7 @@ src/
 │   ├── settings.ts       UI settings + weather URL + active task provider id (cloud-routed)
 │   ├── device.ts         Per-device prefs (cloudStorage pref only — userData)
 │   ├── weather.ts        iCal-format weather feed parser + cache
-│   ├── updater.ts        electron-updater wiring
+│   ├── updater.ts        Custom GitHub-releases auto-updater (handles unsigned builds)
 │   ├── cloudStore.ts     iCloud-Drive-or-local file router (JSON + text)
 │   ├── rhythm.ts         Wake/sleep defaults (time-versioned) + per-day overrides
 │   ├── tasksStore.ts     Local task overlay (schedule + done) backed by cloudStore
@@ -158,7 +158,21 @@ Encapsulated in `scripts/release.sh` (run via `npm run release`). Pre-conditions
 npm run release
 ```
 
-`scripts/release.sh` then: typechecks + builds → tags `vX.Y.Z` if not present → pushes `main` and the tag → `npm run dist -- --publish always` (uploads dmg + zip to a draft GitHub release using `gh auth token` for `GH_TOKEN`) → `gh release edit vX.Y.Z --draft=false` to promote the draft to live. Existing installs auto-update within ~6h via `electron-updater`.
+`scripts/release.sh` then: typechecks + builds → tags `vX.Y.Z` if not present → pushes `main` and the tag → `npm run dist -- --publish always` (uploads dmg + zip to a draft GitHub release using `gh auth token` for `GH_TOKEN`) → `gh release edit vX.Y.Z --draft=false` to promote the draft to live. Existing installs auto-update within minutes via the in-app updater (poll on launch / focus / every 30 min).
+
+## Auto-update — why we rolled our own (and the gotchas)
+
+This app is **not** signed with an Apple Developer ID, so `electron-updater`'s normal swap-and-relaunch dies the moment Gatekeeper inspects the new bundle. We replaced it with a custom flow in `src/main/updater.ts`:
+
+1. Poll `https://api.github.com/repos/yehzu/ycal/releases/latest` (no auth — well under the 60-rps anonymous rate limit at our cadence).
+2. Pick the arch-matched zip asset (`yCal-X.Y.Z-arm64-mac.zip` on Apple Silicon, `yCal-X.Y.Z-mac.zip` on Intel — `.blockmap` files share the prefix and must be skipped).
+3. Download via Node `https` (which doesn't add `com.apple.quarantine`, unlike Safari/Chrome).
+4. Extract with `/usr/bin/ditto` — the same tool electron-builder uses on the producing side; preserves resource forks and xattrs better than `unzip`.
+5. Write a detached bash helper script and `app.quit()`. The helper waits for the old process to exit, **moves the running bundle aside (not delete-first)**, moves the new bundle into place, runs `xattr -cr` to strip Gatekeeper attrs, sanity-checks the executable, then `open`s it. On any failure path it restores the aside-bundle so the user is never appless.
+
+**Don't try to make electron-updater work for unsigned builds again.** That was the bug we're working around: Gatekeeper requires either notarisation OR a missing quarantine bit, and electron-updater can't help with either. The bundle path is found via `process.execPath` so this works regardless of whether yCal lives in `/Applications`, `~/Applications`, or a custom location.
+
+**Renderer contract is unchanged.** `UpdateOverlay.tsx` and `SettingsModal.tsx`'s update card still drive the lifecycle through the existing `UpdateStatus` IPC stream + `installUpdate()` channel — only the main-side mechanics changed.
 
 **`bin/ycal` is not in the dmg.** It's a checkout-only script. If a fix lives in `bin/ycal`, users with `~/.local/bin/ycal` already symlinked or copied need to re-copy. A version bump still helps signal that.
 
