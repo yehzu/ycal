@@ -70,10 +70,15 @@ function read(): { settings: Settings; legacy: RawSettings } {
       adoptLegacyCloudPref(raw.rhythmStorage);
     }
   }
+  // Construct settings explicitly — do NOT spread `raw`, or legacy
+  // fields (cloudStorage / rhythmStorage / tasks) hitch a ride and
+  // every write re-persists them, defeating clearLegacyFields. Pull
+  // only the fields that belong to the current schema.
   return {
     settings: {
-      ...DEFAULTS,
-      ...raw,
+      weatherIcsUrl: typeof raw.weatherIcsUrl === 'string' || raw.weatherIcsUrl === null
+        ? raw.weatherIcsUrl
+        : null,
       ui: { ...DEFAULT_UI, ...(raw.ui ?? {}) },
       taskProviderId: raw.taskProviderId === 'markdown' ? 'markdown' : 'todoist',
     },

@@ -40,8 +40,15 @@ const ICLOUD_DIR = path.join(ICLOUD_ROOT, 'yCal');
 export function isIcloudAvailable(): boolean {
   if (process.platform !== 'darwin') return false;
   if (!existsSync(ICLOUD_ROOT)) return false;
+  // Read-access check only. We DELIBERATELY do NOT require W_OK — on an
+  // unsigned app launched from Finder on recent macOS, TCC silently
+  // denies W_OK on iCloud Drive even when read access is fine. If we
+  // gated availability on W_OK, the app would silently fall back to
+  // userData and read STALE local copies while iCloud held the truth.
+  // Failing reads-from-iCloud-into-renderer is the worst case; failing
+  // writes-out is loud (writeAtomic throws, IPC surfaces the error).
   try {
-    accessSync(ICLOUD_ROOT, constants.W_OK);
+    accessSync(ICLOUD_ROOT, constants.R_OK);
     return true;
   } catch {
     return false;
