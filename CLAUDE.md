@@ -22,16 +22,19 @@ src/
 │   ├── tokenStore.ts     safeStorage-backed accounts.json (Keychain on macOS)
 │   ├── config.ts         Loads oauth-client.json from userData
 │   ├── calendar.ts       Google Calendar API client + event shaping
-│   ├── settings.ts       UI settings + weather URL + cloudStorage pref
+│   ├── settings.ts       UI settings + weather URL + active task provider id (cloud-routed)
+│   ├── device.ts         Per-device prefs (cloudStorage pref only — userData)
 │   ├── weather.ts        iCal-format weather feed parser + cache
 │   ├── updater.ts        electron-updater wiring
-│   ├── cloudStore.ts     iCloud-Drive-or-local JSON file router (rhythm + tasks)
+│   ├── cloudStore.ts     iCloud-Drive-or-local file router (JSON + text)
 │   ├── rhythm.ts         Wake/sleep defaults (time-versioned) + per-day overrides
 │   ├── tasksStore.ts     Local task overlay (schedule + done) backed by cloudStore
 │   ├── taskProviders/    Pluggable task backends
 │   │   ├── types.ts        TaskProvider interface
 │   │   ├── labels.ts       Troika label parser (duration / energy / location)
-│   │   ├── todoist.ts      Todoist /api/v1 client (only provider today)
+│   │   ├── todoist.ts      Todoist /api/v1 client
+│   │   ├── markdownDoc.ts  Markdown task parser + serializer + targeted edits
+│   │   ├── markdown.ts     Markdown-file-backed provider (cloudStore-routed tasks.md)
 │   │   └── index.ts        Registry — drop new providers here
 │   ├── cli.ts            Argv-driven CLI (LLM-friendly, JSON/text/markdown)
 │   └── cliServer.ts      Unix socket server bridging external clients to runCli
@@ -67,7 +70,8 @@ bin/ycal         Plain-Node CLI client (no Electron import — talks to socket)
 5. **`app.name` resolves to `"ycal"` (lowercase, from package.json `name`).** That's the userData dir name on disk: `~/Library/Application Support/ycal/`. The `productName` `"yCal"` only affects the .app bundle name. Don't call `app.setName('yCal')` — it would orphan existing users' tokens.
 6. **Tasks is a pluggable provider, not a Todoist integration.** The renderer talks to `getActiveProvider()` via IPC (`tasksList`, `tasksClose`, `tasksAddComment`, …). Adding a new backend means dropping a file in `src/main/taskProviders/` that implements the `TaskProvider` interface and registering it in `taskProviders/index.ts`. The renderer is provider-agnostic.
 7. **Task scheduling stays local-cloud — never round-trip to the upstream provider.** When a user drags a task onto a calendar slot, we record it in `tasks-schedule.json` (cloudStore-routed). We do NOT call Todoist's `update task due date`. Only completion (`closeTask`/`reopenTask`) and comments push upstream.
-8. **`cloudStore.ts` is the only thing that knows about iCloud Drive.** Anything that wants iCloud-or-local routing should go through `readJson` / `writeJson` and register its filename in `CLOUD_FILES` so the toggle in Settings → Sync moves it correctly. Today the routed files are `rhythm.json` and `tasks-schedule.json`.
+8. **`cloudStore.ts` is the only thing that knows about iCloud Drive.** Anything that wants iCloud-or-local routing should go through `readJson` / `writeJson` (or `readText` / `writeText`) and register its filename in `CLOUD_FILES` so the toggle in Settings → Sync moves it correctly. Today the routed files are `rhythm.json`, `tasks-schedule.json`, `settings.json`, and `tasks.md`.
+9. **The cross-device sync model is "iCloud-Drive routing for files; safeStorage credentials stay local."** All UI prefs + the day rhythm + the task schedule + the markdown task store follow the user across Macs through cloudStore. OAuth refresh tokens (`accounts.json`) and the Todoist API key (`todoist.key`) cannot — `safeStorage` keys are per-device. Each new Mac re-signs once. The `cloudStorage` pref ITSELF lives in `device.json` (userData, never synced) so we can read settings.json from the right location without circular bootstrapping. `cloudStore.migrateMissingToCloud()` runs at startup to handle the upgrade case where new files joined `CLOUD_FILES` after the user already toggled iCloud on.
 
 ## Common commands
 
@@ -184,6 +188,39 @@ The Tasks rail in Week + Day views is glued together by three files:
 - location: anything else, first wins
 
 Pure-numeric labels are explicitly rejected as durations so a "2026" project label doesn't become 2026 minutes.
+
+## Markdown task provider — file format
+
+The markdown provider stores everything yCal needs in a single `tasks.md` file under `cloudStore` (so it follows the user across Macs through iCloud Drive when enabled). Reference the parser in `src/main/taskProviders/markdownDoc.ts` if you need the gritty details — here's the user-facing shape:
+
+```markdown
+# Project Name {#5897c5}        ← top-level project; trailing {#hex} is optional
+## Section Name                 ← nested project (any depth)
+
+- [ ] Task title  @2026-05-15 !p2 #30m #high #office  ^abc12345
+  Indented plain text becomes the description.
+  Multiple lines OK; blank lines are paragraph breaks.
+  - [ ] Subtask  ^def67890
+  > [2026-05-01] First comment.
+  > [2026-05-02] Second.
+
+- [x] Done task  ^xyz98765
+```
+
+**Token grammar after the title:**
+- `@YYYY-MM-DD` — due date (one). Also accepts `@today`, `@tomorrow`.
+- `@daily` / `@weekdays` / `@every Mon Wed Fri` — weekday recurrence. Cadences that don't reduce to a weekday set (e.g. "every 3 days") set `isRecurring=true` but leave `recur.dow=null`, mirroring the Todoist provider so the Routines fold behaves identically.
+- `!p1` … `!p4` — priority. **!p1 = highest = wire-priority 4** (matches Todoist's mental model where the user calls it "P1"). Default = 1.
+- `#30m`, `#1h`, `#1h30m` — duration label.
+- `#low`, `#mid`, `#high` — energy label.
+- `#anything-else` — location label (first one wins).
+- `^xxxxxxxx` — Obsidian-style block id. **Auto-assigned on first save when missing**, and the file is rewritten to make the id stick. Block ids survive title renames; without them, schedule overlay entries would orphan whenever the user edited a title.
+
+**Why ids matter:** local schedule + done overlay (`tasks-schedule.json`) keys by task id. So the markdown file is *the* source of truth for what a task is, but the schedule of when it's planned lives separately. This is the same split the Todoist provider uses — `closeTask`/`reopenTask`/`addComment` write through to the markdown file, but `scheduleTask` does not (drag-to-schedule never round-trips to the markdown).
+
+**Targeted-edit invariant:** the provider does line-level patches for close/reopen/addComment rather than re-emitting the whole document. That's deliberate — the user can keep arbitrary prose between blocks (HTML comments for help text, free-form notes, code fences) and yCal won't munge it. Re-serialization only happens on `needsRewrite` (new ids).
+
+**Provider switching:** Settings → Tasks now offers a Todoist ↔ Markdown segmented control. Switching does NOT migrate tasks between providers — the markdown file and Todoist account each remain their own canonical source. The local schedule overlay is shared, so a chip dropped on Tuesday stays on Tuesday across a switch (though the id won't resolve to the new provider's tasks until the user moves it).
 
 ## Day rhythm — time-versioned defaults
 

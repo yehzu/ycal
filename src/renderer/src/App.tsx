@@ -775,6 +775,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           onAddAccount={handleSignIn}
           onRemoveAccount={store.signOut}
           taskProvider={tasks.provider}
+          taskProviders={tasks.providers}
+          setActiveTaskProvider={tasks.setActiveProvider}
           setTaskCredentials={tasks.setCredentials}
           refreshTasks={tasks.refresh}
           autoRolloverPastTasks={autoRolloverPastTasks}

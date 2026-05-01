@@ -1,14 +1,30 @@
-import { app } from 'electron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
-import type { CloudStorage, UiSettings } from '@shared/types';
+// yCal — settings.json (now cloud-routed).
+//
+// Holds UI preferences, calendar visibility, weather URL, and the active
+// task provider id. The file lives wherever cloudStore points us — userData
+// on a "Local" device, iCloud Drive on a synced one — so the same prefs
+// follow the user across Macs.
+//
+// What does NOT live here:
+//   * `cloudStorage` itself — that lives in `device.json` (per-device) so
+//     we can read settings.json from the right location without circular
+//     bootstrapping. Old builds wrote `cloudStorage` to settings.json; we
+//     migrate it on first read after upgrade and drop it from the file.
+//   * Encrypted credentials (Google OAuth, Todoist key) — those are device-
+//     local by construction. safeStorage keys don't survive across Macs.
+
+import type { CloudStorage, TaskProviderId, UiSettings } from '@shared/types';
+import { adoptLegacyCloudPref } from './device';
+import { readJson, writeJson } from './cloudStore';
+
+const FILE = 'settings.json';
 
 interface Settings {
   weatherIcsUrl: string | null;
   ui: UiSettings;
-  // Where rhythm.json + tasks-schedule.json live. iCloud Drive when picked
-  // and available; local userData otherwise.
-  cloudStorage: CloudStorage;
+  // Active task provider — Todoist by default. Switching providers is a
+  // user action; the renderer offers a dropdown in Settings → Tasks.
+  taskProviderId: TaskProviderId;
 }
 
 const DEFAULT_UI: UiSettings = {
@@ -21,52 +37,52 @@ const DEFAULT_UI: UiSettings = {
 const DEFAULTS: Settings = {
   weatherIcsUrl: null,
   ui: DEFAULT_UI,
-  cloudStorage: 'local',
+  taskProviderId: 'todoist',
 };
-
-const FILE = (): string => path.join(app.getPath('userData'), 'settings.json');
 
 function cloneDefaults(): Settings {
   return { ...DEFAULTS, ui: { ...DEFAULT_UI } };
 }
 
 interface RawSettings extends Partial<Settings> {
-  // Legacy fields read for one-shot migration on first launch with the new
-  // schema. Removed from disk after migration.
+  // Legacy fields read for one-shot migration. Removed from disk after.
   rhythmStorage?: CloudStorage;
+  cloudStorage?: CloudStorage;
   tasks?: {
     scheduled?: Record<string, { date: string; start: string }>;
     doneOn?: Record<string, string>;
   };
 }
 
+let migratedLegacyCloudPref = false;
+
 function read(): { settings: Settings; legacy: RawSettings } {
-  const f = FILE();
-  if (!existsSync(f)) return { settings: cloneDefaults(), legacy: {} };
-  try {
-    const parsed = JSON.parse(readFileSync(f, 'utf-8')) as RawSettings;
-    const cloud: CloudStorage =
-      parsed.cloudStorage === 'icloud' || parsed.rhythmStorage === 'icloud'
-        ? 'icloud'
-        : 'local';
-    return {
-      settings: {
-        ...DEFAULTS,
-        ...parsed,
-        ui: { ...DEFAULT_UI, ...(parsed.ui ?? {}) },
-        cloudStorage: cloud,
-      },
-      legacy: parsed,
-    };
-  } catch {
-    return { settings: cloneDefaults(), legacy: {} };
+  const raw = readJson<RawSettings | null>(FILE, null);
+  if (!raw) return { settings: cloneDefaults(), legacy: {} };
+  // First-time-after-upgrade: lift cloudStorage out of settings.json and
+  // into the per-device file. Idempotent — adoptLegacyCloudPref no-ops when
+  // device.json already exists.
+  if (!migratedLegacyCloudPref) {
+    migratedLegacyCloudPref = true;
+    if (raw.cloudStorage) {
+      adoptLegacyCloudPref(raw.cloudStorage);
+    } else if (raw.rhythmStorage) {
+      adoptLegacyCloudPref(raw.rhythmStorage);
+    }
   }
+  return {
+    settings: {
+      ...DEFAULTS,
+      ...raw,
+      ui: { ...DEFAULT_UI, ...(raw.ui ?? {}) },
+      taskProviderId: raw.taskProviderId === 'markdown' ? 'markdown' : 'todoist',
+    },
+    legacy: raw,
+  };
 }
 
 function write(s: Settings): void {
-  const f = FILE();
-  mkdirSync(path.dirname(f), { recursive: true });
-  writeFileSync(f, JSON.stringify(s, null, 2), 'utf-8');
+  writeJson<Settings>(FILE, s);
 }
 
 export function getWeatherUrl(): string | null {
@@ -105,17 +121,22 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   if (patch.showWeather !== undefined) next.showWeather = patch.showWeather;
   if (patch.units !== undefined) next.units = patch.units;
   if (patch.hideDisabledCals !== undefined) next.hideDisabledCals = patch.hideDisabledCals;
+  if (patch.autoRolloverPastTasks !== undefined) {
+    next.autoRolloverPastTasks = patch.autoRolloverPastTasks;
+  }
+  if (patch.loadWindow !== undefined) next.loadWindow = patch.loadWindow;
+  if (patch.loadBands !== undefined) next.loadBands = patch.loadBands;
   s.ui = next;
   write(s);
 }
 
-export function getCloudStoragePref(): CloudStorage {
-  return read().settings.cloudStorage;
+export function getTaskProviderId(): TaskProviderId {
+  return read().settings.taskProviderId;
 }
 
-export function setCloudStoragePref(pref: CloudStorage): void {
+export function setTaskProviderId(id: TaskProviderId): void {
   const { settings: s } = read();
-  s.cloudStorage = pref;
+  s.taskProviderId = id;
   write(s);
 }
 
@@ -136,7 +157,7 @@ export function readLegacyTasks(): {
 
 export function clearLegacyFields(): void {
   const { settings: s, legacy } = read();
-  if (!legacy.tasks && !legacy.rhythmStorage) return;
+  if (!legacy.tasks && !legacy.rhythmStorage && !legacy.cloudStorage) return;
   // Re-write without the legacy keys (they only existed in `legacy`).
   write(s);
 }

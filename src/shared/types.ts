@@ -222,20 +222,31 @@ export interface UpdateStatus {
 }
 
 // ── Tasks (provider-backed) ──────────────────────────────────────────
-// A task provider is a backing store for tasks (Todoist today; could be
-// Things, Reminders, Linear, plain Markdown later). The renderer doesn't
+// A task provider is a backing store for tasks. The renderer doesn't
 // know which provider is active — it just sees `TaskItem`s flowing through
 // IPC. To swap providers, drop a new file under `src/main/taskProviders/`
 // implementing the same interface and register it in the index.
-export type TaskProviderId = 'todoist';
+//
+// Providers shipped today:
+//   * todoist  — talks to Todoist's API v1; credentials are an API key.
+//   * markdown — reads/writes a `tasks.md` file in cloudStore. No auth;
+//                the file is created on demand and follows the user across
+//                devices via iCloud Drive (or stays local-only).
+export type TaskProviderId = 'todoist' | 'markdown';
 
 export interface TaskProviderInfo {
   id: TaskProviderId;
   displayName: string;
   // True when credentials are configured (e.g. an API key has been set).
+  // Markdown provider returns true once the file is reachable.
   hasCredentials: boolean;
-  // Human-friendly hint about what to paste in the credentials field.
+  // Human-friendly hint shown alongside the credentials field. Empty
+  // string when the provider doesn't need credentials (markdown).
   credentialsHint: string;
+  // Marks the provider that's actively serving IPC right now. Renderer
+  // uses this for the segmented control + the panel's "no credentials"
+  // state. Exactly one provider in `listProviders()` will be active.
+  active?: boolean;
 }
 
 // We don't try to model every Todoist field. Just what the panel + sheet
@@ -395,6 +406,8 @@ export const IPC = {
   UpdateStatus: 'ycal:updateStatus', // main → renderer push
   // Tasks (active provider does the talking)
   TasksGetProviderInfo: 'ycal:tasksGetProviderInfo',
+  TasksListProviders: 'ycal:tasksListProviders',
+  TasksSetActiveProvider: 'ycal:tasksSetActiveProvider',
   TasksSetCredentials: 'ycal:tasksSetCredentials',
   TasksList: 'ycal:tasksList',
   TasksClose: 'ycal:tasksClose',
@@ -402,6 +415,7 @@ export const IPC = {
   TasksAddComment: 'ycal:tasksAddComment',
   TasksGetLocal: 'ycal:tasksGetLocal',     // schedule + done overlay (cloud)
   TasksSetLocal: 'ycal:tasksSetLocal',
+  TasksRevealStorage: 'ycal:tasksRevealStorage',  // markdown provider only
   // Day rhythm
   RhythmGet: 'ycal:rhythmGet',
   RhythmSetOverride: 'ycal:rhythmSetOverride',

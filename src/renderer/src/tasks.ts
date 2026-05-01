@@ -29,6 +29,11 @@ const PROJECT_FALLBACK_COLOR = '#5b7a8e';
 
 export interface TasksStore {
   provider: TaskProviderInfo | null;
+  // All registered providers, with `.active` set on the one currently in
+  // use. Settings → Tasks renders this as a segmented control. Empty
+  // until the first IPC roundtrip resolves.
+  providers: TaskProviderInfo[];
+  setActiveProvider: (id: 'todoist' | 'markdown') => Promise<void>;
   setCredentials: (key: string | null) => Promise<void>;
   loading: boolean;
   error: string | null;
@@ -58,6 +63,7 @@ export interface TasksStore {
 
 export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   const [provider, setProvider] = useState<TaskProviderInfo | null>(null);
+  const [providers, setProviders] = useState<TaskProviderInfo[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
   const [projectColor, setProjectColor] = useState<Record<string, string>>({});
@@ -72,12 +78,14 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [info, localState] = await Promise.all([
+      const [info, providerList, localState] = await Promise.all([
         window.ycal.tasksGetProviderInfo(),
+        window.ycal.tasksListProviders(),
         window.ycal.tasksGetLocal(),
       ]);
       if (cancelled) return;
       setProvider(info);
+      setProviders(providerList);
       setLocal({
         scheduled: localState.scheduled ?? {},
         doneOn: localState.doneOn ?? {},
@@ -143,6 +151,39 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
       setProjectOrder([]);
       setProjectColor({});
       setProjects([]);
+    }
+  }, []);
+
+  // Switch providers. The cached tasks belong to the *previous* provider's
+  // namespace, so wipe them — otherwise the panel briefly shows stale rows
+  // until the new provider's first listTasks call lands. The fresh fetch
+  // below re-fills the state.
+  const setActiveProvider = useCallback(async (id: 'todoist' | 'markdown') => {
+    const res = await window.ycal.tasksSetActiveProvider(id);
+    if (!res.ok) throw new Error(res.error);
+    setProvider(res.info);
+    const list = await window.ycal.tasksListProviders();
+    setProviders(list);
+    setTasks([]);
+    setProjectOrder([]);
+    setProjectColor({});
+    setProjects([]);
+    setError(null);
+    if (res.info.hasCredentials) {
+      setLoading(true);
+      try {
+        const fetched = await window.ycal.tasksList();
+        if (fetched.ok) {
+          setTasks(fetched.tasks);
+          setProjectOrder(fetched.projectOrder);
+          setProjectColor(fetched.projectColor);
+          setProjects(fetched.projects ?? []);
+        } else {
+          setError(fetched.error);
+        }
+      } finally {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -301,6 +342,8 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
 
   return {
     provider,
+    providers,
+    setActiveProvider,
     setCredentials,
     loading,
     error,

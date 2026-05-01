@@ -23,10 +23,12 @@ import {
   getRhythm, setOverride, clearOverride, setDefault,
 } from './rhythm';
 import {
-  CLOUD_FILES, getStorageInfo, setStorage,
+  CLOUD_FILES, getStorageInfo, migrateMissingToCloud, setStorage,
 } from './cloudStore';
-import { getActiveProvider } from './taskProviders';
-import { describe } from './taskProviders/types';
+import {
+  getActiveProvider, getActiveProviderInfo, listProviders, revealMarkdownFile,
+  setActiveProvider,
+} from './taskProviders';
 import { getTasksLocal, setTasksLocal } from './tasksStore';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
@@ -189,7 +191,19 @@ function registerIpc() {
   });
 
   // ── Tasks (active provider) ───────────────────────────────────────
-  ipcMain.handle(IPC.TasksGetProviderInfo, () => describe(getActiveProvider()));
+  ipcMain.handle(IPC.TasksGetProviderInfo, () => getActiveProviderInfo());
+  ipcMain.handle(IPC.TasksListProviders, () => listProviders());
+  ipcMain.handle(IPC.TasksSetActiveProvider, (_e, id: 'todoist' | 'markdown') => {
+    try {
+      const info = setActiveProvider(id);
+      return { ok: true as const, info };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksRevealStorage, () => {
+    if (getActiveProvider().id === 'markdown') revealMarkdownFile();
+  });
   ipcMain.handle(IPC.TasksSetCredentials, (_e, key: string | null) => {
     try {
       getActiveProvider().setCredentials(key);
@@ -294,6 +308,7 @@ if (isCliInvocation(process.argv)) {
   app.whenReady().then(async () => {
     let code = 0;
     try {
+      try { migrateMissingToCloud(); } catch { /* CLI keeps going */ }
       code = await runCli(extractCliArgs(process.argv), process.stdout, process.stderr);
     } catch (e) {
       process.stderr.write(`ycal: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
@@ -310,6 +325,11 @@ if (isCliInvocation(process.argv)) {
     if (process.platform === 'darwin' && process.env.ELECTRON_RENDERER_URL && app.dock) {
       try { app.dock.setIcon(DEV_ICON_PATH); } catch { /* dock icon is best-effort */ }
     }
+    // One-shot: when upgrading to a build that adds new entries to
+    // CLOUD_FILES (e.g. settings.json moves into the synced set), copy
+    // any pre-existing userData copies into iCloud so the first launch
+    // after the upgrade reads the right values instead of resetting.
+    try { migrateMissingToCloud(); } catch (e) { console.error('[yCal] cloud migration error', e); }
     registerIpc();
 
     if (!isConfigured()) {

@@ -1,4 +1,4 @@
-// yCal — cloud-aware JSON file store.
+// yCal — cloud-aware file store.
 //
 // Files written through this module live in iCloud Drive when the user has
 // the iCloud Drive folder available AND has the storage preference set to
@@ -6,9 +6,19 @@
 // name is used in both locations, so toggling between them just swaps the
 // directory we read from / write to.
 //
-// Today this backs `rhythm.json` (wake/sleep) and `tasks-schedule.json`
-// (Todoist-task local schedule overlay). Adding a new file is one call
-// to `readJson` / `writeJson`.
+// Today this backs:
+//   * `rhythm.json`            — wake/sleep
+//   * `tasks-schedule.json`    — Todoist-task local schedule overlay
+//   * `settings.json`          — UI prefs, calendar visibility, weather URL
+//   * `tasks.md`               — markdown-provider task store
+//
+// The `cloudStorage` preference itself lives in `device.json` (per-device,
+// userData) so we can read settings.json from the right location without
+// bootstrapping ourselves into a circular import.
+//
+// Adding a new file: register the filename in `CLOUD_FILES`, then read /
+// write through `readJson` / `writeJson` (or `readText` / `writeText` for
+// non-JSON payloads).
 
 import { app } from 'electron';
 import {
@@ -18,7 +28,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import type { CloudStorage, CloudStorageInfo } from '@shared/types';
-import { getCloudStoragePref, setCloudStoragePref } from './settings';
+import { getCloudStoragePref, setCloudStoragePref } from './device';
 
 const ICLOUD_ROOT = path.join(
   os.homedir(), 'Library/Mobile Documents/com~apple~CloudDocs',
@@ -107,15 +117,14 @@ function sleepSync(ms: number): void {
   Atomics.wait(_waitBuf, 0, 0, ms);
 }
 
-export function writeJson<T>(filename: string, data: T): void {
+function writeAtomic(filename: string, body: string): void {
   const { path: p, effective } = pathFor(filename);
   mkdirSync(path.dirname(p), { recursive: true });
-  const json = JSON.stringify(data, null, 2);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   let lastErr: unknown = null;
   for (let i = 0; i < ATTEMPTS; i++) {
     try {
-      writeFileSync(tmp, json, 'utf-8');
+      writeFileSync(tmp, body, 'utf-8');
       renameSync(tmp, p);
       return;
     } catch (e) {
@@ -134,6 +143,54 @@ export function writeJson<T>(filename: string, data: T): void {
   );
 }
 
-// List of filenames to migrate when the user flips the storage toggle. Add
-// any new cloud-stored files here.
-export const CLOUD_FILES = ['rhythm.json', 'tasks-schedule.json'];
+export function writeJson<T>(filename: string, data: T): void {
+  writeAtomic(filename, JSON.stringify(data, null, 2));
+}
+
+export function readText(filename: string, fallback: string): string {
+  const { path: p } = pathFor(filename);
+  if (!existsSync(p)) return fallback;
+  try {
+    return readFileSync(p, 'utf-8');
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeText(filename: string, body: string): void {
+  writeAtomic(filename, body);
+}
+
+// One-shot startup migration: when upgrading to a build that adds new
+// entries to CLOUD_FILES (e.g. settings.json moves into the synced set),
+// the user may already have those files in userData but not in iCloud.
+// If iCloud is the active storage and the iCloud-side copy is missing,
+// copy the userData-side copy across so the renderer doesn't see a
+// reset on first launch after the upgrade.
+export function migrateMissingToCloud(): void {
+  const pref = getCloudStoragePref();
+  if (pref !== 'icloud') return;
+  if (!isIcloudAvailable()) return;
+  for (const name of CLOUD_FILES) {
+    const local = path.join(app.getPath('userData'), name);
+    const cloud = path.join(ICLOUD_DIR, name);
+    if (existsSync(cloud)) continue;
+    if (!existsSync(local)) continue;
+    try {
+      mkdirSync(path.dirname(cloud), { recursive: true });
+      writeFileSync(cloud, readFileSync(local, 'utf-8'), 'utf-8');
+    } catch (e) {
+      console.error('[yCal] startup cloud migration failed for', name, e);
+    }
+  }
+}
+
+// List of filenames that follow the user across devices via the storage
+// toggle. Add any new cloud-stored files here AND register them above in
+// the file-purpose comment so future maintainers know what travels.
+export const CLOUD_FILES = [
+  'rhythm.json',
+  'tasks-schedule.json',
+  'settings.json',
+  'tasks.md',
+];

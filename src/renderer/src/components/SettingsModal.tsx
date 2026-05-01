@@ -42,6 +42,8 @@ interface Props {
   onRemoveAccount: (id: string) => Promise<void> | void;
   // Tasks (active provider)
   taskProvider: TaskProviderInfo | null;
+  taskProviders: TaskProviderInfo[];
+  setActiveTaskProvider: (id: 'todoist' | 'markdown') => Promise<void>;
   setTaskCredentials: (key: string | null) => Promise<void>;
   refreshTasks: () => Promise<void>;
   autoRolloverPastTasks: boolean;
@@ -172,6 +174,8 @@ export function SettingsModal(props: Props) {
             {tab === 'tasks' && (
               <PrefsTasks
                 provider={props.taskProvider}
+                providers={props.taskProviders}
+                setActiveProvider={props.setActiveTaskProvider}
                 setCredentials={props.setTaskCredentials}
                 refresh={props.refreshTasks}
                 autoRollover={props.autoRolloverPastTasks}
@@ -774,11 +778,13 @@ function PrefsUpdates() {
 }
 
 function PrefsTasks({
-  provider, setCredentials, refresh,
+  provider, providers, setActiveProvider, setCredentials, refresh,
   autoRollover, setAutoRollover, loadWindow, setLoadWindow,
   loadBands, setLoadBands,
 }: {
   provider: TaskProviderInfo | null;
+  providers: TaskProviderInfo[];
+  setActiveProvider: (id: 'todoist' | 'markdown') => Promise<void>;
   setCredentials: (key: string | null) => Promise<void>;
   refresh: () => Promise<void>;
   autoRollover: boolean;
@@ -788,11 +794,31 @@ function PrefsTasks({
   loadBands: LoadBands;
   setLoadBands: (next: LoadBands) => void;
 }) {
+  const isMarkdown = provider?.id === 'markdown';
+  const isTodoist = provider?.id === 'todoist';
   const hasKey = !!provider?.hasCredentials;
-  const [editing, setEditing] = useState(!hasKey);
+  const [editing, setEditing] = useState(isTodoist && !hasKey);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+
+  // Switching providers wipes the editing state — credentials only mean
+  // anything for Todoist, and the markdown provider needs no input.
+  const switchProvider = async (id: 'todoist' | 'markdown') => {
+    if (provider?.id === id) return;
+    setSwitching(true);
+    setSaveError(null);
+    try {
+      await setActiveProvider(id);
+      setDraft('');
+      setEditing(id === 'todoist');
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSwitching(false);
+    }
+  };
 
   const save = async () => {
     if (!draft.trim()) return;
@@ -824,76 +850,148 @@ function PrefsTasks({
     }
   };
 
+  const reveal = () => {
+    void window.ycal.tasksRevealStorage();
+  };
+
   return (
     <div className="pref-section">
       <h3 className="pref-h">Provider</h3>
       <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
-        yCal uses a pluggable task provider. The active provider is
-        <strong> {provider?.displayName ?? '—'}</strong>. Future providers
-        (Things, Reminders, plain markdown) will appear here once they ship.
+        yCal can back tasks with a remote service (Todoist) or a local
+        markdown file you can edit in any editor. Switching providers
+        keeps the calendar schedule overlay (so a task you scheduled on
+        Tuesday stays parked there) but lists tasks from the new source.
       </p>
+      <PrefRow
+        label="Active provider"
+        hint={
+          isMarkdown
+            ? 'Tasks live in tasks.md, routed through your Sync setting.'
+            : 'Tasks come from Todoist over the API.'
+        }
+      >
+        <PrefSegmented<'todoist' | 'markdown'>
+          value={(provider?.id ?? 'todoist') as 'todoist' | 'markdown'}
+          options={providers.length > 0
+            ? providers.map((p) => ({
+                value: p.id as 'todoist' | 'markdown',
+                label: p.displayName,
+              }))
+            : [
+                { value: 'todoist', label: 'Todoist' },
+                { value: 'markdown', label: 'Markdown file' },
+              ]}
+          onChange={(v) => void switchProvider(v)}
+        />
+      </PrefRow>
+      {switching && (
+        <div className="pref-row-hint" style={{ marginTop: 4 }}>
+          Switching provider — refreshing task list…
+        </div>
+      )}
 
-      <h3 className="pref-h" style={{ marginTop: 18 }}>Credentials</h3>
-      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
-        {provider?.credentialsHint ?? 'Provider not loaded yet.'}{' '}
-        Stored encrypted in your macOS Keychain — never leaves this machine.
-      </p>
-      <PrefRow label="Token" hint={hasKey ? 'A key is currently set.' : 'Not set.'}>
-        {!editing ? (
-          <div className="pref-feed-display">
-            <span className="pref-feed-url">{hasKey ? '••••••••••••••••' : '—'}</span>
-            <button className="pref-btn" onClick={() => setEditing(true)}>
-              {hasKey ? 'Change…' : 'Add…'}
-            </button>
-          </div>
-        ) : (
-          <div className="pref-feed-edit">
-            <input
-              type="password"
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              className="pref-feed-input"
-              placeholder="API token"
-              value={draft}
-              autoFocus
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void save();
-                if (e.key === 'Escape') setEditing(false);
-              }}
-            />
-            <div className="pref-feed-actions">
-              {hasKey && (
-                <button
-                  className="pref-btn pref-btn-danger"
-                  onClick={() => void clear()}
-                  disabled={saving}
-                >
-                  Clear
+      {isTodoist && (
+        <>
+          <h3 className="pref-h" style={{ marginTop: 18 }}>Credentials</h3>
+          <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+            {provider?.credentialsHint || 'Paste your personal API token.'}{' '}
+            Stored encrypted in your macOS Keychain — never leaves this machine,
+            so each Mac you sign in on needs its own token.
+          </p>
+          <PrefRow label="Token" hint={hasKey ? 'A key is currently set.' : 'Not set.'}>
+            {!editing ? (
+              <div className="pref-feed-display">
+                <span className="pref-feed-url">{hasKey ? '••••••••••••••••' : '—'}</span>
+                <button className="pref-btn" onClick={() => setEditing(true)}>
+                  {hasKey ? 'Change…' : 'Add…'}
                 </button>
-              )}
-              <button
-                className="pref-btn"
-                onClick={() => setEditing(false)}
-                disabled={saving}
-              >
-                Cancel
-              </button>
-              <button
-                className="pref-btn pref-btn-primary"
-                onClick={() => void save()}
-                disabled={!draft.trim() || saving}
-              >
-                {saving ? 'Saving…' : 'Save'}
+              </div>
+            ) : (
+              <div className="pref-feed-edit">
+                <input
+                  type="password"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  className="pref-feed-input"
+                  placeholder="API token"
+                  value={draft}
+                  autoFocus
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void save();
+                    if (e.key === 'Escape') setEditing(false);
+                  }}
+                />
+                <div className="pref-feed-actions">
+                  {hasKey && (
+                    <button
+                      className="pref-btn pref-btn-danger"
+                      onClick={() => void clear()}
+                      disabled={saving}
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <button
+                    className="pref-btn"
+                    onClick={() => setEditing(false)}
+                    disabled={saving}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="pref-btn pref-btn-primary"
+                    onClick={() => void save()}
+                    disabled={!draft.trim() || saving}
+                  >
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+                {saveError && (
+                  <div className="pref-feed-error">{saveError}</div>
+                )}
+              </div>
+            )}
+          </PrefRow>
+        </>
+      )}
+
+      {isMarkdown && (
+        <>
+          <h3 className="pref-h" style={{ marginTop: 18 }}>Storage</h3>
+          <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+            Tasks are stored in <code>tasks.md</code>. The file lives wherever
+            your other synced data lives (see <em>Sync</em>) — iCloud Drive
+            when on, otherwise this Mac&apos;s local data dir. Edit it in any
+            markdown editor and yCal picks the change up on next refresh.
+          </p>
+          <PrefRow label="tasks.md">
+            <div className="pref-feed-display">
+              <button className="pref-btn" onClick={reveal}>
+                Open file…
               </button>
             </div>
-            {saveError && (
-              <div className="pref-feed-error">{saveError}</div>
-            )}
+          </PrefRow>
+          <div className="pref-note">
+            Format quick reference:
+            <code style={{ display: 'block', whiteSpace: 'pre-wrap', marginTop: 6 }}>{`# Project Name {#5897c5}
+- [ ] Task title  @2026-05-15 !p2 #30m #high #office
+  Description on the next line, indented.
+  - [ ] Subtask  ^abc12345
+  > [2026-05-01] Comment about progress.`}</code>
+            <div style={{ marginTop: 6 }}>
+              <code>!p1</code>=highest, <code>!p4</code>=default ·{' '}
+              <code>@daily</code> / <code>@weekdays</code> / <code>@every Mon Wed</code> for recurrence
+            </div>
           </div>
-        )}
-      </PrefRow>
+          {saveError && (
+            <div className="pref-feed-error">{saveError}</div>
+          )}
+        </>
+      )}
+
       <div className="pref-note">
         Open the Tasks panel from the Week or Day view (right edge tab, or
         Shift+T). Drag a task onto the calendar to schedule it; drop it back

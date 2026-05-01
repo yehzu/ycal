@@ -53,6 +53,11 @@ const api = {
   // Tasks (provider-backed)
   tasksGetProviderInfo: (): Promise<TaskProviderInfo> =>
     ipcRenderer.invoke(IPC.TasksGetProviderInfo),
+  tasksListProviders: (): Promise<TaskProviderInfo[]> =>
+    ipcRenderer.invoke(IPC.TasksListProviders),
+  tasksSetActiveProvider: (id: 'todoist' | 'markdown'): Promise<Result<{ info: TaskProviderInfo }>> =>
+    ipcRenderer.invoke(IPC.TasksSetActiveProvider, id),
+  tasksRevealStorage: (): Promise<void> => ipcRenderer.invoke(IPC.TasksRevealStorage),
   tasksSetCredentials: (key: string | null): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.TasksSetCredentials, key),
   tasksList: (): Promise<Result<TaskFetchResult>> => ipcRenderer.invoke(IPC.TasksList),
