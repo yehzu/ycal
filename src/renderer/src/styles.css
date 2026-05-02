@@ -3944,6 +3944,13 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   border-radius: 1px;
 }
 
+/* ── "Overdue" section header ────────────────────────────────────── */
+/* Sits above Today. Warning-toned so the user can't miss work that
+   slipped past its promise date. */
+.tp-overdue { background: rgba(184, 70, 32, 0.06); }
+.tp-overdue .tp-mast { border-bottom-color: rgba(184, 70, 32, 0.42); }
+.tp-eyebrow-overdue { background: #b04220; }
+
 /* ── Priority flag (Todoist priority 2/3/4 → P3/P2/P1) ──────────── */
 /* Skipped entirely when priority === 1 (default / no priority).   */
 .tp-pri-flag {

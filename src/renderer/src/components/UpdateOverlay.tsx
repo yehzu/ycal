@@ -37,16 +37,21 @@ export function UpdateOverlay(): JSX.Element | null {
     return null;
   }
 
-  if (state === 'available') {
+  if (state === 'available' || state === 'ready') {
     if (version && dismissedVersion === version) return null;
+    const prefetchPct = state === 'ready' ? 100 : (progress ?? 0);
+    const eyebrow = state === 'ready' ? 'Update ready' : 'Update available';
+    const sub = state === 'ready'
+      ? 'Downloaded — installing will be quick. yCal closes and relaunches automatically.'
+      : prefetchPct > 0 && prefetchPct < 100
+        ? `Downloading in the background… ${prefetchPct}%`
+        : 'Downloading in the background — install when you’re ready.';
     return (
-      <div className="update-toast" role="dialog" aria-label="Update available">
+      <div className="update-toast" role="dialog" aria-label={eyebrow}>
         <div className="update-toast-body">
-          <div className="update-toast-eyebrow">Update available</div>
+          <div className="update-toast-eyebrow">{eyebrow}</div>
           <div className="update-toast-ttl">yCal {version ?? ''}</div>
-          <div className="update-toast-sub">
-            A new release is ready. yCal will close and relaunch automatically.
-          </div>
+          <div className="update-toast-sub">{sub}</div>
         </div>
         <div className="update-toast-actions">
           <button className="u-btn u-btn-ghost" onClick={dismiss}>Later</button>
@@ -57,9 +62,12 @@ export function UpdateOverlay(): JSX.Element | null {
   }
 
   // state === 'installing' — full-bleed splash. Stays up until the app dies.
-  const subtitle = (progress ?? 0) >= 100
+  const splashPct = progress ?? 0;
+  const subtitle = splashPct >= 100
     ? `Closing app and installing ${version ?? ''}.`
-    : `Downloading ${version ?? ''}… ${progress ?? 0}%`;
+    : splashPct >= 90
+      ? `Installing ${version ?? ''}…`
+      : `Downloading ${version ?? ''}… ${splashPct}%`;
   return (
     <div className="update-splash" role="dialog" aria-modal="true">
       <div className="update-splash-card">

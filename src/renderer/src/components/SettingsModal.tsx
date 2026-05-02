@@ -721,8 +721,16 @@ function PrefsUpdates() {
   if (status.state === 'checking' || checking) {
     stateMsg = { text: 'Checking for updates…', error: false };
   } else if (status.state === 'available' && status.version) {
+    const pct = status.progress ?? 0;
     stateMsg = {
-      text: `yCal ${status.version} is available.`,
+      text: pct > 0 && pct < 100
+        ? `yCal ${status.version} downloading in the background… ${pct}%`
+        : `yCal ${status.version} is available.`,
+      error: false,
+    };
+  } else if (status.state === 'ready' && status.version) {
+    stateMsg = {
+      text: `yCal ${status.version} ready to install — click and we’re done.`,
       error: false,
     };
   } else if (status.state === 'installing') {
@@ -744,7 +752,7 @@ function PrefsUpdates() {
               yCal {currentVersion ?? '—'}
             </div>
           </div>
-          {status.state === 'available' ? (
+          {(status.state === 'available' || status.state === 'ready') ? (
             <button
               className="pref-btn pref-btn-primary"
               onClick={install}

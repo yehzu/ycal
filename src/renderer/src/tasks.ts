@@ -9,13 +9,17 @@
 //   * `scheduledById`— map for the calendar grid to look up the chip slot.
 //
 // AUTO-ROLLOVER: any task scheduled to a date earlier than today that
-// hasn't been completed is shown back in the inbox (as "carry over"). With
-// the autoRollover setting on (default), the schedule entry is also
-// cleared on the next render so the chip disappears from the calendar
-// grid. With the setting off, the entry stays parked on its original day
-// and the inbox shows a soft "↻" carry hint instead.
+// hasn't been completed is surfaced in the inbox's Overdue bucket. The
+// `scheduledAt` slot is preserved either way — wiping it makes the task
+// indistinguishable from a brand-new inbox row, which lets overdue items
+// silently scatter into project sections (or worse, into the collapsed
+// Routines fold for recurring tasks). With `autoRollover` on (default),
+// the calendar chip is suppressed on its original past column at render
+// time so the grid still feels rolled-over; with it off, the chip stays
+// parked on its original day. Either way, the task remains visible in
+// the side panel under "Overdue".
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   TaskComment,
   TaskItem,
@@ -71,7 +75,6 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   const [local, setLocal] = useState<TasksLocalState>({ scheduled: {}, doneOn: {} });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const initialLoadedRef = useRef(false);
   const apiKeySet = !!provider?.hasCredentials;
 
   // ── Boot: pull cached tasks + provider info, then refresh from upstream
@@ -97,7 +100,6 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
         const order = uniqStrings(localState.cache.map((t) => t.project));
         if (order.length > 0) setProjectOrder(order);
       }
-      initialLoadedRef.current = true;
     })();
     return () => { cancelled = true; };
   }, []);
@@ -303,37 +305,18 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
 
   const todayStr = fmtDate(today);
 
-  // Auto-rollover sweep: when the toggle is on, any past-dated scheduled
-  // entry whose task isn't done loses its slot. We do this idempotently
-  // here (next render reflects the cleared state) so the chip vanishes
-  // from the calendar grid and the task surfaces as a regular inbox row.
-  // Skip until the initial fetch has resolved so we don't accidentally
-  // wipe entries for tasks that just haven't loaded yet.
-  useEffect(() => {
-    if (!autoRollover) return;
-    if (!initialLoadedRef.current) return;
-    const idsToClear: string[] = [];
-    for (const t of hydrated) {
-      if (t.done) continue;
-      if (!t.scheduledAt) continue;
-      if (t.scheduledAt.date >= todayStr) continue;
-      idsToClear.push(t.id);
-    }
-    if (idsToClear.length === 0) return;
-    const nextScheduled = { ...local.scheduled };
-    for (const id of idsToClear) delete nextScheduled[id];
-    void persistLocal({ scheduled: nextScheduled });
-  }, [autoRollover, hydrated, todayStr, local.scheduled, persistLocal]);
-
-  // Carryover: scheduled in the past, not yet done. With auto-rollover off,
-  // these still show in the inbox panel as a soft "↻ carry" hint while
-  // their schedule entry stays parked on the original day.
+  // Carryover: any undone task whose "promise date" is in the past —
+  // either the local schedule slot OR a Todoist due date when there's no
+  // local schedule. The Overdue bucket in the panel reads from this set
+  // so users can't lose track of work they planned for yesterday or
+  // missed a Todoist due on.
   const carryoverIds = useMemo(() => {
     const out = new Set<string>();
     for (const t of hydrated) {
       if (t.done) continue;
-      if (!t.scheduledAt) continue;
-      if (t.scheduledAt.date < todayStr) out.add(t.id);
+      const promise = t.scheduledAt?.date ?? t.due;
+      if (!promise) continue;
+      if (promise < todayStr) out.add(t.id);
     }
     return out;
   }, [hydrated, todayStr]);
@@ -352,13 +335,19 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     });
   }, [hydrated]);
 
+  // Calendar-grid chip lookup. When auto-rollover is on we hide chips for
+  // past-scheduled-undone tasks so the grid still feels "rolled over"
+  // even though the underlying slot is preserved (so the panel can keep
+  // showing the task under Overdue).
   const scheduledById = useMemo(() => {
     const out: Record<string, { date: string; start: string }> = {};
     for (const t of hydrated) {
-      if (t.scheduledAt && !t.done) out[t.id] = t.scheduledAt;
+      if (!t.scheduledAt || t.done) continue;
+      if (autoRollover && t.scheduledAt.date < todayStr) continue;
+      out[t.id] = t.scheduledAt;
     }
     return out;
-  }, [hydrated]);
+  }, [hydrated, autoRollover, todayStr]);
 
   const doneTodayIds = useMemo(() => {
     const s = new Set<string>();

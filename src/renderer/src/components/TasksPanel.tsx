@@ -3,6 +3,11 @@
 // Sits next to the calendar grid, hosts the Todoist inbox, and accepts
 // drops back from the calendar to unschedule. Layout, top to bottom:
 //
+//   0. "Overdue" — anything whose promise date (local schedule slot or
+//                  Todoist due) is before today and isn't done. Surfaced
+//                  prominently so missed work doesn't silently scatter
+//                  into project sections or get hidden in the collapsed
+//                  Routines fold for recurring tasks.
 //   1. "Today"   — anything firing today: scheduled-today, due-today, or
 //                  a recurring task whose cadence lands today.
 //   2. Project sections — the regular inbox grouped by Todoist project.
@@ -112,27 +117,56 @@ export function TasksPanel(props: Props) {
     return firesToday(task);
   };
 
+  // Overdue takes priority over every other bucket. Sort by oldest
+  // promise date first, then by Todoist priority — gives the user a
+  // top-down view of what's been waiting longest.
+  const overdueTasks = useMemo(() => {
+    const promiseOf = (t: TaskItem): string =>
+      t.scheduledAt?.date ?? t.due ?? '';
+    return tasks
+      .filter((t) => carryoverIds.has(t.id))
+      .slice()
+      .sort((a, b) => {
+        const pa = promiseOf(a);
+        const pb = promiseOf(b);
+        if (pa !== pb) return pa.localeCompare(pb);
+        return b.priority - a.priority;
+      });
+  }, [tasks, carryoverIds]);
+  const overdueIdSet = useMemo(
+    () => new Set(overdueTasks.map((t) => t.id)),
+    [overdueTasks],
+  );
+
   const todayTasks = useMemo(
-    () => tasks.filter(isTodayTask).sort(byPriorityDesc),
-    [tasks, todayStr],
+    () => tasks
+      .filter((t) => !overdueIdSet.has(t.id) && isTodayTask(t))
+      .sort(byPriorityDesc),
+    [tasks, todayStr, overdueIdSet],
   );
   const todayIdSet = useMemo(() => new Set(todayTasks.map((t) => t.id)), [todayTasks]);
 
-  // Routines fold: every recurring task that isn't already up in Today.
-  // Sorted alphabetically so a long list reads predictably.
+  // Routines fold: every recurring task that isn't already up in Today
+  // or Overdue. Sorted alphabetically so a long list reads predictably.
   const routineTasks = useMemo(() => {
     return tasks
-      .filter((t) => t.isRecurring && !todayIdSet.has(t.id))
+      .filter((t) =>
+        t.isRecurring && !todayIdSet.has(t.id) && !overdueIdSet.has(t.id))
       .slice()
       .sort((a, b) => a.title.localeCompare(b.title));
-  }, [tasks, todayIdSet]);
+  }, [tasks, todayIdSet, overdueIdSet]);
   const routineIdSet = useMemo(() => new Set(routineTasks.map((t) => t.id)), [routineTasks]);
 
-  // Project-section pool: everything that's neither Today nor a (future)
-  // routine. This is what the user thinks of as their "real" inbox.
+  // Project-section pool: everything that's neither Overdue, Today, nor
+  // a (future) routine. This is what the user thinks of as their "real"
+  // inbox.
   const projectPool = useMemo(() => {
-    return tasks.filter((t) => !todayIdSet.has(t.id) && !routineIdSet.has(t.id));
-  }, [tasks, todayIdSet, routineIdSet]);
+    return tasks.filter((t) =>
+      !overdueIdSet.has(t.id)
+      && !todayIdSet.has(t.id)
+      && !routineIdSet.has(t.id),
+    );
+  }, [tasks, overdueIdSet, todayIdSet, routineIdSet]);
 
   // Nesting: build a parent → children index across each visible bucket.
   // A task whose parentId points to something we don't display (parent done,
@@ -140,16 +174,17 @@ export function TasksPanel(props: Props) {
   // still shows up.
   const childrenByParent = useMemo(() => {
     const visibleIds = new Set<string>();
+    for (const t of overdueTasks) visibleIds.add(t.id);
     for (const t of todayTasks) visibleIds.add(t.id);
     for (const t of projectPool) visibleIds.add(t.id);
     const m: Record<string, TaskItem[]> = {};
-    for (const t of [...todayTasks, ...projectPool]) {
+    for (const t of [...overdueTasks, ...todayTasks, ...projectPool]) {
       if (t.parentId && visibleIds.has(t.parentId)) {
         (m[t.parentId] ??= []).push(t);
       }
     }
     return m;
-  }, [todayTasks, projectPool]);
+  }, [overdueTasks, todayTasks, projectPool]);
   const childIds = useMemo(() => {
     const s = new Set<string>();
     for (const arr of Object.values(childrenByParent)) {
@@ -379,6 +414,35 @@ export function TasksPanel(props: Props) {
         )}
         {apiKeySet && errorMessage && (
           <div className="tp-empty-state tp-error">{errorMessage}</div>
+        )}
+
+        {overdueTasks.length > 0 && (
+          <section className="tp-section tp-overdue">
+            <div className="tp-mast">
+              <span className="tp-eyebrow-tag tp-eyebrow-overdue">Overdue</span>
+              <span className="tp-rule" />
+              <span className="tp-pcnt">{overdueTasks.length}</span>
+            </div>
+            <div className="tp-stack">
+              {overdueTasks.map((task) => {
+                if (childIds.has(task.id)) return null;
+                const projColor = projectColor[task.project] || '#5b7a8e';
+                return (
+                  <TaskTree
+                    key={task.id}
+                    task={task}
+                    today={today}
+                    projColor={projColor}
+                    carryoverIds={carryoverIds}
+                    childrenByParent={childrenByParent}
+                    onToggleDone={onToggleDone}
+                    onOpenTask={onOpenTask}
+                    depth={0}
+                  />
+                );
+              })}
+            </div>
+          </section>
         )}
 
         {todayTasks.length > 0 && (

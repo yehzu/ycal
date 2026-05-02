@@ -202,14 +202,17 @@ export const DEFAULT_LOAD_WINDOW: LoadWindowSettings = {
 // internal phases onto this renderer-friendly union. `idle` is the boot
 // state and what we fall back
 // to after a dismissal or an error.
-// `available` covers both "found, downloading silently" and "downloaded,
-// waiting for user". The renderer doesn't need to distinguish — the toast
-// is identical. `installing` means "user clicked, splash is up, app is
-// about to quit". No manual `ready` step in between.
+// `available` means "we found an update and the background prefetch is
+// in progress" — toast appears immediately so the user knows about it,
+// but clicking Install will block on the in-flight download.
+// `ready` means "prefetch finished, the zip is on disk" — clicking
+// Install jumps straight to extract + swap, so it feels instant.
+// `installing` means "user clicked, splash is up, app is about to quit".
 export type UpdateState =
   | 'idle'
   | 'checking'
   | 'available'
+  | 'ready'
   | 'installing'
   | 'error';
 

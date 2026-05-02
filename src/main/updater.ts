@@ -25,7 +25,8 @@
 // We surface lifecycle to the renderer as a single UpdateStatus stream so
 // the existing toast + splash keep working.
 import {
-  createWriteStream, mkdtempSync, rmSync, statSync, writeFileSync,
+  createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync,
+  renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import https from 'node:https';
 import type { IncomingMessage } from 'node:http';
@@ -50,7 +51,10 @@ let lastCheckAt = 0;
 let lastStatus: UpdateStatus = { state: 'idle', version: null };
 let currentWin: BrowserWindow | null = null;
 let pendingAssetUrl: string | null = null;
+let pendingAssetSize: number | null = null;
 let pendingVersion: string | null = null;
+let pendingZipPath: string | null = null;
+let prefetchPromise: Promise<void> | null = null;
 let installInProgress = false;
 
 function broadcast(status: UpdateStatus): void {
@@ -172,6 +176,92 @@ function pickAsset(release: GhRelease): GhAsset | null {
   return zips.find((a) => !a.name.includes('-arm64-') && a.name.includes('-mac.zip')) ?? null;
 }
 
+function getCacheDir(): string {
+  const dir = path.join(app.getPath('userData'), 'update-cache');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// Wipe stale cached zips that aren't the version we currently want. Called
+// on every successful check so the cache stays bounded (~one zip / ~120 MB).
+function pruneCache(keepVersion: string | null): void {
+  let dir: string;
+  try { dir = getCacheDir(); } catch { return; }
+  const keepName = keepVersion ? `yCal-${keepVersion}.zip` : null;
+  for (const name of readdirSync(dir)) {
+    if (name === keepName) continue;
+    try { rmSync(path.join(dir, name), { force: true }); } catch { /* best-effort */ }
+  }
+}
+
+// Background download. Fires when checkForUpdate detects a new version. If
+// the file is already on disk and the size matches GH's content-length, we
+// skip the download and jump straight to 'ready'. Errors keep us in
+// 'available' so the user can still click Install (which falls back to a
+// foreground download) — silent failures don't blow up the UI.
+async function prefetchAsset(): Promise<void> {
+  if (!pendingAssetUrl || !pendingVersion) return;
+  const version = pendingVersion;
+  const url = pendingAssetUrl;
+  const expectedSize = pendingAssetSize;
+
+  const cacheDir = getCacheDir();
+  const target = path.join(cacheDir, `yCal-${version}.zip`);
+
+  // Already cached and intact? Skip the download entirely.
+  if (existsSync(target)) {
+    try {
+      const st = statSync(target);
+      if (st.size > 0 && (expectedSize == null || st.size === expectedSize)) {
+        pendingZipPath = target;
+        broadcast({ state: 'ready', version, progress: 100 });
+        return;
+      }
+      rmSync(target, { force: true });
+    } catch { /* fall through to redownload */ }
+  }
+
+  pruneCache(version);
+
+  const partial = target + '.partial';
+  try { rmSync(partial, { force: true }); } catch { /* best-effort */ }
+
+  try {
+    await downloadFile(url, partial, (pct) => {
+      const rounded = Math.min(99, Math.max(0, Math.round(pct)));
+      if (installInProgress) {
+        // User clicked Install while prefetch was running — feed the
+        // splash so the user sees real progress instead of a frozen 0%.
+        // Mirror the foreground flow's 0–90% reservation for the
+        // download phase.
+        broadcast({
+          state: 'installing',
+          version,
+          progress: Math.min(Math.round(rounded * 0.9), 90),
+        });
+      } else {
+        broadcast({ state: 'available', version, progress: rounded });
+      }
+    });
+    renameSync(partial, target);
+    pendingZipPath = target;
+    // Don't downgrade the splash back to 'ready' if the user already hit
+    // Install — performInstall is mid-flight and owns the state from here.
+    if (!installInProgress) {
+      broadcast({ state: 'ready', version, progress: 100 });
+    }
+  } catch {
+    try { rmSync(partial, { force: true }); } catch { /* best-effort */ }
+    pendingZipPath = null;
+    if (!installInProgress) {
+      // Stay 'available' so the user can still trigger a foreground retry.
+      broadcast({ state: 'available', version });
+    }
+    // If install IS in progress, performInstall will handle the failure
+    // and broadcast its own error.
+  }
+}
+
 async function checkForUpdate(): Promise<void> {
   if (!app.isPackaged) return;
   if (installInProgress) return;
@@ -185,7 +275,11 @@ async function checkForUpdate(): Promise<void> {
     const tagVersion = release.tag_name.replace(/^v/, '');
     if (compareVersions(tagVersion, app.getVersion()) <= 0) {
       pendingAssetUrl = null;
+      pendingAssetSize = null;
       pendingVersion = null;
+      pendingZipPath = null;
+      prefetchPromise = null;
+      pruneCache(null);
       broadcast({ state: 'idle', version: null });
       return;
     }
@@ -194,9 +288,16 @@ async function checkForUpdate(): Promise<void> {
       broadcast({ state: 'idle', version: null });
       return;
     }
+    // If we already have this version queued, don't re-prefetch.
+    if (pendingVersion === tagVersion && (pendingZipPath || prefetchPromise)) {
+      return;
+    }
     pendingAssetUrl = asset.browser_download_url;
+    pendingAssetSize = asset.size || null;
     pendingVersion = tagVersion;
+    pendingZipPath = null;
     broadcast({ state: 'available', version: tagVersion, progress: 0 });
+    prefetchPromise = prefetchAsset();
   } catch (e) {
     broadcast({
       state: 'error',
@@ -216,12 +317,14 @@ function buildSwapScript(opts: {
   newBundle: string;
   tmpRoot: string;
   logFile: string;
+  persistentLog: string;
   execName: string; // e.g. "yCal"
 }): string {
   const CB = shQuote(opts.currentBundle);
   const NB = shQuote(opts.newBundle);
   const TR = shQuote(opts.tmpRoot);
   const LF = shQuote(opts.logFile);
+  const PL = shQuote(opts.persistentLog);
   const EN = shQuote(opts.execName);
   return `#!/bin/bash
 # yCal update swap helper. Generated by main/updater.ts.
@@ -229,6 +332,7 @@ CURRENT_BUNDLE=${CB}
 NEW_BUNDLE=${NB}
 TMP_ROOT=${TR}
 LOG_FILE=${LF}
+PERSISTENT_LOG=${PL}
 EXE_NAME=${EN}
 EXE="$CURRENT_BUNDLE/Contents/MacOS/$EXE_NAME"
 
@@ -242,7 +346,7 @@ echo "[ycal-swap] new=$NEW_BUNDLE"
 # bundle's directory; the existing process keeps its open file handles.
 for i in $(seq 1 100); do
   if ! pgrep -f "$EXE" >/dev/null 2>&1; then
-    echo "[ycal-swap] old process gone after \${i}*0.1s"
+    echo "[ycal-swap] old process gone after $i*0.1s"
     break
   fi
   sleep 0.1
@@ -251,10 +355,11 @@ sleep 0.4
 
 # Move current bundle aside instead of deleting first — if anything goes
 # wrong below we can restore it and the user still has a working app.
-ASIDE="\${CURRENT_BUNDLE}.previous-$$"
+ASIDE="$CURRENT_BUNDLE.previous-$$"
 if [ -d "$CURRENT_BUNDLE" ]; then
   if ! mv "$CURRENT_BUNDLE" "$ASIDE"; then
     echo "[ycal-swap] could not move current aside; aborting"
+    cp "$LOG_FILE" "$PERSISTENT_LOG" 2>/dev/null || true
     exit 1
   fi
 fi
@@ -263,6 +368,7 @@ fi
 if ! mv "$NEW_BUNDLE" "$CURRENT_BUNDLE"; then
   echo "[ycal-swap] install mv failed; restoring previous"
   if [ -d "$ASIDE" ]; then mv "$ASIDE" "$CURRENT_BUNDLE"; fi
+  cp "$LOG_FILE" "$PERSISTENT_LOG" 2>/dev/null || true
   exit 1
 fi
 
@@ -274,14 +380,45 @@ if [ ! -x "$CURRENT_BUNDLE/Contents/MacOS/$EXE_NAME" ]; then
   echo "[ycal-swap] new bundle missing executable; restoring"
   rm -rf "$CURRENT_BUNDLE"
   if [ -d "$ASIDE" ]; then mv "$ASIDE" "$CURRENT_BUNDLE"; fi
+  cp "$LOG_FILE" "$PERSISTENT_LOG" 2>/dev/null || true
   exit 1
 fi
 
 # Drop the old bundle now that we're sure the new one is intact.
 if [ -d "$ASIDE" ]; then rm -rf "$ASIDE"; fi
 
+# Refresh LaunchServices' cache. After we replace the bundle on disk LSi
+# can hold a stale entry pointing at the (just-deleted) inode, which makes
+# the subsequent \`open\` resolve to nothing and the relaunch silently
+# fail. Re-registering the path forces LSi to pick up the new Info.plist.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -f "$CURRENT_BUNDLE" >/dev/null 2>&1 || true
+fi
+
+# \`open -n\` forces a brand-new instance. Without -n, LSi can decide the
+# old yCal is "still running" (residual process-record race) and open
+# nothing visible. The retry covers transient LSi hiccups right after the
+# re-register.
 echo "[ycal-swap] launching"
-open "$CURRENT_BUNDLE"
+RC=1
+for attempt in 1 2 3; do
+  if open -n "$CURRENT_BUNDLE"; then
+    echo "[ycal-swap] open -n succeeded on attempt $attempt"
+    RC=0
+    break
+  fi
+  echo "[ycal-swap] open -n attempt $attempt failed (rc=$?)"
+  sleep 0.5
+done
+if [ $RC -ne 0 ]; then
+  echo "[ycal-swap] falling back to plain open"
+  open "$CURRENT_BUNDLE" || echo "[ycal-swap] plain open failed too (rc=$?)"
+fi
+
+# Mirror the log to a stable spot the user can find. The tmp dir is wiped
+# soon after, so without this a failed relaunch leaves no trace.
+cp "$LOG_FILE" "$PERSISTENT_LOG" 2>/dev/null || true
 
 # Self-clean the temp dir after a beat (keep briefly so the log survives a
 # tail if the user wants to debug).
@@ -304,17 +441,34 @@ async function performInstall(): Promise<void> {
   broadcast({ state: 'installing', version, progress: 0 });
 
   const tmpRoot = mkdtempSync(path.join(tmpdir(), 'ycal-update-'));
-  const zipPath = path.join(tmpRoot, 'app.zip');
+  const fallbackZip = path.join(tmpRoot, 'app.zip');
   const extractDir = path.join(tmpRoot, 'extract');
   const logFile = path.join(tmpRoot, 'swap.log');
   const swapScript = path.join(tmpRoot, 'swap.sh');
 
   try {
-    await downloadFile(pendingAssetUrl, zipPath, (pct) => {
-      // Reserve the last 10% for extract + handoff so the bar doesn't sit
-      // at 100% while ditto is still chewing.
-      broadcast({ state: 'installing', version, progress: Math.min(Math.round(pct * 0.9), 90) });
-    });
+    // Wait for any in-flight prefetch so we don't race the rename.
+    if (prefetchPromise) {
+      try { await prefetchPromise; } catch { /* fall through */ }
+    }
+
+    let zipPath: string;
+    if (pendingZipPath && existsSync(pendingZipPath)
+        && statSync(pendingZipPath).size > 0) {
+      // Pre-fetched: skip the slow download step entirely.
+      zipPath = pendingZipPath;
+      broadcast({ state: 'installing', version, progress: 90 });
+    } else {
+      zipPath = fallbackZip;
+      await downloadFile(pendingAssetUrl, zipPath, (pct) => {
+        // Reserve the last 10% for extract + handoff so the bar doesn't sit
+        // at 100% while ditto is still chewing.
+        broadcast({
+          state: 'installing', version,
+          progress: Math.min(Math.round(pct * 0.9), 90),
+        });
+      });
+    }
 
     broadcast({ state: 'installing', version, progress: 92 });
 
@@ -341,11 +495,20 @@ async function performInstall(): Promise<void> {
     const currentBundle = path.dirname(path.dirname(path.dirname(exePath)));
     const execName = path.basename(exePath);
 
+    // Stable log location so a failed relaunch can be diagnosed after the
+    // tmp dir is cleaned up. ~/Library/Logs is the conventional macOS spot.
+    const persistentLogDir = path.join(
+      app.getPath('home'), 'Library', 'Logs', 'yCal',
+    );
+    mkdirSync(persistentLogDir, { recursive: true });
+    const persistentLog = path.join(persistentLogDir, 'swap.log');
+
     const script = buildSwapScript({
       currentBundle,
       newBundle,
       tmpRoot,
       logFile,
+      persistentLog,
       execName,
     });
     writeFileSync(swapScript, script, { mode: 0o755 });
