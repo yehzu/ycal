@@ -12,9 +12,22 @@ let cached: OAuthConfig | null = null;
 export function loadOAuthConfig(): OAuthConfig | null {
   if (cached) return cached;
 
+  // Resolution order (highest priority first):
+  //   1. $YCAL_CONFIG               — explicit override (CLI / debugging)
+  //   2. userData/oauth-client.json — per-machine override (kept for users
+  //                                    who want to point yCal at a different
+  //                                    OAuth client without rebuilding)
+  //   3. bundled with the .app      — the default for installed users:
+  //                                    process.resourcesPath/oauth-client.json
+  //                                    when packaged, build/oauth-client.json
+  //                                    when running `npm run dev`.
+  //   4. legacy fallbacks           — appPath + cwd, kept for backwards compat.
   const candidates = [
     process.env.YCAL_CONFIG,
     path.join(app.getPath('userData'), 'oauth-client.json'),
+    app.isPackaged
+      ? path.join(process.resourcesPath, 'oauth-client.json')
+      : path.join(app.getAppPath(), 'build', 'oauth-client.json'),
     path.join(app.getAppPath(), 'oauth-client.json'),
     path.join(process.cwd(), 'oauth-client.json'),
   ].filter((p): p is string => !!p);

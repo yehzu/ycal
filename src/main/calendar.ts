@@ -36,6 +36,29 @@ export function invalidateEventsCache(): void {
   eventsCache.clear();
 }
 
+// Convert a Google auth error into something a human can act on. The dominant
+// failure mode in practice is `invalid_grant` — refresh token rejected by
+// Google (testing-mode 7-day TTL, manual revocation, password change, or 6
+// months of inactivity). googleapis surfaces this in different shapes
+// depending on transport, so check the message AND the response payload.
+function friendlyAuthError(email: string, err: unknown): Error {
+  const raw = err instanceof Error ? err : new Error(String(err));
+  const message = raw.message ?? '';
+  // Gaxios attaches the OAuth error code under response.data.error
+  // for the token-refresh path.
+  const data = (raw as { response?: { data?: { error?: string } } }).response?.data;
+  const code = data?.error ?? '';
+  const isInvalidGrant = /invalid_grant/i.test(message) || code === 'invalid_grant';
+  if (isInvalidGrant) {
+    const wrapped = new Error(
+      `${email}: sign-in expired (invalid_grant). Open Settings → Accounts, remove this account, and add it again.`,
+    );
+    (wrapped as Error & { needsReauth?: boolean }).needsReauth = true;
+    return wrapped;
+  }
+  return new Error(`${email}: ${message || 'unknown error'}`);
+}
+
 function cal(accountId: string): calendar_v3.Calendar {
   const acc = getAccount(accountId);
   if (!acc) throw new Error(`Unknown account: ${accountId}`);
@@ -48,18 +71,30 @@ export async function fetchColors(): Promise<GoogleColors> {
   if (accounts.length === 0) {
     return { event: {}, calendar: {} };
   }
-  const c = cal(accounts[0].id);
-  const res = await c.colors.get({});
-  const event: GoogleColors['event'] = {};
-  const calendar: GoogleColors['calendar'] = {};
-  for (const [k, v] of Object.entries(res.data.event ?? {})) {
-    event[k] = { background: v.background ?? '#888', foreground: v.foreground ?? '#fff' };
+  // Try each account in turn — if accounts[0] has a dead refresh token,
+  // we want accounts[1] to keep colors flowing rather than blank the UI.
+  for (const acc of accounts) {
+    try {
+      const c = cal(acc.id);
+      const res = await c.colors.get({});
+      const event: GoogleColors['event'] = {};
+      const calendar: GoogleColors['calendar'] = {};
+      for (const [k, v] of Object.entries(res.data.event ?? {})) {
+        event[k] = { background: v.background ?? '#888', foreground: v.foreground ?? '#fff' };
+      }
+      for (const [k, v] of Object.entries(res.data.calendar ?? {})) {
+        calendar[k] = { background: v.background ?? '#888', foreground: v.foreground ?? '#fff' };
+      }
+      colorsCache = { event, calendar };
+      return colorsCache;
+    } catch (err) {
+      console.error('[yCal] colors fetch failed for', acc.email, '—', err instanceof Error ? err.message : err);
+    }
   }
-  for (const [k, v] of Object.entries(res.data.calendar ?? {})) {
-    calendar[k] = { background: v.background ?? '#888', foreground: v.foreground ?? '#fff' };
-  }
-  colorsCache = { event, calendar };
-  return colorsCache;
+  // No account could deliver the palette. Return an empty one — callers
+  // already fall back to per-calendar defaults when an event colorId
+  // doesn't resolve.
+  return { event: {}, calendar: {} };
 }
 
 export function listAccountSummaries(): AccountSummary[] {
@@ -79,8 +114,9 @@ export async function listAllCalendars(): Promise<CalendarSummary[]> {
   const accounts = listAccounts();
   // Fan out per account in parallel — the GUI typically has 1–3 accounts but
   // each calendarList.list adds round-trip latency, so even small fan-out
-  // matters for CLI cold-start.
-  const perAccount = await Promise.all(
+  // matters for CLI cold-start. Use allSettled so one bad refresh token
+  // (invalid_grant) doesn't blank every other account.
+  const settled = await Promise.allSettled(
     accounts.map(async (acc) => {
       const rows: CalendarSummary[] = [];
       const c = google.calendar({ version: 'v3', auth: authClientForAccount(acc) });
@@ -108,7 +144,23 @@ export async function listAllCalendars(): Promise<CalendarSummary[]> {
       return rows;
     }),
   );
-  const out = perAccount.flat();
+  const out: CalendarSummary[] = [];
+  const failures: Error[] = [];
+  for (let i = 0; i < accounts.length; i++) {
+    const acc = accounts[i];
+    const result = settled[i];
+    if (result.status === 'fulfilled') {
+      out.push(...result.value);
+    } else {
+      const friendly = friendlyAuthError(acc.email, result.reason);
+      failures.push(friendly);
+      console.error('[yCal] calendar list failed for', acc.email, '—', friendly.message);
+    }
+  }
+  if (out.length === 0 && accounts.length > 0 && failures.length === accounts.length) {
+    // Every account failed — surface a combined, actionable message.
+    throw new Error(failures.map((e) => e.message).join('\n'));
+  }
   calendarCache = { at: Date.now(), data: out };
   return out;
 }
@@ -268,64 +320,98 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
   const colors = await fetchColors();
   const accounts = listAccounts();
 
-  const out: FlatEventRow[] = [];
+  // Group targets by account so a single auth failure (invalid_grant on
+  // refresh) collapses to one rejected promise per account instead of one
+  // per calendar. Then allSettled gives us per-account isolation: if
+  // account A's refresh dies, account B's events still load.
+  const targetsByAccount = new Map<string, typeof targets>();
+  for (const t of targets) {
+    const list = targetsByAccount.get(t.accountId);
+    if (list) list.push(t);
+    else targetsByAccount.set(t.accountId, [t]);
+  }
+  const accountIds = Array.from(targetsByAccount.keys());
 
-  // Fetch in parallel per calendar; stagger isn't necessary at this scale.
-  await Promise.all(
-    targets.map(async (cal) => {
-      const acc = accounts.find((a) => a.id === cal.accountId);
-      if (!acc) return;
+  const settled = await Promise.allSettled(
+    accountIds.map(async (accountId) => {
+      const acc = accounts.find((a) => a.id === accountId);
+      if (!acc) return [] as FlatEventRow[];
       const client = google.calendar({ version: 'v3', auth: authClientForAccount(acc) });
-      let pageToken: string | undefined;
-      do {
-        const res = await client.events.list({
-          calendarId: cal.id,
-          timeMin: req.timeMin,
-          timeMax: req.timeMax,
-          singleEvents: true,
-          orderBy: 'startTime',
-          maxResults: 2500,
-          pageToken,
-        });
-        for (const ev of res.data.items ?? []) {
-          if (!ev.id || !ev.start || !ev.end) continue;
-          if (ev.status === 'cancelled') continue;
-          const { iso: startIso, allDay } = isoFromGoogleDate(ev.start);
-          const { iso: endIso } = isoFromGoogleDate(ev.end);
-          // Resolve color: per-event override → per-calendar default.
-          const eventColor = ev.colorId
-            ? colors.event[ev.colorId]?.background ?? cal.color
-            : cal.color;
-          const eventType = ev.eventType ?? 'default';
-          const workingLocation = resolveWorkingLocation(ev, eventType);
-          const meet = resolveMeet(ev);
-          const attendees = resolveAttendees(ev);
-          out.push({
-            id: ev.id,
-            calendarId: cal.id,
-            accountId: cal.accountId,
-            start: startIso,
-            end: endIso,
-            allDay,
-            title: ev.summary ?? '(no title)',
-            location: ev.location ?? null,
-            description: ev.description ?? null,
-            color: eventColor,
-            colorId: ev.colorId ?? null,
-            htmlLink: ev.htmlLink ?? null,
-            status: ev.status ?? 'confirmed',
-            eventType,
-            rsvp: resolveRsvp(ev),
-            ...(workingLocation ? { workingLocation } : {}),
-            ...(meet.meetUrl ? { meetUrl: meet.meetUrl } : {}),
-            ...(meet.meetLabel ? { meetLabel: meet.meetLabel } : {}),
-            ...(attendees ? { attendees } : {}),
-          });
-        }
-        pageToken = res.data.nextPageToken ?? undefined;
-      } while (pageToken);
+      const accOut: FlatEventRow[] = [];
+      // Fan out per calendar within the account in parallel.
+      await Promise.all(
+        targetsByAccount.get(accountId)!.map(async (cal) => {
+          let pageToken: string | undefined;
+          do {
+            const res = await client.events.list({
+              calendarId: cal.id,
+              timeMin: req.timeMin,
+              timeMax: req.timeMax,
+              singleEvents: true,
+              orderBy: 'startTime',
+              maxResults: 2500,
+              pageToken,
+            });
+            for (const ev of res.data.items ?? []) {
+              if (!ev.id || !ev.start || !ev.end) continue;
+              if (ev.status === 'cancelled') continue;
+              const { iso: startIso, allDay } = isoFromGoogleDate(ev.start);
+              const { iso: endIso } = isoFromGoogleDate(ev.end);
+              // Resolve color: per-event override → per-calendar default.
+              const eventColor = ev.colorId
+                ? colors.event[ev.colorId]?.background ?? cal.color
+                : cal.color;
+              const eventType = ev.eventType ?? 'default';
+              const workingLocation = resolveWorkingLocation(ev, eventType);
+              const meet = resolveMeet(ev);
+              const attendees = resolveAttendees(ev);
+              accOut.push({
+                id: ev.id,
+                calendarId: cal.id,
+                accountId: cal.accountId,
+                start: startIso,
+                end: endIso,
+                allDay,
+                title: ev.summary ?? '(no title)',
+                location: ev.location ?? null,
+                description: ev.description ?? null,
+                color: eventColor,
+                colorId: ev.colorId ?? null,
+                htmlLink: ev.htmlLink ?? null,
+                status: ev.status ?? 'confirmed',
+                eventType,
+                rsvp: resolveRsvp(ev),
+                ...(workingLocation ? { workingLocation } : {}),
+                ...(meet.meetUrl ? { meetUrl: meet.meetUrl } : {}),
+                ...(meet.meetLabel ? { meetLabel: meet.meetLabel } : {}),
+                ...(attendees ? { attendees } : {}),
+              });
+            }
+            pageToken = res.data.nextPageToken ?? undefined;
+          } while (pageToken);
+        }),
+      );
+      return accOut;
     }),
   );
+
+  const out: FlatEventRow[] = [];
+  const failures: Error[] = [];
+  for (let i = 0; i < accountIds.length; i++) {
+    const accountId = accountIds[i];
+    const result = settled[i];
+    if (result.status === 'fulfilled') {
+      out.push(...result.value);
+    } else {
+      const acc = accounts.find((a) => a.id === accountId);
+      const friendly = friendlyAuthError(acc?.email ?? accountId, result.reason);
+      failures.push(friendly);
+      console.error('[yCal] events list failed for', acc?.email ?? accountId, '—', friendly.message);
+    }
+  }
+  if (out.length === 0 && accountIds.length > 0 && failures.length === accountIds.length) {
+    throw new Error(failures.map((e) => e.message).join('\n'));
+  }
 
   eventsCache.set(cacheKey, { at: Date.now(), data: out });
   return out;

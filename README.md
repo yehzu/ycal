@@ -6,7 +6,9 @@ Stack: Electron + Vite + React + TypeScript. Uses the Google Calendar API direct
 
 ---
 
-## One-time setup
+## One-time setup (developer)
+
+End-users of a release `.dmg` don't need this section — the OAuth client is bundled into `Contents/Resources/oauth-client.json` at package time, so they just install yCal and click *Sign in*. This setup is only for cutting your own builds.
 
 ### 1. Install dependencies
 
@@ -17,38 +19,38 @@ npm install
 
 ### 2. Create a Google Cloud OAuth client
 
-Google requires you to create your own OAuth client because the app talks to Google as you, not as a published service.
-
-1. Go to <https://console.cloud.google.com/> and create a new project (e.g., "yCal").
-2. **Enable the Google Calendar API:** APIs & Services → Library → search "Google Calendar API" → Enable.
+1. Go to <https://console.cloud.google.com/> and create a project (e.g., `yCal`).
+2. **Enable the Google Calendar API:** APIs & Services → Library → search *Google Calendar API* → Enable.
 3. **Configure the OAuth consent screen:** APIs & Services → OAuth consent screen.
    - User type: **External**
-   - App name: `yCal` (only you will see it)
-   - Support email: your email
-   - Developer contact: your email
-   - Scopes: add `.../auth/calendar.readonly`, `.../auth/calendar.events.readonly`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `openid`
-   - **Test users:** add every Gmail address you want to sign into yCal with. Until the app is verified by Google, only listed test users can sign in.
+   - App name: `yCal`
+   - Support email + developer contact: your email
+   - Scopes: `.../auth/calendar.readonly`, `.../auth/calendar.events.readonly`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `openid`
+   - **Publishing status: In production.** This is the key step that kills the 7-day refresh-token TTL that "Testing" mode imposes. Unverified-but-published apps still work — first sign-in shows a "Google hasn't verified this app" warning and the user clicks Advanced → Go to yCal. Cap is 100 users; for personal/team use that's plenty. Submit for verification later if you want to remove the warning.
 4. **Create the OAuth client:** APIs & Services → Credentials → Create credentials → OAuth client ID.
    - Application type: **Desktop app**
    - Name: `yCal desktop`
-   - Click Create.
-5. Download the JSON. Rename it to `oauth-client.json`.
+5. Download the JSON.
 
-### 3. Place `oauth-client.json` where the app can find it
-
-The app looks in this order:
-
-1. `$YCAL_CONFIG` env var (full path)
-2. macOS userData dir: `~/Library/Application Support/yCal/oauth-client.json`
-3. App resources dir
-4. Current working directory
-
-The userData path is the right home for it on macOS:
+### 3. Place `oauth-client.json` where the build can find it
 
 ```bash
-mkdir -p ~/Library/Application\ Support/yCal
-mv ~/Downloads/client_secret_*.json ~/Library/Application\ Support/yCal/oauth-client.json
+mv ~/Downloads/client_secret_*.json build/oauth-client.json
 ```
+
+That single location now feeds both flows:
+
+- **`npm run dev`** reads `build/oauth-client.json` directly via `loadOAuthConfig`'s dev-mode candidate.
+- **`npm run dist` / `npm run package`** copies it into the `.app`'s `Contents/Resources/` via `extraResources`. Installed users get it automatically.
+
+`.gitignore` excludes `build/oauth-client.json`, so the credentials never enter the public repo. The file is still embedded in every release artifact — that's fine for desktop OAuth clients, where Google's docs explicitly note the `client_secret` isn't a real secret.
+
+`loadOAuthConfig` resolution order (highest priority first):
+
+1. `$YCAL_CONFIG` env var (full path) — explicit override
+2. `~/Library/Application Support/yCal/oauth-client.json` — per-machine override (drop a file here to point a single Mac at a different OAuth client without rebuilding)
+3. **Bundled credentials**: `Contents/Resources/oauth-client.json` (packaged) or `build/oauth-client.json` (dev)
+4. App-path / cwd fallbacks (legacy)
 
 The file's shape (Google Cloud Console downloads it wrapped in `{ "installed": { ... } }` — that's fine, the app accepts both):
 
@@ -61,8 +63,6 @@ The file's shape (Google Cloud Console downloads it wrapped in `{ "installed": {
   }
 }
 ```
-
-> **About `client_secret` for desktop apps:** Google's docs note that a "secret" embedded in a desktop app isn't actually secret. It's a per-installation identifier, not a security boundary. Treat it as such — don't commit `oauth-client.json` to git (`.gitignore` already excludes it).
 
 ---
 

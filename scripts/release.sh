@@ -37,6 +37,15 @@ if ! git diff-index --quiet HEAD --; then
   exit 1
 fi
 
+if [ ! -f build/oauth-client.json ]; then
+  echo "ERROR: build/oauth-client.json missing." >&2
+  echo "Releases bundle the OAuth client into Contents/Resources so new" >&2
+  echo "installs don't have to set up Google Cloud Console themselves." >&2
+  echo "Create a Desktop OAuth client at https://console.cloud.google.com/" >&2
+  echo "and save the downloaded JSON as build/oauth-client.json." >&2
+  exit 1
+fi
+
 VERSION=$(node -p "require('./package.json').version")
 TAG="v$VERSION"
 
