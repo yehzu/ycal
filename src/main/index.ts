@@ -105,6 +105,10 @@ function createWindow(): BrowserWindow {
 // the QuickAdd component instead of the full calendar app.
 const QUICK_ADD_SHORTCUT = 'CommandOrControl+Shift+Y';
 let quickAddWindow: BrowserWindow | null = null;
+// Bundle id of the app that was frontmost when the chord fired. Captured
+// once per popup open and consumed exactly once on dismiss. Module-scoped
+// so the WindowClose IPC handler can read it before tearing the popup down.
+let quickAddPreviousAppPromise: Promise<string | null> | null = null;
 
 // AppleScript that returns the bundle id of whichever app is currently
 // frontmost. Run this BEFORE the popup window appears so we capture the
@@ -116,6 +120,25 @@ const GET_FRONTMOST_BUNDLE_OSASCRIPT = `tell application "System Events"
 end tell`;
 
 const YCAL_BUNDLE_ID = 'com.ycal.app';
+
+// Reactivate the captured previous app so yCal stops being frontmost.
+// Awaits the osascript so the caller can rely on yCal being deactivated by
+// the time this resolves — important because the popup-close handler runs
+// this BEFORE tearing the window down (otherwise macOS picks the next yCal
+// window in z-order and flashes the main calendar forward for ~100ms while
+// AppleScript is still spinning up).
+async function returnFocusToPreviousApp(): Promise<void> {
+  const promise = quickAddPreviousAppPromise;
+  quickAddPreviousAppPromise = null;
+  if (!promise) return;
+  try {
+    const bundleId = await promise;
+    if (!bundleId) return;
+    await execFile('osascript', [
+      '-e', `tell application id "${bundleId}" to activate`,
+    ]);
+  } catch { /* best-effort */ }
+}
 
 function openQuickAdd(): void {
   if (quickAddWindow && !quickAddWindow.isDestroyed()) {
@@ -129,7 +152,7 @@ function openQuickAdd(): void {
   // previous app (mimicking Things' / Todoist's quick-entry behaviour)
   // without hiding yCal's main window.
   const cameFromOutside = BrowserWindow.getFocusedWindow() == null;
-  const previousAppPromise: Promise<string | null> | null = cameFromOutside
+  quickAddPreviousAppPromise = cameFromOutside
     ? execFile('osascript', ['-e', GET_FRONTMOST_BUNDLE_OSASCRIPT])
         .then(({ stdout }) => {
           const id = stdout.trim();
@@ -166,23 +189,16 @@ function openQuickAdd(): void {
     win.show();
     win.focus();
   });
-  // Spotlight-style: dismiss when focus leaves.
+  // Spotlight-style: dismiss when focus leaves. The user already activated
+  // another app to trigger blur, so yCal is no longer frontmost — closing
+  // here doesn't flash the main window forward and we don't need to run
+  // returnFocusToPreviousApp.
   win.on('blur', () => {
     if (!win.isDestroyed()) win.close();
   });
   win.on('closed', () => {
     quickAddWindow = null;
-    if (cameFromOutside && previousAppPromise) {
-      // Reactivate whichever app the user was in before the chord. This
-      // deactivates yCal as the frontmost app WITHOUT hiding any of its
-      // windows — the main calendar stays exactly where it was.
-      void previousAppPromise.then((bundleId) => {
-        if (!bundleId) return;
-        execFile('osascript', [
-          '-e', `tell application id "${bundleId}" to activate`,
-        ]).catch(() => { /* best-effort */ });
-      });
-    }
+    quickAddPreviousAppPromise = null;
   });
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?mode=quickadd`);
@@ -361,9 +377,18 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
-  ipcMain.handle(IPC.WindowClose, (e) => {
+  ipcMain.handle(IPC.WindowClose, async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender);
-    if (win && !win.isDestroyed()) win.close();
+    if (!win || win.isDestroyed()) return;
+    // For the quick-add popup specifically: reactivate the previous app
+    // BEFORE closing this window. The popup is alwaysOnTop so it stays
+    // visible during the activation; once yCal is no longer frontmost,
+    // closing the popup doesn't pull the main calendar window forward.
+    if (win === quickAddWindow) {
+      await returnFocusToPreviousApp();
+      if (win.isDestroyed()) return;
+    }
+    win.close();
   });
   ipcMain.handle(IPC.WindowResize, (e, height: number) => {
     const win = BrowserWindow.fromWebContents(e.sender);
