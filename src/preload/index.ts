@@ -67,6 +67,9 @@ const api = {
   tasksReopen: (taskId: string): Promise<Result<{}>> => ipcRenderer.invoke(IPC.TasksReopen, taskId),
   tasksAddComment: (taskId: string, text: string): Promise<Result<{ comment: TaskComment }>> =>
     ipcRenderer.invoke(IPC.TasksAddComment, taskId, text),
+  tasksAdd: (input: { title: string }): Promise<Result<{ id: string }>> =>
+    ipcRenderer.invoke(IPC.TasksAdd, input),
+  closeWindow: (): Promise<void> => ipcRenderer.invoke(IPC.WindowClose),
   tasksGetLocal: (): Promise<TasksLocalState> => ipcRenderer.invoke(IPC.TasksGetLocal),
   tasksSetLocal: (patch: Partial<TasksLocalState>): Promise<Result<{ state: TasksLocalState }>> =>
     ipcRenderer.invoke(IPC.TasksSetLocal, patch),

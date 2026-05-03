@@ -235,6 +235,62 @@ export function setTaskDone(doc: MdDoc, taskId: string, done: boolean): string |
   return next.join('\n');
 }
 
+// Append a `- [ ] <title>` line to the user's Inbox section. If the file
+// has no top-level "# Inbox" heading, we prepend one. Returns the new
+// file body and the auto-assigned block id so the caller can refer to it.
+//
+// Insertion rules:
+//   * If a "# Inbox" heading exists, insert at the END of its body —
+//     immediately before the next top-level heading (or EOF). This means
+//     manually-added Inbox notes / comments stay above the new task and
+//     the task appears at the bottom of the Inbox list (matches the
+//     "newest at the bottom" feel of an editor's append).
+//   * If no Inbox heading exists, prepend one at the top of the file
+//     followed by a blank line, then the task. We DON'T touch any
+//     existing top of file (frontmatter, prose, other headings) — they
+//     stay intact below the new Inbox.
+export function appendTaskToInbox(
+  body: string,
+  title: string,
+): { body: string; id: string } {
+  const trimmed = title.replace(/\s+/g, ' ').trim();
+  if (!trimmed) throw new Error('Task title is required.');
+  const id = randomId(8);
+  const taskLine = `- [ ] ${trimmed} ^${id}`;
+
+  const lines = body.split('\n');
+  const inboxIdx = findInboxHeadingIndex(lines);
+
+  if (inboxIdx === -1) {
+    const prefix = ['# Inbox', '', taskLine, ''];
+    // If the file is empty (or just whitespace), drop the trailing blank.
+    const tail = body.length === 0 ? [] : ['', ...lines];
+    return { body: [...prefix, ...tail].join('\n').replace(/\n+$/, '\n'), id };
+  }
+
+  // Find end of the Inbox section: next top-level heading, or EOF.
+  let endIdx = lines.length;
+  for (let i = inboxIdx + 1; i < lines.length; i++) {
+    if (/^#\s+/.test(lines[i])) { endIdx = i; break; }
+  }
+  // Walk backwards from endIdx to skip trailing blank lines so the new
+  // task sticks to the end of the Inbox content rather than after a gap.
+  let insertAt = endIdx;
+  while (insertAt > inboxIdx + 1 && lines[insertAt - 1].trim() === '') insertAt--;
+
+  const next = lines.slice();
+  next.splice(insertAt, 0, taskLine);
+  return { body: next.join('\n'), id };
+}
+
+function findInboxHeadingIndex(lines: string[]): number {
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^#\s+(.+?)(\s*\{#[0-9a-fA-F]{3,8}\})?\s*$/);
+    if (m && m[1].trim().toLowerCase() === 'inbox') return i;
+  }
+  return -1;
+}
+
 // Append a comment to a task's block. Returns { body, comment }.
 export function appendComment(
   doc: MdDoc,

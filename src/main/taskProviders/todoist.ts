@@ -19,7 +19,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import type {
-  TaskComment, TaskFetchResult, TaskItem, TaskProjectNode,
+  TaskAddInput, TaskComment, TaskFetchResult, TaskItem, TaskProjectNode,
 } from '@shared/types';
 import type { TaskProvider } from './types';
 import { parseTaskMeta } from './labels';
@@ -342,6 +342,18 @@ export const todoistProvider: TaskProvider = {
     const key = loadKey();
     if (!key) throw new Error('Todoist API key not set.');
     await rest<void>(key, 'POST', `/tasks/${encodeURIComponent(taskId)}/reopen`);
+  },
+
+  async addTask(input: TaskAddInput): Promise<{ id: string }> {
+    const key = loadKey();
+    if (!key) throw new Error('Todoist API key not set.');
+    const title = (input.title ?? '').trim();
+    if (!title) throw new Error('Task title is required.');
+    // No project_id → Todoist routes to Inbox by default.
+    const created = await rest<{ id: string }>(key, 'POST', '/tasks', {
+      content: title,
+    });
+    return { id: created.id };
   },
 
   async addComment(taskId: string, text: string): Promise<TaskComment> {

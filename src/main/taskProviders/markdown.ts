@@ -19,12 +19,12 @@
 import { existsSync } from 'node:fs';
 import { shell } from 'electron';
 import type {
-  TaskComment, TaskFetchResult, TaskItem,
+  TaskAddInput, TaskComment, TaskFetchResult, TaskItem,
 } from '@shared/types';
 import type { TaskProvider } from './types';
 import { pathFor, readText, writeText } from '../cloudStore';
 import {
-  appendComment, parse, setTaskDone,
+  appendComment, appendTaskToInbox, parse, setTaskDone,
 } from './markdownDoc';
 
 const FILE = 'tasks.md';
@@ -126,6 +126,14 @@ export const markdownProvider: TaskProvider = {
       throw new Error(`reopenTask: task ${taskId} not found in tasks.md`);
     }
     writeText(FILE, next);
+  },
+
+  async addTask(input: TaskAddInput): Promise<{ id: string }> {
+    ensureFileExists();
+    const md = readText(FILE, '');
+    const { body, id } = appendTaskToInbox(md, input.title);
+    writeText(FILE, body);
+    return { id };
   },
 
   async addComment(taskId: string, text: string): Promise<TaskComment> {

@@ -17,7 +17,7 @@
 //   * Carryover / auto-rollover
 
 import type {
-  TaskComment, TaskFetchResult, TaskProviderId, TaskProviderInfo,
+  TaskAddInput, TaskComment, TaskFetchResult, TaskProviderId, TaskProviderInfo,
 } from '@shared/types';
 
 export interface TaskProvider {
@@ -32,6 +32,10 @@ export interface TaskProvider {
   closeTask(taskId: string): Promise<void>;
   reopenTask(taskId: string): Promise<void>;
   addComment(taskId: string, text: string): Promise<TaskComment>;
+  // Quick-add: drop a new task into the user's default container (Inbox
+  // for both providers today). Returns the new task's id so callers can
+  // refer to it later if they need to (the popup just acks-and-closes).
+  addTask(input: TaskAddInput): Promise<{ id: string }>;
 }
 
 export function describe(p: TaskProvider): TaskProviderInfo {

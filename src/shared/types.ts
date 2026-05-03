@@ -332,6 +332,14 @@ export interface TaskProjectNode {
   childOrder: number;
 }
 
+// Input for adding a task. Quick-add only carries the title for now —
+// projects, due dates, etc. live in the panel UI. Both providers are
+// expected to accept this shape and route the task to the user's Inbox /
+// default project.
+export interface TaskAddInput {
+  title: string;
+}
+
 // Result of a Todoist fetch — note it returns ALL tasks regardless of
 // whether they're complete; renderer filters via the `done` flag.
 export interface TaskFetchResult {
@@ -425,6 +433,10 @@ export const IPC = {
   TasksClose: 'ycal:tasksClose',
   TasksReopen: 'ycal:tasksReopen',
   TasksAddComment: 'ycal:tasksAddComment',
+  TasksAdd: 'ycal:tasksAdd',
+  // Quick-add popup uses these to know the active provider's display name
+  // (for the placeholder text) and to dismiss itself.
+  WindowClose: 'ycal:windowClose',
   TasksGetLocal: 'ycal:tasksGetLocal',     // schedule + done overlay (cloud)
   TasksSetLocal: 'ycal:tasksSetLocal',
   TasksRevealStorage: 'ycal:tasksRevealStorage',  // markdown provider only

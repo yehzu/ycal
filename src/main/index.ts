@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,6 +17,7 @@ import { clearWeatherCache, fetchWeather } from './weather';
 import {
   setupAutoUpdater, getLastUpdateStatus, checkForUpdatesNow, requestInstall,
 } from './updater';
+import { refreshTraySoon, startTray, stopTray } from './tray';
 import { runCli, extractCliArgs, isCliInvocation } from './cli';
 import { startCliServer } from './cliServer';
 import {
@@ -93,6 +94,62 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
+// Quick-add: small frameless popup that takes a single title, sends it to
+// the active task provider, then dismisses itself. Lives apart from the
+// main window so the user can fire it without leaving whatever app they
+// were in. URL param `mode=quickadd` flips the renderer entry to render
+// the QuickAdd component instead of the full calendar app.
+const QUICK_ADD_SHORTCUT = 'CommandOrControl+Shift+Y';
+let quickAddWindow: BrowserWindow | null = null;
+
+function openQuickAdd(): void {
+  if (quickAddWindow && !quickAddWindow.isDestroyed()) {
+    quickAddWindow.show();
+    quickAddWindow.focus();
+    return;
+  }
+  const win = new BrowserWindow({
+    width: 560,
+    height: 84,
+    frame: false,
+    resizable: false,
+    movable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    backgroundColor: '#00000000',
+    transparent: true,
+    vibrancy: 'hud',
+    visualEffectState: 'active',
+    webPreferences: {
+      preload: path.join(__dirname_, '../preload/index.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  win.once('ready-to-show', () => {
+    win.center();
+    win.show();
+    win.focus();
+  });
+  // Spotlight-style: dismiss when focus leaves.
+  win.on('blur', () => {
+    if (!win.isDestroyed()) win.close();
+  });
+  win.on('closed', () => {
+    quickAddWindow = null;
+  });
+  if (process.env.ELECTRON_RENDERER_URL) {
+    win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?mode=quickadd`);
+  } else {
+    win.loadFile(path.join(__dirname_, '../renderer/index.html'), {
+      search: 'mode=quickadd',
+    });
+  }
+  quickAddWindow = win;
+}
+
 function registerIpc() {
   ipcMain.handle(IPC.IsConfigured, () => isConfigured());
 
@@ -101,6 +158,7 @@ function registerIpc() {
       const stored = await startAddAccount();
       invalidateCalendarCache();
       invalidateEventsCache();
+      refreshTraySoon();
       return {
         ok: true as const,
         account: {
@@ -120,6 +178,7 @@ function registerIpc() {
     removeAccount(id);
     invalidateCalendarCache();
     invalidateEventsCache();
+    refreshTraySoon();
     return { ok: true as const };
   });
 
@@ -238,6 +297,30 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+  ipcMain.handle(IPC.TasksAdd, async (_e, input: { title: string }) => {
+    try {
+      const provider = getActiveProvider();
+      const created = await provider.addTask(input);
+      // Push a "provider data changed" event so the main window refreshes
+      // its tasks panel even though the add originated from the quick-add
+      // popup (or, in future, the menubar). The cross-device cloud watcher
+      // dedupes by content so the originating window doesn't re-process
+      // its own write — but in-process we want every open BrowserWindow
+      // to know.
+      const payload = { providerId: provider.id };
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (w.isDestroyed()) continue;
+        w.webContents.send(IPC.TasksProviderDataChanged, payload);
+      }
+      return { ok: true as const, id: created.id };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.WindowClose, (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (win && !win.isDestroyed()) win.close();
+  });
   ipcMain.handle(IPC.TasksAddComment, async (_e, taskId: string, text: string) => {
     try {
       const comment = await getActiveProvider().addComment(taskId, text);
@@ -343,6 +426,21 @@ if (isCliInvocation(process.argv)) {
     const win = createWindow();
     setupAutoUpdater(win);
     startCliServer();
+    startTray(win);
+
+    // Global shortcut for the quick-add popup. registerAll-style: log on
+    // failure (another app may already own the chord) but don't block app
+    // launch — the user can still add tasks the normal way.
+    try {
+      const ok = globalShortcut.register(QUICK_ADD_SHORTCUT, () => {
+        openQuickAdd();
+      });
+      if (!ok) {
+        console.error('[yCal] failed to register quick-add shortcut', QUICK_ADD_SHORTCUT);
+      }
+    } catch (e) {
+      console.error('[yCal] quick-add shortcut error', e);
+    }
     // Defer cloud-sync work until AFTER the window is on-screen. Two
     // things are deferred together:
     //   1. migrateMissingToCloud — copies userData → iCloud for files
@@ -370,6 +468,11 @@ if (isCliInvocation(process.argv)) {
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+  });
+
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
+    stopTray();
   });
 }
 
