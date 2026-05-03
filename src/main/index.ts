@@ -157,17 +157,25 @@ async function returnFocusToPreviousApp(): Promise<void> {
 }
 
 async function openQuickAdd(): Promise<void> {
-  if (quickAddWindow && !quickAddWindow.isDestroyed()) {
-    quickAddWindow.show();
-    quickAddWindow.focus();
-    return;
-  }
-  // Capture which app was frontmost BEFORE we open the popup window.
+  // Capture which app was frontmost BEFORE we surface the popup window.
   // This blocks the chord by ~30–100ms while osascript runs, but that's
   // strictly better than racing the window-focus call and getting yCal
   // back as the answer.
   const cameFromOutside = BrowserWindow.getFocusedWindow() == null;
   quickAddPreviousAppId = cameFromOutside ? await captureFrontmostApp() : null;
+
+  // Reuse the persistent popup if it survived from a previous chord. The
+  // window-close handler hides instead of destroying, so this path runs
+  // every chord after the first — saves the BrowserWindow + Vite-bundle
+  // boot cost (~hundreds of ms) that the user would otherwise feel.
+  if (quickAddWindow && !quickAddWindow.isDestroyed()) {
+    quickAddWindow.webContents.send(IPC.QuickAddReset);
+    quickAddWindow.center();
+    quickAddWindow.show();
+    quickAddWindow.focus();
+    return;
+  }
+
   const win = new BrowserWindow({
     width: 560,
     height: 84,
@@ -194,11 +202,11 @@ async function openQuickAdd(): Promise<void> {
     win.focus();
   });
   // Spotlight-style: dismiss when focus leaves. The user already activated
-  // another app to trigger blur, so yCal is no longer frontmost — closing
+  // another app to trigger blur, so yCal is no longer frontmost — hiding
   // here doesn't flash the main window forward and we don't need to run
   // returnFocusToPreviousApp.
   win.on('blur', () => {
-    if (!win.isDestroyed()) win.close();
+    if (!win.isDestroyed() && win.isVisible()) win.hide();
   });
   win.on('closed', () => {
     quickAddWindow = null;
@@ -396,12 +404,15 @@ function registerIpc() {
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win || win.isDestroyed()) return;
     // For the quick-add popup specifically: reactivate the previous app
-    // BEFORE closing this window. The popup is alwaysOnTop so it stays
+    // BEFORE hiding this window. The popup is alwaysOnTop so it stays
     // visible during the activation; once yCal is no longer frontmost,
-    // closing the popup doesn't pull the main calendar window forward.
+    // hiding doesn't pull the main calendar window forward. We hide
+    // (rather than close) so the next chord can re-show in <50ms.
     if (win === quickAddWindow) {
       await returnFocusToPreviousApp();
       if (win.isDestroyed()) return;
+      win.hide();
+      return;
     }
     win.close();
   });
@@ -416,6 +427,14 @@ function registerIpc() {
     try {
       const comment = await getActiveProvider().addComment(taskId, text);
       return { ok: true as const, comment };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksListLabels, async () => {
+    try {
+      const labels = await getActiveProvider().listLabels();
+      return { ok: true as const, labels };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }

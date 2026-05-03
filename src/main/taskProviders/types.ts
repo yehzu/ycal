@@ -36,6 +36,12 @@ export interface TaskProvider {
   // for both providers today). Returns the new task's id so callers can
   // refer to it later if they need to (the popup just acks-and-closes).
   addTask(input: TaskAddInput): Promise<{ id: string }>;
+  // Every label the user has defined, regardless of whether any open task
+  // currently carries it. Powers the quick-add popup's `#tag` autocomplete
+  // — the user wants their full Todoist label library, not just the subset
+  // attached to today's open tasks. Markdown provider mines labels from
+  // tasks.md; Todoist hits /api/v1/labels.
+  listLabels(): Promise<string[]>;
 }
 
 export function describe(p: TaskProvider): TaskProviderInfo {

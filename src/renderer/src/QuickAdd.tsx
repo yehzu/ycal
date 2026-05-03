@@ -18,7 +18,7 @@
 // existing locations are pulled from the cached tasks list so the user's
 // project / context labels are one keystroke away.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TaskItem } from '@shared/types';
 
 interface Suggestion {
@@ -150,39 +150,65 @@ export function QuickAdd(): JSX.Element {
     return () => { cancelled = true; };
   }, []);
 
-  // Pull location labels from two sources:
+  // Pull location labels from three sources, in priority order:
   //   1. User-defined tags from Settings → Tasks → Quick-add suggestions.
-  //      These appear immediately, even before the user has applied them
-  //      to any task — the answer to "how do I add `home`/`computer`?".
-  //   2. Locations on cached tasks. Anything you've used at least once
-  //      surfaces here automatically.
-  // Settings-defined tags come first so the user's explicit list wins on
-  // ordering; the dynamic set fills in the long tail.
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
+  //   2. Provider's full label library (Todoist /labels, or every #tag in
+  //      tasks.md). Catches labels the user has defined but hasn't yet
+  //      attached to any open task.
+  //   3. Locations on cached tasks (fallback when /labels errors).
+  // Reserved tokens (durations / energies) are stripped because they have
+  // their own dedicated suggestion lists higher in the menu. The function
+  // is re-runnable so the persistent popup can refresh its pool on each
+  // chord — labels added to Todoist mid-session still show up.
+  const refreshLocations = useCallback(async () => {
+    const [ui, local, labelsRes] = await Promise.all([
       window.ycal.getUiSettings(),
       window.ycal.tasksGetLocal(),
-    ]).then(([ui, local]) => {
-      if (cancelled) return;
-      const tagPattern = /^[A-Za-z0-9][\w./-]*$/;
-      const seen = new Set<string>();
-      const out: string[] = [];
-      const push = (raw: string): void => {
-        const t = raw.trim();
-        if (!t || !tagPattern.test(t) || seen.has(t)) return;
-        seen.add(t);
-        out.push(t);
-      };
-      for (const t of ui.customTagSuggestions ?? []) push(t);
-      const cache: TaskItem[] = local.cache ?? [];
-      for (const t of cache) {
-        if (t.location) push(t.location);
-      }
-      setLocations(out);
-    });
-    return () => { cancelled = true; };
+      window.ycal.tasksListLabels(),
+    ]);
+    const tagPattern = /^[A-Za-z0-9][\w./-]*$/;
+    const reserved = /^(?:\d+(?:\.\d+)?h(?:\d+m)?|\d+m|low|mid|high)$/i;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const push = (raw: string): void => {
+      const t = raw.trim();
+      if (!t || !tagPattern.test(t) || reserved.test(t) || seen.has(t)) return;
+      seen.add(t);
+      out.push(t);
+    };
+    for (const t of ui.customTagSuggestions ?? []) push(t);
+    if (labelsRes.ok) {
+      for (const t of labelsRes.labels) push(t);
+    }
+    const cache: TaskItem[] = local.cache ?? [];
+    for (const t of cache) {
+      if (t.location) push(t.location);
+    }
+    setLocations(out);
   }, []);
+
+  useEffect(() => { void refreshLocations(); }, [refreshLocations]);
+
+  // Persistent popup: every chord re-shows the same window, so the
+  // renderer needs to reset its input + caret + suggestion state and
+  // refresh the autocomplete pool when main fires this. Without the
+  // refresh, labels added to Todoist mid-session wouldn't appear until
+  // app restart.
+  useEffect(() => {
+    return window.ycal.onQuickAddReset(() => {
+      setTitle('');
+      setCaret(0);
+      setActiveIdx(0);
+      void refreshLocations();
+      // Refocus the input on the next paint — the show() call from main
+      // beats React's state flush, and the input may have been blurred
+      // when the previous chord hid the window.
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(0, 0);
+      });
+    });
+  }, [refreshLocations]);
 
   const tagCtx = useMemo(
     () => findTagContext(title, caret),

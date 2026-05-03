@@ -92,6 +92,18 @@ interface RestComment {
   posted_uid?: string;
 }
 
+interface RestLabel {
+  id: string;
+  name: string;
+  order?: number;
+}
+
+// Cache the user's full label list — these change rarely, but we hit this
+// endpoint every time the popup opens its autocomplete. 5 minutes matches
+// the calendar list cache.
+const LABELS_TTL_MS = 5 * 60_000;
+let labelsCache: { at: number; labels: string[] } | null = null;
+
 // v1 paginates list endpoints with a cursor. We follow it until exhausted.
 interface PageResponse<T> {
   results?: T[];
@@ -354,6 +366,29 @@ export const todoistProvider: TaskProvider = {
       content: title,
     });
     return { id: created.id };
+  },
+
+  async listLabels(): Promise<string[]> {
+    const key = loadKey();
+    if (!key) return [];
+    const now = Date.now();
+    if (labelsCache && now - labelsCache.at < LABELS_TTL_MS) {
+      return labelsCache.labels;
+    }
+    try {
+      const raw = await listAll<RestLabel>(key, '/labels');
+      const labels = raw
+        .slice()
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .map((l) => l.name)
+        .filter((n) => n && n.length > 0);
+      labelsCache = { at: now, labels };
+      return labels;
+    } catch {
+      // Network blip — fall through to whatever the popup can derive from
+      // the cached open tasks instead of failing the autocomplete entirely.
+      return labelsCache?.labels ?? [];
+    }
   },
 
   async addComment(taskId: string, text: string): Promise<TaskComment> {

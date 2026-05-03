@@ -69,6 +69,8 @@ const api = {
     ipcRenderer.invoke(IPC.TasksAddComment, taskId, text),
   tasksAdd: (input: { title: string }): Promise<Result<{ id: string }>> =>
     ipcRenderer.invoke(IPC.TasksAdd, input),
+  tasksListLabels: (): Promise<Result<{ labels: string[] }>> =>
+    ipcRenderer.invoke(IPC.TasksListLabels),
   closeWindow: (): Promise<void> => ipcRenderer.invoke(IPC.WindowClose),
   resizeWindow: (height: number): Promise<void> =>
     ipcRenderer.invoke(IPC.WindowResize, height),
@@ -121,6 +123,13 @@ const api = {
     ): void => handler(payload);
     ipcRenderer.on(IPC.TasksProviderDataChanged, listener);
     return () => ipcRenderer.removeListener(IPC.TasksProviderDataChanged, listener);
+  },
+  // Quick-add popup uses this to clear its title/state when the persistent
+  // window is re-shown by a fresh ⌘⇧Y chord.
+  onQuickAddReset: (handler: () => void): (() => void) => {
+    const listener = (): void => handler();
+    ipcRenderer.on(IPC.QuickAddReset, listener);
+    return () => ipcRenderer.removeListener(IPC.QuickAddReset, listener);
   },
 };
 

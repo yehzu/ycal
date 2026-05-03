@@ -136,6 +136,26 @@ export const markdownProvider: TaskProvider = {
     return { id };
   },
 
+  async listLabels(): Promise<string[]> {
+    ensureFileExists();
+    const md = readText(FILE, '');
+    const seen = new Set<string>();
+    const out: string[] = [];
+    // Walk every task line and harvest its #tag tokens. Sticking to task
+    // lines (vs. raw text) keeps stray `#` from headings out of the pool.
+    for (const line of md.split('\n')) {
+      if (!/^\s*-\s*\[[ xX/-]\]\s/.test(line)) continue;
+      for (const m of line.matchAll(/(?:^|\s)#([A-Za-z0-9][\w./-]*)\b/g)) {
+        const tag = m[1];
+        if (!seen.has(tag)) {
+          seen.add(tag);
+          out.push(tag);
+        }
+      }
+    }
+    return out;
+  },
+
   async addComment(taskId: string, text: string): Promise<TaskComment> {
     const md = readText(FILE, '');
     const doc = parse(md);

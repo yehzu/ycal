@@ -439,6 +439,10 @@ export const IPC = {
   TasksReopen: 'ycal:tasksReopen',
   TasksAddComment: 'ycal:tasksAddComment',
   TasksAdd: 'ycal:tasksAdd',
+  // Quick-add tag autocomplete pulls labels from the active provider
+  // (Todoist /labels, or unique labels mined from tasks.md). Cached in
+  // main with a short TTL so the popup feels instant.
+  TasksListLabels: 'ycal:tasksListLabels',
   // Quick-add popup uses these to know the active provider's display name
   // (for the placeholder text), to dismiss itself, and to grow/shrink as
   // the suggestion dropdown opens / closes.
@@ -465,4 +469,8 @@ export const IPC = {
   RhythmChanged: 'ycal:rhythmChanged',
   TasksLocalChanged: 'ycal:tasksLocalChanged',
   TasksProviderDataChanged: 'ycal:tasksProviderDataChanged',
+  // Sent to the persistent quick-add popup when it's about to be re-shown,
+  // so the renderer can clear the input field and reset suggestion state
+  // before the user sees the window again.
+  QuickAddReset: 'ycal:quickAddReset',
 } as const;
