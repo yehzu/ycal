@@ -89,15 +89,21 @@ interface GhRelease {
   assets: GhAsset[];
 }
 
+// Hard ceiling on a single GitHub API call. Without it, a half-open TCP
+// connection (no RST, no FIN) leaves https.get hanging forever — and the
+// renderer's "Checking for updates…" never clears.
+const FETCH_JSON_TIMEOUT_MS = 15_000;
+
 function fetchJson(url: string, redirectsLeft = 3): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    https.get(
+    const req = https.get(
       url,
       {
         headers: {
           'User-Agent': 'yCal-Updater',
           Accept: 'application/vnd.github+json',
         },
+        timeout: FETCH_JSON_TIMEOUT_MS,
       },
       (res: IncomingMessage) => {
         const status = res.statusCode ?? 0;
@@ -120,9 +126,17 @@ function fetchJson(url: string, redirectsLeft = 3): Promise<unknown> {
         });
         res.on('error', reject);
       },
-    ).on('error', reject);
+    );
+    req.on('timeout', () => {
+      req.destroy(new Error(`GitHub API timeout after ${FETCH_JSON_TIMEOUT_MS}ms`));
+    });
+    req.on('error', reject);
   });
 }
+
+// Watchdog so a stalled download (no bytes for this long) errors out
+// instead of hanging the prefetch / install path forever.
+const DOWNLOAD_STALL_TIMEOUT_MS = 30_000;
 
 function downloadFile(
   url: string,
@@ -131,9 +145,9 @@ function downloadFile(
   redirectsLeft = 5,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    https.get(
+    const req = https.get(
       url,
-      { headers: { 'User-Agent': 'yCal-Updater' } },
+      { headers: { 'User-Agent': 'yCal-Updater' }, timeout: DOWNLOAD_STALL_TIMEOUT_MS },
       (res: IncomingMessage) => {
         const status = res.statusCode ?? 0;
         if ((status === 301 || status === 302) && res.headers.location && redirectsLeft > 0) {
@@ -158,7 +172,11 @@ function downloadFile(
         ws.on('error', reject);
         res.on('error', reject);
       },
-    ).on('error', reject);
+    );
+    req.on('timeout', () => {
+      req.destroy(new Error(`Download stalled after ${DOWNLOAD_STALL_TIMEOUT_MS}ms`));
+    });
+    req.on('error', reject);
   });
 }
 
@@ -288,8 +306,18 @@ async function checkForUpdate(): Promise<void> {
       broadcast({ state: 'idle', version: null });
       return;
     }
-    // If we already have this version queued, don't re-prefetch.
+    // If we already have this version queued, don't re-prefetch — but DO
+    // restore the renderer to the right post-check state. Otherwise the
+    // 'checking' broadcast we fired at the top of this function leaves
+    // the UI stuck at "Checking for updates…" forever.
     if (pendingVersion === tagVersion && (pendingZipPath || prefetchPromise)) {
+      if (pendingZipPath) {
+        broadcast({ state: 'ready', version: tagVersion, progress: 100 });
+      } else {
+        // Prefetch still in flight — its onProgress callback owns the
+        // numeric progress, so just nudge the state back to 'available'.
+        broadcast({ state: 'available', version: tagVersion });
+      }
       return;
     }
     pendingAssetUrl = asset.browser_download_url;
