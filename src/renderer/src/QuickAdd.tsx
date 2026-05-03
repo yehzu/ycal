@@ -21,11 +21,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TaskItem } from '@shared/types';
 
-type SubmitState =
-  | { kind: 'idle' }
-  | { kind: 'saving' }
-  | { kind: 'error'; message: string };
-
 interface Suggestion {
   // What gets inserted (without the trigger char). E.g. `30m`, `p1`, `today`.
   value: string;
@@ -133,7 +128,6 @@ function suggestionsFor(
 export function QuickAdd(): JSX.Element {
   const [title, setTitle] = useState('');
   const [providerLabel, setProviderLabel] = useState<string>('Quick add task');
-  const [state, setState] = useState<SubmitState>({ kind: 'idle' });
   const [caret, setCaret] = useState(0);
   const [activeIdx, setActiveIdx] = useState(0);
   const [locations, setLocations] = useState<string[]>([]);
@@ -199,7 +193,6 @@ export function QuickAdd(): JSX.Element {
     [tagCtx, locations],
   );
   const showSuggestions = suggestions.length > 0;
-  const showError = state.kind === 'error';
 
   // Reset highlighted row whenever the suggestion list changes shape.
   useEffect(() => {
@@ -207,18 +200,16 @@ export function QuickAdd(): JSX.Element {
   }, [suggestions.length, tagCtx?.trigger, tagCtx?.start]);
 
   // Grow / shrink the popup window to fit the dropdown. Each suggestion
-  // row is ~26px; the row-and-padding chrome is ~84px. The error line, if
-  // present, adds roughly 28px. Clamped in main; this just signals intent.
+  // row is ~26px; the row-and-padding chrome is ~84px. Clamped in main;
+  // this just signals intent.
   useEffect(() => {
     const ROW = 26;
     const CHROME = 84;
-    const ERROR_ROW = 28;
     const SUGGEST_PAD = 14;
     const target = CHROME
-      + (showSuggestions ? SUGGEST_PAD + suggestions.length * ROW : 0)
-      + (showError ? ERROR_ROW : 0);
+      + (showSuggestions ? SUGGEST_PAD + suggestions.length * ROW : 0);
     void window.ycal.resizeWindow(target);
-  }, [showSuggestions, suggestions.length, showError]);
+  }, [showSuggestions, suggestions.length]);
 
   function applySuggestion(s: Suggestion): void {
     if (!tagCtx || !inputRef.current) return;
@@ -239,21 +230,15 @@ export function QuickAdd(): JSX.Element {
     });
   }
 
-  async function submit(): Promise<void> {
+  function submit(): void {
     const t = title.trim();
-    if (!t || state.kind === 'saving') return;
-    setState({ kind: 'saving' });
-    try {
-      const res = await window.ycal.tasksAdd({ title: t });
-      if (!res.ok) {
-        setState({ kind: 'error', message: res.error });
-        return;
-      }
-      void window.ycal.closeWindow();
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setState({ kind: 'error', message });
-    }
+    if (!t) return;
+    // Fire-and-forget: don't await the provider's network call before
+    // dismissing the popup. The user gets instant Enter→close so the
+    // chord feels native; the main process surfaces a system notification
+    // if the upstream add later fails.
+    void window.ycal.tasksAdd({ title: t });
+    void window.ycal.closeWindow();
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
@@ -295,7 +280,7 @@ export function QuickAdd(): JSX.Element {
         return;
       }
     }
-    if (e.key === 'Enter') void submit();
+    if (e.key === 'Enter') submit();
     else if (e.key === 'Escape') void window.ycal.closeWindow();
   }
 
@@ -317,20 +302,16 @@ export function QuickAdd(): JSX.Element {
           placeholder={providerLabel}
           spellCheck={false}
           autoComplete="off"
-          disabled={state.kind === 'saving'}
           onChange={(e) => {
             setTitle(e.target.value);
             setCaret(e.target.selectionStart ?? e.target.value.length);
-            if (state.kind === 'error') setState({ kind: 'idle' });
           }}
           onKeyUp={syncCaret}
           onClick={syncCaret}
           onSelect={syncCaret}
           onKeyDown={onKeyDown}
         />
-        <span className="quickadd-hint">
-          {state.kind === 'saving' ? '…' : 'enter'}
-        </span>
+        <span className="quickadd-hint">enter</span>
       </div>
       {showSuggestions && (
         <ul className="quickadd-suggest" role="listbox">
@@ -357,9 +338,6 @@ export function QuickAdd(): JSX.Element {
             </li>
           ))}
         </ul>
-      )}
-      {state.kind === 'error' && (
-        <div className="quickadd-error" role="alert">{state.message}</div>
       )}
     </div>
   );

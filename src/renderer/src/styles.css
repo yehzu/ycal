@@ -5242,14 +5242,6 @@ body.mode-quickadd #root {
   color: var(--ink-faint);
   text-transform: uppercase;
 }
-.quickadd-error {
-  -webkit-app-region: no-drag;
-  margin-top: 6px;
-  padding: 4px 12px;
-  font-size: 11.5px;
-  color: #b8255f;
-  font-family: var(--mono);
-}
 .quickadd-suggest {
   -webkit-app-region: no-drag;
   margin: 6px 0 0;

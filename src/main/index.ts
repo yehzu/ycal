@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, dialog, shell, Notification } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile as execFileCb } from 'node:child_process';
@@ -378,7 +378,18 @@ function registerIpc() {
       }
       return { ok: true as const, id: created.id };
     } catch (e) {
-      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      const error = e instanceof Error ? e.message : String(e);
+      // The quick-add popup fires this fire-and-forget so the popup can
+      // dismiss instantly. That means there's no UI left to surface a
+      // failure inline — fall back to a system notification so the user
+      // knows their task didn't land.
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'yCal — task not added',
+          body: `“${input.title}” — ${error}`,
+        }).show();
+      }
+      return { ok: false as const, error };
     }
   });
   ipcMain.handle(IPC.WindowClose, async (e) => {
