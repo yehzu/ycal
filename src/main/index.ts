@@ -108,6 +108,11 @@ function openQuickAdd(): void {
     quickAddWindow.focus();
     return;
   }
+  // If no yCal window currently has focus, the user is firing the chord
+  // from another app (Spotlight-style). Hide the whole yCal app on close
+  // so macOS hands focus back to the previous frontmost app instead of
+  // pulling our main window forward.
+  const cameFromOutside = BrowserWindow.getFocusedWindow() == null;
   const win = new BrowserWindow({
     width: 560,
     height: 84,
@@ -139,6 +144,12 @@ function openQuickAdd(): void {
   });
   win.on('closed', () => {
     quickAddWindow = null;
+    if (cameFromOutside) {
+      // app.hide() on macOS deactivates yCal so the previous frontmost app
+      // (the one the user fired the chord from) regains focus. The main
+      // window stays where it was — the user can Cmd-Tab back any time.
+      try { app.hide(); } catch { /* macOS-only; best effort */ }
+    }
   });
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?mode=quickadd`);
@@ -320,6 +331,13 @@ function registerIpc() {
   ipcMain.handle(IPC.WindowClose, (e) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     if (win && !win.isDestroyed()) win.close();
+  });
+  ipcMain.handle(IPC.WindowResize, (e, height: number) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win || win.isDestroyed()) return;
+    const [w] = win.getContentSize();
+    const clamped = Math.max(60, Math.min(600, Math.round(height)));
+    win.setContentSize(w, clamped, false);
   });
   ipcMain.handle(IPC.TasksAddComment, async (_e, taskId: string, text: string) => {
     try {

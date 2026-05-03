@@ -389,31 +389,44 @@ if [ -d "$ASIDE" ]; then rm -rf "$ASIDE"; fi
 
 # Refresh LaunchServices' cache. After we replace the bundle on disk LSi
 # can hold a stale entry pointing at the (just-deleted) inode, which makes
-# the subsequent \`open\` resolve to nothing and the relaunch silently
-# fail. Re-registering the path forces LSi to pick up the new Info.plist.
+# a subsequent \`open\` resolve to nothing and the relaunch silently fail.
+# Re-registering the path forces LSi to pick up the new Info.plist.
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [ -x "$LSREGISTER" ]; then
   "$LSREGISTER" -f "$CURRENT_BUNDLE" >/dev/null 2>&1 || true
 fi
 
-# \`open -n\` forces a brand-new instance. Without -n, LSi can decide the
-# old yCal is "still running" (residual process-record race) and open
-# nothing visible. The retry covers transient LSi hiccups right after the
-# re-register.
+# Give LSi (and the Dock) a beat to settle after the re-register before
+# launching. Without this gap, \`open\` can race the registration update
+# and either no-op or spawn a duplicate dock entry.
+sleep 1.0
+
+# Try plain \`open\` first. \`open -n\` (force new instance) was needed
+# previously because LSi sometimes thought the old yCal was still running
+# right after we quit; it had the side effect of registering a SECOND
+# entry in the Dock. With the longer wait above plus re-register, plain
+# \`open\` reliably reuses the existing dock slot.
 echo "[ycal-swap] launching"
-RC=1
+LAUNCHED=0
 for attempt in 1 2 3; do
-  if open -n "$CURRENT_BUNDLE"; then
-    echo "[ycal-swap] open -n succeeded on attempt $attempt"
-    RC=0
-    break
+  if open "$CURRENT_BUNDLE"; then
+    sleep 0.8
+    if pgrep -f "$EXE" >/dev/null 2>&1; then
+      echo "[ycal-swap] plain open succeeded on attempt $attempt"
+      LAUNCHED=1
+      break
+    fi
+    echo "[ycal-swap] plain open returned 0 but no process; retrying"
+  else
+    echo "[ycal-swap] plain open attempt $attempt failed (rc=$?)"
   fi
-  echo "[ycal-swap] open -n attempt $attempt failed (rc=$?)"
   sleep 0.5
 done
-if [ $RC -ne 0 ]; then
-  echo "[ycal-swap] falling back to plain open"
-  open "$CURRENT_BUNDLE" || echo "[ycal-swap] plain open failed too (rc=$?)"
+# Fall back to \`open -n\` only if the friendly path didn't actually bring
+# up a process. Better a duplicate dock icon than no app.
+if [ $LAUNCHED -eq 0 ]; then
+  echo "[ycal-swap] falling back to open -n"
+  open -n "$CURRENT_BUNDLE" || echo "[ycal-swap] open -n failed too (rc=$?)"
 fi
 
 # Mirror the log to a stable spot the user can find. The tmp dir is wiped

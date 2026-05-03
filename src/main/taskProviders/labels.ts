@@ -37,6 +37,13 @@ function parseDurLabel(lbl: string): number {
   // doesn't accidentally become 2026 minutes.
   if (!/[hm]/i.test(lbl)) return 0;
   const s = lbl.replace(/^~/, '').toLowerCase();
+  // Fractional hours: "1.5h", "0.5h", ".25h". Round to the nearest minute
+  // so "1.5h" → 90 and "0.25h" → 15 land on whole-minute boundaries.
+  const frac = s.match(/^(\d*\.\d+|\d+\.\d*)h$/);
+  if (frac) {
+    const total = Math.round(parseFloat(frac[1]) * 60);
+    return total > 0 ? total : 0;
+  }
   const m = s.match(/^(?:(\d+)h)?(\d+)?m?$/);
   if (!m) return 0;
   const h = parseInt(m[1] ?? '0', 10) || 0;

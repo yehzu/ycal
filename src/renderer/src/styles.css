@@ -5181,10 +5181,9 @@ body.mode-quickadd #root {
   height: 100%;
 }
 .quickadd-root {
-  height: 100vh;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   padding: 12px 18px;
   font-family: var(--serif-body);
 }
@@ -5236,5 +5235,43 @@ body.mode-quickadd #root {
   font-size: 11.5px;
   color: #b8255f;
   font-family: var(--mono);
+}
+.quickadd-suggest {
+  -webkit-app-region: no-drag;
+  margin: 6px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  background: rgba(244, 237, 224, 0.7);
+  border: 0.5px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.quickadd-suggest-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 14px;
+  font-family: var(--serif-body);
+  font-size: 13.5px;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+.quickadd-suggest-row.is-active {
+  background: rgba(0, 0, 0, 0.08);
+}
+.quickadd-suggest-label {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.quickadd-suggest-hint {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
 }
 

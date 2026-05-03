@@ -435,8 +435,10 @@ export const IPC = {
   TasksAddComment: 'ycal:tasksAddComment',
   TasksAdd: 'ycal:tasksAdd',
   // Quick-add popup uses these to know the active provider's display name
-  // (for the placeholder text) and to dismiss itself.
+  // (for the placeholder text), to dismiss itself, and to grow/shrink as
+  // the suggestion dropdown opens / closes.
   WindowClose: 'ycal:windowClose',
+  WindowResize: 'ycal:windowResize',
   TasksGetLocal: 'ycal:tasksGetLocal',     // schedule + done overlay (cloud)
   TasksSetLocal: 'ycal:tasksSetLocal',
   TasksRevealStorage: 'ycal:tasksRevealStorage',  // markdown provider only
