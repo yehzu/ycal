@@ -158,6 +158,11 @@ export interface UiSettings {
   loadWindow?: LoadWindowSettings;
   // Energy thresholds for the day-load gauge intensity bands.
   loadBands?: LoadBands;
+  // User-defined location/context tags surfaced as ⌘⇧Y autocomplete
+  // suggestions even before they appear on any task. e.g. ['home',
+  // 'computer', 'office']. Merged with locations pulled from cached
+  // tasks; cache wins on duplicates.
+  customTagSuggestions?: string[];
 }
 
 // Energy bands for the day-load intensity color. Thresholds are in

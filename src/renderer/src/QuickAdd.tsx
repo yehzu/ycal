@@ -156,22 +156,36 @@ export function QuickAdd(): JSX.Element {
     return () => { cancelled = true; };
   }, []);
 
-  // Pull existing location labels off the cached tasks so the dropdown
-  // can suggest the user's own context tags. cache is whatever the main
-  // window last fetched — good enough for autocomplete; we don't trigger
-  // a fresh provider fetch from the popup.
+  // Pull location labels from two sources:
+  //   1. User-defined tags from Settings → Tasks → Quick-add suggestions.
+  //      These appear immediately, even before the user has applied them
+  //      to any task — the answer to "how do I add `home`/`computer`?".
+  //   2. Locations on cached tasks. Anything you've used at least once
+  //      surfaces here automatically.
+  // Settings-defined tags come first so the user's explicit list wins on
+  // ordering; the dynamic set fills in the long tail.
   useEffect(() => {
     let cancelled = false;
-    void window.ycal.tasksGetLocal().then((local) => {
+    Promise.all([
+      window.ycal.getUiSettings(),
+      window.ycal.tasksGetLocal(),
+    ]).then(([ui, local]) => {
       if (cancelled) return;
+      const tagPattern = /^[A-Za-z0-9][\w./-]*$/;
+      const seen = new Set<string>();
+      const out: string[] = [];
+      const push = (raw: string): void => {
+        const t = raw.trim();
+        if (!t || !tagPattern.test(t) || seen.has(t)) return;
+        seen.add(t);
+        out.push(t);
+      };
+      for (const t of ui.customTagSuggestions ?? []) push(t);
       const cache: TaskItem[] = local.cache ?? [];
-      const set = new Set<string>();
       for (const t of cache) {
-        if (t.location && /^[A-Za-z0-9][\w./-]*$/.test(t.location)) {
-          set.add(t.location);
-        }
+        if (t.location) push(t.location);
       }
-      setLocations(Array.from(set).sort((a, b) => a.localeCompare(b)));
+      setLocations(out);
     });
     return () => { cancelled = true; };
   }, []);

@@ -53,6 +53,8 @@ interface Props {
   setLoadWindow: (next: LoadWindowSettings) => void;
   loadBands: LoadBands;
   setLoadBands: (next: LoadBands) => void;
+  customTagSuggestions: string[];
+  setCustomTagSuggestions: (next: string[]) => void;
   // Day rhythm
   rhythmData: RhythmData | null;
   setRhythmDefault: (fromDateStr: string, next: { wakeMin: number; sleepMin: number }) => Promise<void>;
@@ -184,6 +186,8 @@ export function SettingsModal(props: Props) {
                 setLoadWindow={props.setLoadWindow}
                 loadBands={props.loadBands}
                 setLoadBands={props.setLoadBands}
+                customTagSuggestions={props.customTagSuggestions}
+                setCustomTagSuggestions={props.setCustomTagSuggestions}
               />
             )}
             {tab === 'rhythm' && (
@@ -789,6 +793,7 @@ function PrefsTasks({
   provider, providers, setActiveProvider, setCredentials, refresh,
   autoRollover, setAutoRollover, loadWindow, setLoadWindow,
   loadBands, setLoadBands,
+  customTagSuggestions, setCustomTagSuggestions,
 }: {
   provider: TaskProviderInfo | null;
   providers: TaskProviderInfo[];
@@ -801,6 +806,8 @@ function PrefsTasks({
   setLoadWindow: (next: LoadWindowSettings) => void;
   loadBands: LoadBands;
   setLoadBands: (next: LoadBands) => void;
+  customTagSuggestions: string[];
+  setCustomTagSuggestions: (next: string[]) => void;
 }) {
   const isMarkdown = provider?.id === 'markdown';
   const isTodoist = provider?.id === 'todoist';
@@ -1035,14 +1042,72 @@ function PrefsTasks({
       <h3 className="pref-h" style={{ marginTop: 18 }}>Labels</h3>
       <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
         yCal reads provider labels for Troika-style metadata: a duration
-        label like <code>30m</code> / <code>1h</code> / <code>1h30m</code>,
-        an energy label of <code>low</code> / <code>mid</code> /{' '}
-        <code>high</code>, and any other label is treated as a location
-        (<code>cafe</code>, <code>desk</code>, <code>home</code>, …). The
-        first label that doesn&apos;t match duration or energy wins as the
-        location.
+        label like <code>30m</code> / <code>1h</code> / <code>1.5h</code> /{' '}
+        <code>1h30m</code>, an energy label of <code>low</code> /{' '}
+        <code>mid</code> / <code>high</code>, and any other label is
+        treated as a location (<code>cafe</code>, <code>desk</code>,{' '}
+        <code>home</code>, …). The first label that doesn&apos;t match
+        duration or energy wins as the location.
       </p>
+      <CustomTagsEditor
+        value={customTagSuggestions}
+        onChange={setCustomTagSuggestions}
+      />
     </div>
+  );
+}
+
+function CustomTagsEditor({
+  value, onChange,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState(value.join(', '));
+  // Re-sync the draft when value changes from outside (cross-device push,
+  // initial load), but skip while the user is mid-edit so we don't clobber.
+  useEffect(() => {
+    setDraft(value.join(', '));
+  }, [value]);
+
+  const commit = (raw: string) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const part of raw.split(/[,\s]+/)) {
+      const t = part.trim();
+      if (!t) continue;
+      if (seen.has(t)) continue;
+      // Only allow tag-shape strings the markdown parser will round-trip.
+      if (!/^[A-Za-z0-9][\w./-]*$/.test(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    onChange(out);
+  };
+
+  return (
+    <PrefRow
+      label="Quick-add suggestions"
+      hint="Comma-separated tags shown when you type # in the ⌘⇧Y popup. Existing locations on your tasks already auto-suggest; this list is for tags you haven't used yet."
+    >
+      <input
+        type="text"
+        className="pref-input"
+        value={draft}
+        placeholder="home, computer, errand"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => commit(draft)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit(draft);
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        spellCheck={false}
+        autoComplete="off"
+      />
+    </PrefRow>
   );
 }
 

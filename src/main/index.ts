@@ -1,6 +1,10 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFile = promisify(execFileCb);
 
 import { IPC } from '@shared/types';
 import { isConfigured } from './config';
@@ -102,6 +106,17 @@ function createWindow(): BrowserWindow {
 const QUICK_ADD_SHORTCUT = 'CommandOrControl+Shift+Y';
 let quickAddWindow: BrowserWindow | null = null;
 
+// AppleScript that returns the bundle id of whichever app is currently
+// frontmost. Run this BEFORE the popup window appears so we capture the
+// user's previous app (Slack, browser, …), not yCal itself.
+const GET_FRONTMOST_BUNDLE_OSASCRIPT = `tell application "System Events"
+  set procs to (processes whose frontmost is true)
+  if (count of procs) is 0 then return ""
+  return bundle identifier of first item of procs
+end tell`;
+
+const YCAL_BUNDLE_ID = 'com.ycal.app';
+
 function openQuickAdd(): void {
   if (quickAddWindow && !quickAddWindow.isDestroyed()) {
     quickAddWindow.show();
@@ -109,10 +124,23 @@ function openQuickAdd(): void {
     return;
   }
   // If no yCal window currently has focus, the user is firing the chord
-  // from another app (Spotlight-style). Hide the whole yCal app on close
-  // so macOS hands focus back to the previous frontmost app instead of
-  // pulling our main window forward.
+  // from another app (Spotlight-style). Capture which app was frontmost
+  // so we can reactivate it on close — this returns focus to the user's
+  // previous app (mimicking Things' / Todoist's quick-entry behaviour)
+  // without hiding yCal's main window.
   const cameFromOutside = BrowserWindow.getFocusedWindow() == null;
+  const previousAppPromise: Promise<string | null> | null = cameFromOutside
+    ? execFile('osascript', ['-e', GET_FRONTMOST_BUNDLE_OSASCRIPT])
+        .then(({ stdout }) => {
+          const id = stdout.trim();
+          if (!id) return null;
+          // If the osascript raced ahead of our window appearing and
+          // captured yCal as frontmost, drop it — we'd otherwise loop.
+          if (id === YCAL_BUNDLE_ID) return null;
+          return id;
+        })
+        .catch(() => null)
+    : null;
   const win = new BrowserWindow({
     width: 560,
     height: 84,
@@ -144,11 +172,16 @@ function openQuickAdd(): void {
   });
   win.on('closed', () => {
     quickAddWindow = null;
-    if (cameFromOutside) {
-      // app.hide() on macOS deactivates yCal so the previous frontmost app
-      // (the one the user fired the chord from) regains focus. The main
-      // window stays where it was — the user can Cmd-Tab back any time.
-      try { app.hide(); } catch { /* macOS-only; best effort */ }
+    if (cameFromOutside && previousAppPromise) {
+      // Reactivate whichever app the user was in before the chord. This
+      // deactivates yCal as the frontmost app WITHOUT hiding any of its
+      // windows — the main calendar stays exactly where it was.
+      void previousAppPromise.then((bundleId) => {
+        if (!bundleId) return;
+        execFile('osascript', [
+          '-e', `tell application id "${bundleId}" to activate`,
+        ]).catch(() => { /* best-effort */ });
+      });
     }
   });
   if (process.env.ELECTRON_RENDERER_URL) {

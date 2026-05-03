@@ -126,6 +126,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [loadBands, setLoadBands] = useState<LoadBands>(
     () => ({ ...DEFAULT_LOAD_BANDS, ...(initialUi.loadBands ?? {}) }),
   );
+  const [customTagSuggestions, setCustomTagSuggestions] = useState<string[]>(
+    () => initialUi.customTagSuggestions ?? [],
+  );
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
     setCalRoles((prev) => ({ ...prev, [key]: role }));
@@ -192,6 +195,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setAutoRolloverPastTasks(ui.autoRolloverPastTasks ?? true);
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
+      setCustomTagSuggestions(ui.customTagSuggestions ?? []);
       // Slices owned by the events store (account / calendar visibility,
       // weather URL) need explicit imperative setters — they're not
       // react state in App.
@@ -264,11 +268,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       autoRolloverPastTasks,
       loadWindow,
       loadBands,
+      customTagSuggestions,
     });
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
-    autoRolloverPastTasks, loadWindow, loadBands,
+    autoRolloverPastTasks, loadWindow, loadBands, customTagSuggestions,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -819,6 +824,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setLoadWindow={setLoadWindow}
           loadBands={loadBands}
           setLoadBands={setLoadBands}
+          customTagSuggestions={customTagSuggestions}
+          setCustomTagSuggestions={setCustomTagSuggestions}
           rhythmData={rhythmData}
           setRhythmDefault={setRhythmDefault}
           cloudStorage={cloudStorage}
