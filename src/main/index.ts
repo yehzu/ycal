@@ -593,21 +593,32 @@ if (isCliInvocation(process.argv)) {
 // don't echo back as fake remote events.
 function startCloudSync(win: BrowserWindow): void {
   startCloudWatcher();
-  onCloudFileChange((filename) => {
+  onCloudFileChange((filename, body) => {
     if (win.isDestroyed()) return;
     try {
       switch (filename) {
-        case 'settings.json':
+        case 'settings.json': {
+          // iCloud Drive can briefly serve a 0-byte placeholder or a
+          // mid-rename partial during sync. If the body doesn't parse
+          // as JSON, the subsequent getUiSettings() would fall back to
+          // DEFAULTS (empty accountsActive/calVisible) — broadcasting
+          // that wholesale-wipes the renderer's visibility maps and
+          // hides every event. Skip broadcasts on unparseable bodies;
+          // the next legitimate write triggers a fresh notification.
+          if (!isParseableJsonObject(body)) return;
           win.webContents.send(IPC.SettingsChanged, {
             ui: getUiSettings(),
             weatherIcsUrl: getWeatherUrl(),
             taskProviderId: getTaskProviderId(),
           });
           break;
+        }
         case 'rhythm.json':
+          if (!isParseableJsonObject(body)) return;
           win.webContents.send(IPC.RhythmChanged, getRhythm());
           break;
         case 'tasks-schedule.json':
+          if (!isParseableJsonObject(body)) return;
           win.webContents.send(IPC.TasksLocalChanged, getTasksLocal());
           break;
         case 'tasks.md':
@@ -622,4 +633,14 @@ function startCloudSync(win: BrowserWindow): void {
       console.error('[yCal] cloud-sync push failed for', filename, e);
     }
   });
+}
+
+function isParseableJsonObject(body: string): boolean {
+  if (!body) return false;
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    return !!parsed && typeof parsed === 'object';
+  } catch {
+    return false;
+  }
 }

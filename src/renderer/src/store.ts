@@ -231,11 +231,24 @@ export function useStore(
     }
   }, [refreshWeather]);
 
+  // Stable ref to the live accounts list so applyRemoteUi can sanity-check
+  // the incoming payload without recreating the callback (which would
+  // re-run App.tsx's onSettingsChanged subscription on every refreshAccounts).
+  const accountsRef = useRef<AccountSummary[]>([]);
+  useEffect(() => { accountsRef.current = accounts; }, [accounts]);
+
   const applyRemoteUi = useCallback((ui: UiSettings) => {
-    // Replace the visibility maps wholesale — Mac A's view of which
-    // accounts/calendars are active is the truth, and a partial merge
-    // would leave stale toggles around if Mac A explicitly turned one
-    // off.
+    // Defensive: if the incoming map is empty but the user has accounts
+    // signed in, the remote payload is almost certainly the result of a
+    // transient iCloud read failure (settings.json briefly unreadable
+    // mid-sync — main falls back to empty defaults). Wholesale-replacing
+    // would hide every event until next restart; ignore instead.
+    const incomingAccounts = Object.keys(ui.accountsActive).length;
+    if (incomingAccounts === 0 && accountsRef.current.length > 0) return;
+    // Otherwise replace the visibility maps wholesale — Mac A's view of
+    // which accounts/calendars are active is the truth, and a partial
+    // merge would leave stale toggles around if Mac A explicitly turned
+    // one off.
     setAccountsActiveState({ ...ui.accountsActive });
     setCalVisibleState({ ...ui.calVisible });
   }, []);
