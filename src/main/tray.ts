@@ -147,7 +147,11 @@ async function fetchAgenda(): Promise<CalendarEvent[]> {
   // in N min" semantic. The dropdown still includes them under their
   // calendar source if the user opens it.
   const timed = events.filter((ev) => !ev.allDay);
-  timed.sort((a, b) => a.start.localeCompare(b.start));
+  // Sort by epoch ms, not lexicographically: ISO strings with different
+  // timezone offsets (e.g. "T10:00+08:00" vs "T05:00Z") would otherwise
+  // come out in the wrong order even when they represent the same wall
+  // moment relative to each other.
+  timed.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
   return timed;
 }
 
@@ -220,22 +224,18 @@ function buildMenu(events: CalendarEvent[]): Menu {
   const todayKey = new Date().toLocaleDateString();
   const items: Electron.MenuItemConstructorOptions[] = [];
 
-  // Filter to events that haven't ended yet — past entries are noise.
+  // Today only, and only events that haven't ended yet — past entries
+  // are noise, and tomorrow's events live in the main calendar window.
   const now = Date.now();
-  const upcoming = events.filter((ev) => new Date(ev.end).getTime() > now);
+  const todayUpcoming = events.filter((ev) => {
+    if (new Date(ev.end).getTime() <= now) return false;
+    return new Date(ev.start).toLocaleDateString() === todayKey;
+  });
 
-  if (upcoming.length === 0) {
-    items.push({ label: 'No upcoming events', enabled: false });
+  if (todayUpcoming.length === 0) {
+    items.push({ label: 'No more events today', enabled: false });
   } else {
-    let sectionLabel = '';
-    for (const ev of upcoming.slice(0, 12)) {
-      const evDay = new Date(ev.start).toLocaleDateString();
-      const newSection = evDay === todayKey ? 'Today' : 'Tomorrow';
-      if (newSection !== sectionLabel) {
-        if (sectionLabel) items.push({ type: 'separator' });
-        items.push({ label: newSection, enabled: false });
-        sectionLabel = newSection;
-      }
+    for (const ev of todayUpcoming.slice(0, 12)) {
       const time = formatTime(ev.start);
       items.push({
         label: `${time}  ${truncate(ev.title, 36)}`,
@@ -244,6 +244,17 @@ function buildMenu(events: CalendarEvent[]): Menu {
           else focusMainWindow();
         },
       });
+      // Indented "Join" sub-item for events with a video conference link.
+      // meetUrl is stored protocol-stripped, so re-add https:// before
+      // handing it to the OS.
+      if (ev.meetUrl) {
+        const url = /^https?:\/\//i.test(ev.meetUrl) ? ev.meetUrl : `https://${ev.meetUrl}`;
+        const label = ev.meetLabel ? `Join ${ev.meetLabel}` : 'Join Meet';
+        items.push({
+          label: `    ↳ ${label}`,
+          click: () => { void shell.openExternal(url); },
+        });
+      }
     }
   }
 
