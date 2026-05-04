@@ -14,11 +14,34 @@
 // settings.json into tasks-schedule.json (cloud) and scrub the legacy keys.
 
 import type { TasksLocalState } from '@shared/types';
-import { readJson, writeJson } from './cloudStore';
+import { readJsonStrict, writeJson } from './cloudStore';
 import { clearLegacyFields, readLegacyTasks } from './settings';
 
 const FILE = 'tasks-schedule.json';
 let migrated = false;
+
+// `corrupt` mirrors the same defense used in settings.ts / rhythm.ts:
+// when iCloud Drive briefly serves a 0-byte placeholder during sync, a
+// blind write would clobber the user's real schedule with an empty map.
+function readStrict(): { data: TasksLocalState; corrupt: boolean } {
+  const result = readJsonStrict<TasksLocalState>(FILE);
+  if (result.status === 'missing' || !result.data) {
+    return {
+      data: { scheduled: {}, doneOn: {} },
+      corrupt: result.status === 'corrupt',
+    };
+  }
+  const raw = result.data;
+  return {
+    data: {
+      scheduled: raw.scheduled ?? {},
+      doneOn: raw.doneOn ?? {},
+      cache: raw.cache,
+      cacheAt: raw.cacheAt,
+    },
+    corrupt: false,
+  };
+}
 
 function migrateIfNeeded(): void {
   if (migrated) return;
@@ -27,9 +50,10 @@ function migrateIfNeeded(): void {
   if (!legacy) return;
   // If the cloud file already exists with content, prefer it — the user
   // may have already migrated on another device. Just clear settings.json.
-  const existing = readJson<TasksLocalState | null>(FILE, null);
-  if (existing && (Object.keys(existing.scheduled || {}).length > 0
-                || Object.keys(existing.doneOn || {}).length > 0)) {
+  const { data: existing, corrupt } = readStrict();
+  if (corrupt) return; // never clobber on a transient bad read
+  if (Object.keys(existing.scheduled).length > 0
+      || Object.keys(existing.doneOn).length > 0) {
     clearLegacyFields();
     return;
   }
@@ -43,18 +67,19 @@ function migrateIfNeeded(): void {
 
 export function getTasksLocal(): TasksLocalState {
   migrateIfNeeded();
-  const raw = readJson<TasksLocalState | null>(FILE, null);
-  return {
-    scheduled: raw?.scheduled ?? {},
-    doneOn: raw?.doneOn ?? {},
-    cache: raw?.cache,
-    cacheAt: raw?.cacheAt,
-  };
+  return readStrict().data;
 }
 
 export function setTasksLocal(patch: Partial<TasksLocalState>): TasksLocalState {
   migrateIfNeeded();
-  const cur = getTasksLocal();
+  const { data: cur, corrupt } = readStrict();
+  if (corrupt) {
+    console.warn(
+      '[yCal] setTasksLocal aborted — tasks-schedule.json unreadable ' +
+      'right now (iCloud may be syncing). Keeping current on-disk state.',
+    );
+    return cur;
+  }
   const next: TasksLocalState = {
     scheduled: patch.scheduled ?? cur.scheduled,
     doneOn: patch.doneOn ?? cur.doneOn,

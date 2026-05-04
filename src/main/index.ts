@@ -16,6 +16,7 @@ import {
 } from './calendar';
 import {
   getWeatherUrl, setWeatherUrl, getUiSettings, setUiSettings, getTaskProviderId,
+  getSettingsSnapshotStrict,
 } from './settings';
 import { clearWeatherCache, fetchWeather } from './weather';
 import {
@@ -599,18 +600,14 @@ function startCloudSync(win: BrowserWindow): void {
       switch (filename) {
         case 'settings.json': {
           // iCloud Drive can briefly serve a 0-byte placeholder or a
-          // mid-rename partial during sync. If the body doesn't parse
-          // as JSON, the subsequent getUiSettings() would fall back to
-          // DEFAULTS (empty accountsActive/calVisible) — broadcasting
-          // that wholesale-wipes the renderer's visibility maps and
-          // hides every event. Skip broadcasts on unparseable bodies;
-          // the next legitimate write triggers a fresh notification.
+          // mid-rename partial during sync. Use the strict snapshot so
+          // a corrupt re-read inside the handler is treated the same
+          // as an unparseable watcher body: skip the broadcast. The
+          // next legitimate write triggers a fresh notification.
           if (!isParseableJsonObject(body)) return;
-          win.webContents.send(IPC.SettingsChanged, {
-            ui: getUiSettings(),
-            weatherIcsUrl: getWeatherUrl(),
-            taskProviderId: getTaskProviderId(),
-          });
+          const snap = getSettingsSnapshotStrict();
+          if (!snap) return;
+          win.webContents.send(IPC.SettingsChanged, snap);
           break;
         }
         case 'rhythm.json':

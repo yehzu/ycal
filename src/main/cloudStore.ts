@@ -129,6 +129,36 @@ export function readJson<T>(filename: string, fallback: T): T {
   }
 }
 
+// "Did the file actually exist and parse?" Differentiates first-run
+// (`missing` — caller may safely write fresh defaults) from a transient
+// iCloud read failure (`corrupt` — callers MUST refuse to write, or
+// they will cement the empty-defaults state and clobber the user's real
+// data on disk). The bug we're guarding against: iCloud Drive briefly
+// serves a 0-byte placeholder during sync, parse fails, every getter
+// returns DEFAULTS, and any write that follows merges-into-defaults
+// before iCloud restores the real bytes.
+export type ReadStatus = 'ok' | 'missing' | 'corrupt';
+export function readJsonStrict<T>(filename: string): {
+  status: ReadStatus; data: T | null;
+} {
+  const { path: p } = pathFor(filename);
+  if (!existsSync(p)) return { status: 'missing', data: null };
+  let body: string;
+  try {
+    body = readFileSync(p, 'utf-8');
+  } catch {
+    return { status: 'corrupt', data: null };
+  }
+  if (!body) return { status: 'corrupt', data: null };
+  try {
+    const data = JSON.parse(body) as T;
+    lastSeen.set(filename, body);
+    return { status: 'ok', data };
+  } catch {
+    return { status: 'corrupt', data: null };
+  }
+}
+
 // Atomic write via tmp-sibling + rename. iCloud Drive briefly locks the
 // live file mid-sync, which makes a plain truncate-and-write hit EPERM.
 // rename(2) on the same filesystem doesn't need to open the destination,

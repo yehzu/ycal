@@ -13,7 +13,7 @@
 // (Settings → Sync) controls whether rhythm.json mirrors across Macs.
 
 import type { RhythmData, RhythmDefault, RhythmOverride } from '@shared/types';
-import { readJson, writeJson } from './cloudStore';
+import { readJsonStrict, writeJson } from './cloudStore';
 
 const FILE = 'rhythm.json';
 
@@ -27,9 +27,16 @@ function emptyRhythm(): RhythmData {
   return { defaults: [{ ...BASELINE }], overrides: {} };
 }
 
-function readRhythm(): RhythmData {
-  const raw = readJson<Partial<RhythmData> | null>(FILE, null);
-  if (!raw) return emptyRhythm();
+// `corrupt` is true when the file existed but parse failed (transient
+// iCloud read). Setters refuse to write in that state — otherwise they
+// merge fresh defaults into a corrupt-read view and clobber the user's
+// real on-disk overrides + default history.
+function readRhythm(): { data: RhythmData; corrupt: boolean } {
+  const result = readJsonStrict<Partial<RhythmData>>(FILE);
+  if (result.status === 'missing' || !result.data) {
+    return { data: emptyRhythm(), corrupt: result.status === 'corrupt' };
+  }
+  const raw = result.data;
   const defaults = Array.isArray(raw.defaults) && raw.defaults.length > 0
     ? raw.defaults
       .filter((d): d is RhythmDefault =>
@@ -47,18 +54,28 @@ function readRhythm(): RhythmData {
   if (defaults[0].fromDate !== BASELINE.fromDate) {
     defaults.unshift({ ...BASELINE });
   }
-  return { defaults, overrides };
+  return { data: { defaults, overrides }, corrupt: false };
+}
+
+function abortIfCorrupt(corrupt: boolean, op: string): boolean {
+  if (!corrupt) return false;
+  console.warn(
+    `[yCal] ${op} aborted — rhythm.json unreadable right now ` +
+    '(iCloud may be syncing). Keeping current on-disk state.',
+  );
+  return true;
 }
 
 export function getRhythm(): RhythmData {
-  return readRhythm();
+  return readRhythm().data;
 }
 
 export function setOverride(
   dateStr: string,
   patch: { wakeMin?: number; sleepMin?: number },
 ): RhythmData {
-  const data = readRhythm();
+  const { data, corrupt } = readRhythm();
+  if (abortIfCorrupt(corrupt, 'setOverride')) return data;
   const cur = data.overrides[dateStr] ?? {};
   const next: RhythmOverride = { ...cur };
   if (patch.wakeMin !== undefined) next.wakeMin = clampMin(patch.wakeMin);
@@ -73,7 +90,8 @@ export function setOverride(
 }
 
 export function clearOverride(dateStr: string): RhythmData {
-  const data = readRhythm();
+  const { data, corrupt } = readRhythm();
+  if (abortIfCorrupt(corrupt, 'clearOverride')) return data;
   if (dateStr in data.overrides) {
     delete data.overrides[dateStr];
     writeJson(FILE, data);
@@ -85,7 +103,8 @@ export function setDefault(
   fromDateStr: string,
   next: { wakeMin: number; sleepMin: number },
 ): RhythmData {
-  const data = readRhythm();
+  const { data, corrupt } = readRhythm();
+  if (abortIfCorrupt(corrupt, 'setDefault')) return data;
   const wake = clampMin(next.wakeMin);
   const sleep = clampMin(next.sleepMin);
   if (wake >= sleep) return data;

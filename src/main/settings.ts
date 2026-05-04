@@ -15,7 +15,7 @@
 
 import type { CloudStorage, TaskProviderId, UiSettings } from '@shared/types';
 import { adoptLegacyCloudPref } from './device';
-import { readJson, writeJson } from './cloudStore';
+import { readJsonStrict, writeJson } from './cloudStore';
 
 const FILE = 'settings.json';
 
@@ -56,9 +56,22 @@ interface RawSettings extends Partial<Settings> {
 
 let migratedLegacyCloudPref = false;
 
-function read(): { settings: Settings; legacy: RawSettings } {
-  const raw = readJson<RawSettings | null>(FILE, null);
-  if (!raw) return { settings: cloneDefaults(), legacy: {} };
+// `corrupt` is true when the file existed but couldn't be parsed (iCloud
+// Drive sometimes briefly serves a 0-byte placeholder during sync). All
+// setters refuse to write in this state — otherwise they merge fresh
+// defaults into a corrupt-read view and silently clobber the user's
+// real on-disk data. `missing` (first-run / never-written) is fine:
+// callers can write a fresh defaults file from scratch.
+function read(): { settings: Settings; legacy: RawSettings; corrupt: boolean } {
+  const result = readJsonStrict<RawSettings>(FILE);
+  if (result.status === 'missing' || !result.data) {
+    return {
+      settings: cloneDefaults(),
+      legacy: {},
+      corrupt: result.status === 'corrupt',
+    };
+  }
+  const raw = result.data;
   // First-time-after-upgrade: lift cloudStorage out of settings.json and
   // into the per-device file. Idempotent — adoptLegacyCloudPref no-ops when
   // device.json already exists.
@@ -83,6 +96,7 @@ function read(): { settings: Settings; legacy: RawSettings } {
       taskProviderId: raw.taskProviderId === 'markdown' ? 'markdown' : 'todoist',
     },
     legacy: raw,
+    corrupt: false,
   };
 }
 
@@ -90,12 +104,22 @@ function write(s: Settings): void {
   writeJson<Settings>(FILE, s);
 }
 
+function abortIfCorrupt(corrupt: boolean, op: string): boolean {
+  if (!corrupt) return false;
+  console.warn(
+    `[yCal] ${op} aborted — settings.json unreadable right now ` +
+    '(iCloud may be syncing). Keeping current on-disk state.',
+  );
+  return true;
+}
+
 export function getWeatherUrl(): string | null {
   return read().settings.weatherIcsUrl;
 }
 
 export function setWeatherUrl(url: string | null): void {
-  const { settings: s } = read();
+  const { settings: s, corrupt } = read();
+  if (abortIfCorrupt(corrupt, 'setWeatherUrl')) return;
   s.weatherIcsUrl = url && url.trim() ? url.trim() : null;
   write(s);
 }
@@ -105,7 +129,8 @@ export function getUiSettings(): UiSettings {
 }
 
 export function setUiSettings(patch: Partial<UiSettings>): void {
-  const { settings: s } = read();
+  const { settings: s, corrupt } = read();
+  if (abortIfCorrupt(corrupt, 'setUiSettings')) return;
   const next: UiSettings = { ...s.ui };
   if (patch.accountsActive) {
     next.accountsActive = { ...next.accountsActive, ...patch.accountsActive };
@@ -139,8 +164,25 @@ export function getTaskProviderId(): TaskProviderId {
   return read().settings.taskProviderId;
 }
 
+// Single read for the cross-device sync push payload. Returns null when
+// settings.json is currently corrupt (parse failed), so the watcher
+// handler can skip the broadcast instead of pushing fresh DEFAULTS to
+// the renderer — which would wipe the user's in-memory visibility maps.
+export function getSettingsSnapshotStrict(): {
+  ui: UiSettings; weatherIcsUrl: string | null; taskProviderId: TaskProviderId;
+} | null {
+  const { settings, corrupt } = read();
+  if (corrupt) return null;
+  return {
+    ui: settings.ui,
+    weatherIcsUrl: settings.weatherIcsUrl,
+    taskProviderId: settings.taskProviderId,
+  };
+}
+
 export function setTaskProviderId(id: TaskProviderId): void {
-  const { settings: s } = read();
+  const { settings: s, corrupt } = read();
+  if (abortIfCorrupt(corrupt, 'setTaskProviderId')) return;
   s.taskProviderId = id;
   write(s);
 }
@@ -161,7 +203,8 @@ export function readLegacyTasks(): {
 }
 
 export function clearLegacyFields(): void {
-  const { settings: s, legacy } = read();
+  const { settings: s, legacy, corrupt } = read();
+  if (abortIfCorrupt(corrupt, 'clearLegacyFields')) return;
   if (!legacy.tasks && !legacy.rhythmStorage && !legacy.cloudStorage) return;
   // Re-write without the legacy keys (they only existed in `legacy`).
   write(s);
