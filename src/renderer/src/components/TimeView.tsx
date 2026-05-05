@@ -60,6 +60,72 @@ interface Placed {
   eMin: number;
 }
 
+interface PlacedTask {
+  task: TaskItem;
+  start: string;
+  col: number;
+  cols: number;
+  sMin: number;
+  eMin: number;
+}
+
+// Same clustering algorithm as `layoutColumns` for events, applied to
+// scheduled task chips. Chips overlap by start time + duration; without
+// this they all stack at left:1/right:1 and the user can't see how many
+// are stacked on a slot.
+function layoutTaskColumns(items: Array<{ task: TaskItem; start: string }>): PlacedTask[] {
+  const clipped = items.map(({ task, start }) => {
+    const [h, m] = start.split(':').map((n) => parseInt(n, 10) || 0);
+    const sMin = h * 60 + m;
+    const dur = task.dur || 30;
+    const eMin = Math.min(24 * 60, sMin + dur);
+    return { task, start, sMin, eMin };
+  });
+
+  const sorted = clipped.slice().sort((a, b) => {
+    if (a.sMin !== b.sMin) return a.sMin - b.sMin;
+    return b.eMin - a.eMin;
+  });
+
+  const placed: Array<{ task: TaskItem; start: string; col: number; sMin: number; eMin: number }> = [];
+  const clusterIds: number[] = [];
+  const clusterCounts: number[] = [];
+  let curCluster = -1;
+  let curEnd = -Infinity;
+
+  for (const c of sorted) {
+    const { task, start, sMin, eMin } = c;
+    if (sMin >= curEnd) {
+      curCluster++;
+      curEnd = eMin;
+      clusterCounts[curCluster] = 0;
+    } else {
+      curEnd = Math.max(curEnd, eMin);
+    }
+    const usedCols = new Set<number>();
+    for (let i = 0; i < placed.length; i++) {
+      if (clusterIds[i] !== curCluster) continue;
+      if (placed[i].eMin > sMin && placed[i].sMin < eMin) {
+        usedCols.add(placed[i].col);
+      }
+    }
+    let col = 0;
+    while (usedCols.has(col)) col++;
+    placed.push({ task, start, col, sMin, eMin });
+    clusterIds.push(curCluster);
+    clusterCounts[curCluster] = Math.max(clusterCounts[curCluster] ?? 0, col + 1);
+  }
+
+  return placed.map((p, i) => ({
+    task: p.task,
+    start: p.start,
+    col: p.col,
+    sMin: p.sMin,
+    eMin: p.eMin,
+    cols: clusterCounts[clusterIds[i]],
+  }));
+}
+
 function layoutColumns(items: CalendarEvent[], day: Date): Placed[] {
   const dayStartMs = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
   const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
@@ -458,6 +524,7 @@ function DayColumn({
   const colRef = useRef<HTMLDivElement | null>(null);
   const dateStr = fmtDate(day);
   const laid = layoutColumns(events, day);
+  const laidTasks = layoutTaskColumns(tasks);
 
   const [dropPreview, setDropPreview] = useState<{ y: number; min: number } | null>(null);
 
@@ -514,13 +581,17 @@ function DayColumn({
         />
       ))}
 
-      {/* Scheduled task chips. Drawn before events so events sit on top. */}
-      {tasks.map(({ task, start }) => (
+      {/* Scheduled task chips. Drawn before events so events sit on top.
+          Laid out in side-by-side columns the same way events are, so
+          multiple tasks at one slot are individually visible. */}
+      {laidTasks.map(({ task, start, col, cols }) => (
         <ScheduledTaskChip
           key={task.id}
           task={task}
           dateStr={dateStr}
           start={start}
+          col={col}
+          cols={cols}
           onToggleDone={onToggleTaskDone}
           onOpen={onOpenTask}
         />
@@ -602,11 +673,13 @@ function DayColumn({
 }
 
 function ScheduledTaskChip({
-  task, dateStr, start, onToggleDone, onOpen,
+  task, dateStr, start, col, cols, onToggleDone, onOpen,
 }: {
   task: TaskItem;
   dateStr: string;
   start: string;
+  col: number;
+  cols: number;
   onToggleDone?: (id: string) => void;
   onOpen?: (id: string) => void;
 }) {
@@ -615,6 +688,8 @@ function ScheduledTaskChip({
   const dur = task.dur || 30;
   const top = ((sMin / 60) - START_HOUR) * HOUR_HEIGHT;
   const height = Math.max(20, (dur / 60) * HOUR_HEIGHT);
+  const widthPct = 100 / cols;
+  const leftPct = widthPct * col;
 
   const drag = useDragSource({
     type: 'task',
@@ -634,8 +709,8 @@ function ScheduledTaskChip({
       style={{
         top,
         height,
-        left: 1,
-        right: 1,
+        left: `calc(${leftPct}% + 1px)`,
+        width: `calc(${widthPct}% - 2px)`,
         ['--proj' as never]: '#5b7a8e',
       }}
       draggable={drag.draggable}

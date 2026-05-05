@@ -20,6 +20,35 @@ import { clearLegacyFields, readLegacyTasks } from './settings';
 const FILE = 'tasks-schedule.json';
 let migrated = false;
 
+// How long we keep a chip on the calendar grid after a task is closed.
+// Anything older is pruned at write time so the file doesn't grow forever.
+const COMPLETED_RETAIN_DAYS = 30;
+
+function isoDateMinusDays(days: number): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function pruneCompleted(
+  completed: TasksLocalState['completed'],
+): TasksLocalState['completed'] {
+  if (!completed) return completed;
+  const cutoff = isoDateMinusDays(COMPLETED_RETAIN_DAYS);
+  const out: NonNullable<TasksLocalState['completed']> = {};
+  let dropped = false;
+  for (const [id, entry] of Object.entries(completed)) {
+    if (entry.completedOn >= cutoff) out[id] = entry;
+    else dropped = true;
+  }
+  if (!dropped) return completed;
+  return out;
+}
+
 // `corrupt` mirrors the same defense used in settings.ts / rhythm.ts:
 // when iCloud Drive briefly serves a 0-byte placeholder during sync, a
 // blind write would clobber the user's real schedule with an empty map.
@@ -38,6 +67,7 @@ function readStrict(): { data: TasksLocalState; corrupt: boolean } {
       doneOn: raw.doneOn ?? {},
       cache: raw.cache,
       cacheAt: raw.cacheAt,
+      completed: raw.completed,
     },
     corrupt: false,
   };
@@ -85,6 +115,7 @@ export function setTasksLocal(patch: Partial<TasksLocalState>): TasksLocalState 
     doneOn: patch.doneOn ?? cur.doneOn,
     cache: patch.cache ?? cur.cache,
     cacheAt: patch.cacheAt ?? cur.cacheAt,
+    completed: pruneCompleted(patch.completed ?? cur.completed),
   };
   // Dedupe excluding cacheAt — every TasksList poll bumps cacheAt even
   // when nothing else changed, which would otherwise echo across Macs

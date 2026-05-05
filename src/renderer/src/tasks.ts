@@ -31,6 +31,20 @@ import { fmtDate } from './dates';
 
 const PROJECT_FALLBACK_COLOR = '#5b7a8e';
 
+// Days to keep showing a checked-off task's chip on the calendar after
+// completion. The disk-side prune in tasksStore.ts uses the same constant
+// (kept independently to avoid a renderer→main import dance).
+const COMPLETED_RETAIN_DAYS = 30;
+
+function isoDateMinusDays(base: string, days: number): string {
+  const d = new Date(base + 'T00:00:00');
+  d.setDate(d.getDate() - days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export interface TasksStore {
   provider: TaskProviderInfo | null;
   // All registered providers, with `.active` set on the one currently in
@@ -94,6 +108,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
         doneOn: localState.doneOn ?? {},
         cache: localState.cache,
         cacheAt: localState.cacheAt,
+        completed: localState.completed,
       });
       if (localState.cache && localState.cache.length > 0) {
         setTasks(localState.cache);
@@ -155,6 +170,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
         doneOn: next.doneOn ?? {},
         cache: next.cache,
         cacheAt: next.cacheAt,
+        completed: next.completed,
       });
     });
     return off;
@@ -225,6 +241,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
       doneOn: next.doneOn ?? local.doneOn,
       cache: next.cache ?? local.cache,
       cacheAt: next.cacheAt ?? local.cacheAt,
+      completed: next.completed !== undefined ? next.completed : local.completed,
     };
     setLocal(merged);
     await window.ycal.tasksSetLocal(merged);
@@ -246,32 +263,56 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     const todayStr = fmtDate(today);
     const existed = local.doneOn[taskId];
     if (existed) {
-      // Reopen: clear local marker and reopen the task on Todoist.
+      // Reopen: clear local marker AND drop the kept snapshot — once the
+      // task is active again the upstream provider becomes the source of
+      // truth, and we don't want the old chip ghosting next to it.
       const nextDone = { ...local.doneOn };
       delete nextDone[taskId];
-      await persistLocal({ doneOn: nextDone });
+      const nextCompleted = { ...(local.completed ?? {}) };
+      const completedSnapshot = nextCompleted[taskId];
+      delete nextCompleted[taskId];
+      await persistLocal({ doneOn: nextDone, completed: nextCompleted });
       const res = await window.ycal.tasksReopen(taskId);
       if (!res.ok) {
         // Roll back on failure so the UI doesn't lie.
-        await persistLocal({ doneOn: { ...nextDone, [taskId]: existed } });
+        const rollbackCompleted = { ...nextCompleted };
+        if (completedSnapshot) rollbackCompleted[taskId] = completedSnapshot;
+        await persistLocal({
+          doneOn: { ...nextDone, [taskId]: existed },
+          completed: rollbackCompleted,
+        });
         setError(res.error);
       } else {
         await refresh();
       }
       return;
     }
+    // Snapshot the live task data before closing — once Todoist drops it
+    // from the active list, this is what feeds the calendar grid chip
+    // for the next 30 days.
+    const live = tasks.find((t) => t.id === taskId);
     const nextDone = { ...local.doneOn, [taskId]: todayStr };
-    await persistLocal({ doneOn: nextDone });
+    const prevCompleted = local.completed ?? {};
+    const nextCompleted = { ...prevCompleted };
+    if (live) {
+      nextCompleted[taskId] = {
+        snapshot: { ...live, scheduledAt: null, comments: [] },
+        completedOn: todayStr,
+      };
+    }
+    await persistLocal({ doneOn: nextDone, completed: nextCompleted });
     const res = await window.ycal.tasksClose(taskId);
     if (!res.ok) {
-      const rollback = { ...nextDone };
-      delete rollback[taskId];
-      await persistLocal({ doneOn: rollback });
+      const rollbackDone = { ...nextDone };
+      delete rollbackDone[taskId];
+      const rollbackCompleted = { ...nextCompleted };
+      delete rollbackCompleted[taskId];
+      await persistLocal({ doneOn: rollbackDone, completed: rollbackCompleted });
       setError(res.error);
     } else {
       await refresh();
     }
-  }, [local.doneOn, persistLocal, refresh, today]);
+  }, [local.doneOn, local.completed, tasks, persistLocal, refresh, today]);
 
   const addComment = useCallback(async (taskId: string, text: string): Promise<TaskComment | null> => {
     const res = await window.ycal.tasksAddComment(taskId, text);
@@ -289,21 +330,41 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
 
   // ── Derived state ───────────────────────────────────────────────────
 
+  const todayStr = fmtDate(today);
+  const completedCutoff = isoDateMinusDays(todayStr, COMPLETED_RETAIN_DAYS);
+
   // Hydrate `scheduledAt` onto each task from local schedule, and consider a
-  // task done if either Todoist says so OR the local marker is set.
+  // task done if either the provider says so OR the local marker is set.
+  // Then resurrect any completed snapshots whose upstream task has been
+  // dropped from the active list — they keep populating the grid for
+  // COMPLETED_RETAIN_DAYS so the user can still see what they did this month.
   const hydrated = useMemo<TaskItem[]>(() => {
-    return tasks.map((t) => {
+    const out: TaskItem[] = [];
+    const seen = new Set<string>();
+    for (const t of tasks) {
+      seen.add(t.id);
       const slot = local.scheduled[t.id] ?? null;
       const localDone = !!local.doneOn[t.id];
-      return {
+      out.push({
         ...t,
         scheduledAt: slot,
         done: t.done || localDone,
-      };
-    });
-  }, [tasks, local.scheduled, local.doneOn]);
-
-  const todayStr = fmtDate(today);
+      });
+    }
+    if (local.completed) {
+      for (const [id, entry] of Object.entries(local.completed)) {
+        if (seen.has(id)) continue;
+        if (entry.completedOn < completedCutoff) continue;
+        const slot = local.scheduled[id] ?? entry.snapshot.scheduledAt ?? null;
+        out.push({
+          ...entry.snapshot,
+          scheduledAt: slot,
+          done: true,
+        });
+      }
+    }
+    return out;
+  }, [tasks, local.scheduled, local.doneOn, local.completed, completedCutoff]);
 
   // Carryover: any undone task whose "promise date" is in the past —
   // either the local schedule slot OR a Todoist due date when there's no
@@ -335,19 +396,33 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     });
   }, [hydrated]);
 
-  // Calendar-grid chip lookup. When auto-rollover is on we hide chips for
-  // past-scheduled-undone tasks so the grid still feels "rolled over"
-  // even though the underlying slot is preserved (so the panel can keep
-  // showing the task under Overdue).
+  // Calendar-grid chip lookup. Three rules:
+  //   * Open tasks: show chip on the scheduled day, except past-scheduled
+  //     when auto-rollover is on (those surface in the panel's Overdue
+  //     bucket instead).
+  //   * Completed tasks: keep the chip visible on its original slot for
+  //     COMPLETED_RETAIN_DAYS after completion so the user has a record
+  //     of what landed when. We look at completedOn rather than the
+  //     scheduled date — a chip dropped on Monday and finished on Friday
+  //     should still show on Monday for the full retention window.
+  //   * Anything older than the cutoff falls off the grid silently.
   const scheduledById = useMemo(() => {
     const out: Record<string, { date: string; start: string }> = {};
     for (const t of hydrated) {
-      if (!t.scheduledAt || t.done) continue;
+      if (!t.scheduledAt) continue;
+      if (t.done) {
+        const completedOn = local.completed?.[t.id]?.completedOn
+          ?? local.doneOn[t.id];
+        if (!completedOn) continue;
+        if (completedOn < completedCutoff) continue;
+        out[t.id] = t.scheduledAt;
+        continue;
+      }
       if (autoRollover && t.scheduledAt.date < todayStr) continue;
       out[t.id] = t.scheduledAt;
     }
     return out;
-  }, [hydrated, autoRollover, todayStr]);
+  }, [hydrated, autoRollover, todayStr, local.completed, local.doneOn, completedCutoff]);
 
   const doneTodayIds = useMemo(() => {
     const s = new Set<string>();

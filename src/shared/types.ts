@@ -323,6 +323,11 @@ export interface TasksLocalState {
   // restart. Refreshed in the background by the Todoist client.
   cache?: TaskItem[];
   cacheAt?: string;  // ISO timestamp
+  // Snapshots of completed tasks so the calendar grid keeps showing their
+  // chips even after the upstream provider drops them from the active list.
+  // We keep these for ~30 days post-completion (see COMPLETED_RETAIN_DAYS),
+  // pruning lazily on each write.
+  completed?: Record<string, { snapshot: TaskItem; completedOn: string }>;
 }
 
 // Project node from the provider. Todoist supports nested projects up to

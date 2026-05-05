@@ -71,6 +71,28 @@ interface TreeNode {
 const PROJ_NAME_PREFIX = '__name:';
 const NULL_PROJ_KEY = '__inbox__';
 
+// Build parent → [children] index restricted to a single bucket. A child
+// only nests when its parent is also part of the bucket; otherwise the
+// child is treated as a top-level row in that bucket.
+function buildChildIndex(pool: TaskItem[]): Record<string, TaskItem[]> {
+  const ids = new Set(pool.map((t) => t.id));
+  const m: Record<string, TaskItem[]> = {};
+  for (const t of pool) {
+    if (t.parentId && ids.has(t.parentId)) {
+      (m[t.parentId] ??= []).push(t);
+    }
+  }
+  return m;
+}
+
+function collectChildIds(index: Record<string, TaskItem[]>): Set<string> {
+  const s = new Set<string>();
+  for (const arr of Object.values(index)) {
+    for (const t of arr) s.add(t.id);
+  }
+  return s;
+}
+
 function buildProjectTree(nodes: TaskProjectNode[]): TreeNode[] {
   const byId = new Map<string, TreeNode>();
   for (const n of nodes) {
@@ -168,30 +190,17 @@ export function TasksPanel(props: Props) {
     );
   }, [tasks, overdueIdSet, todayIdSet, routineIdSet]);
 
-  // Nesting: build a parent → children index across each visible bucket.
-  // A task whose parentId points to something we don't display (parent done,
-  // or parent on a hidden project) is treated as a top-level orphan so it
-  // still shows up.
-  const childrenByParent = useMemo(() => {
-    const visibleIds = new Set<string>();
-    for (const t of overdueTasks) visibleIds.add(t.id);
-    for (const t of todayTasks) visibleIds.add(t.id);
-    for (const t of projectPool) visibleIds.add(t.id);
-    const m: Record<string, TaskItem[]> = {};
-    for (const t of [...overdueTasks, ...todayTasks, ...projectPool]) {
-      if (t.parentId && visibleIds.has(t.parentId)) {
-        (m[t.parentId] ??= []).push(t);
-      }
-    }
-    return m;
-  }, [overdueTasks, todayTasks, projectPool]);
-  const childIds = useMemo(() => {
-    const s = new Set<string>();
-    for (const arr of Object.values(childrenByParent)) {
-      for (const t of arr) s.add(t.id);
-    }
-    return s;
-  }, [childrenByParent]);
+  // Nesting is *per-bucket*: a subtask only nests under its parent when both
+  // live in the same section. A subtask scheduled for today whose parent
+  // lives in a project section appears top-level in Today (not buried under
+  // the parent in some unrelated project), and the project section drops
+  // that one child rather than echoing the row twice.
+  const overdueChildren = useMemo(() => buildChildIndex(overdueTasks), [overdueTasks]);
+  const todayChildren = useMemo(() => buildChildIndex(todayTasks), [todayTasks]);
+  const projectChildren = useMemo(() => buildChildIndex(projectPool), [projectPool]);
+  const overdueChildIds = useMemo(() => collectChildIds(overdueChildren), [overdueChildren]);
+  const todayChildIds = useMemo(() => collectChildIds(todayChildren), [todayChildren]);
+  const projectChildIds = useMemo(() => collectChildIds(projectChildren), [projectChildren]);
 
   // Build the project tree we render. When the provider gave us a real
   // hierarchy (Todoist nested projects), use it. Otherwise fall back to a
@@ -214,7 +223,7 @@ export function TasksPanel(props: Props) {
     const useIds = projects.length > 0;
     const out: Record<string, TaskItem[]> = {};
     for (const t of projectPool) {
-      if (childIds.has(t.id)) continue;
+      if (projectChildIds.has(t.id)) continue;
       const key = useIds
         ? (t.projectId || NULL_PROJ_KEY)
         : (PROJ_NAME_PREFIX + t.project);
@@ -222,7 +231,7 @@ export function TasksPanel(props: Props) {
     }
     for (const k of Object.keys(out)) out[k].sort(byPriorityDesc);
     return out;
-  }, [projectPool, childIds, projects.length]);
+  }, [projectPool, projectChildIds, projects.length]);
 
   // Subtree count per node — own tasks + every descendant's. A 0 here
   // means we skip rendering that subtree entirely so empty Todoist
@@ -321,7 +330,7 @@ export function TasksPanel(props: Props) {
                       today={today}
                       projColor={color}
                       carryoverIds={carryoverIds}
-                      childrenByParent={childrenByParent}
+                      childrenByParent={projectChildren}
                       onToggleDone={onToggleDone}
                       onOpenTask={onOpenTask}
                       depth={0}
@@ -369,7 +378,7 @@ export function TasksPanel(props: Props) {
                     today={today}
                     projColor={color}
                     carryoverIds={carryoverIds}
-                    childrenByParent={childrenByParent}
+                    childrenByParent={projectChildren}
                     onToggleDone={onToggleDone}
                     onOpenTask={onOpenTask}
                     depth={0}
@@ -425,7 +434,7 @@ export function TasksPanel(props: Props) {
             </div>
             <div className="tp-stack">
               {overdueTasks.map((task) => {
-                if (childIds.has(task.id)) return null;
+                if (overdueChildIds.has(task.id)) return null;
                 const projColor = projectColor[task.project] || '#5b7a8e';
                 return (
                   <TaskTree
@@ -434,7 +443,7 @@ export function TasksPanel(props: Props) {
                     today={today}
                     projColor={projColor}
                     carryoverIds={carryoverIds}
-                    childrenByParent={childrenByParent}
+                    childrenByParent={overdueChildren}
                     onToggleDone={onToggleDone}
                     onOpenTask={onOpenTask}
                     depth={0}
@@ -454,7 +463,7 @@ export function TasksPanel(props: Props) {
             </div>
             <div className="tp-stack">
               {todayTasks.map((task) => {
-                if (childIds.has(task.id)) return null;
+                if (todayChildIds.has(task.id)) return null;
                 const projColor = projectColor[task.project] || '#5b7a8e';
                 return (
                   <TaskTree
@@ -463,7 +472,7 @@ export function TasksPanel(props: Props) {
                     today={today}
                     projColor={projColor}
                     carryoverIds={carryoverIds}
-                    childrenByParent={childrenByParent}
+                    childrenByParent={todayChildren}
                     onToggleDone={onToggleDone}
                     onOpenTask={onOpenTask}
                     depth={0}
