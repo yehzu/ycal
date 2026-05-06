@@ -131,7 +131,13 @@ export const markdownProvider: TaskProvider = {
   async addTask(input: TaskAddInput): Promise<{ id: string }> {
     ensureFileExists();
     const md = readText(FILE, '');
-    const { body, id } = appendTaskToInbox(md, input.title);
+    // Embed @YYYY-MM-DD in the title line so the markdown parser picks
+    // it up on the next read — keeps the file's syntactic invariants
+    // (everything that affects task state lives in the line itself).
+    const titleWithDue = input.due && /^\d{4}-\d{2}-\d{2}$/.test(input.due)
+      ? `${input.title} @${input.due}`
+      : input.title;
+    const { body, id } = appendTaskToInbox(md, titleWithDue);
     writeText(FILE, body);
     return { id };
   },

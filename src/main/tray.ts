@@ -1,11 +1,12 @@
 // yCal — macOS menubar tray with next-event title + lead-time notifications.
 //
 // What this gives the user:
-//   * A label on the menubar showing the next non-declined timed event,
-//     with a relative countdown ("12m · Standup") that turns into a
-//     "now (24m)" while the event is in progress.
-//   * A dropdown listing today's remaining events (and tomorrow's first
-//     few once today is empty), clickable to jump straight to Google.
+//   * A label on the menubar showing today's next non-declined timed
+//     event, with a relative countdown ("12m · Standup") that turns into
+//     "now (24m)" while the event is in progress. Once today is empty the
+//     label reads "No upcoming" — tomorrow lives in the main window.
+//   * A dropdown listing today's remaining events, clickable to jump
+//     straight to Google.
 //   * A native macOS notification N minutes before each event starts
 //     (default 5). Clicking the notification opens the event.
 //
@@ -157,13 +158,20 @@ async function fetchAgenda(): Promise<CalendarEvent[]> {
 
 function findCurrentOrNext(events: CalendarEvent[]): CalendarEvent | null {
   const now = Date.now();
+  const todayKey = new Date().toLocaleDateString();
+  // Restrict to today: an empty afternoon shouldn't make the menubar
+  // surface tomorrow morning's first meeting. "No upcoming" is the right
+  // signal — tomorrow lives in the main calendar window.
+  const onToday = events.filter(
+    (ev) => new Date(ev.start).toLocaleDateString() === todayKey,
+  );
   // Prefer "in progress right now" — it's what the user is actually in.
-  for (const ev of events) {
+  for (const ev of onToday) {
     const startMs = new Date(ev.start).getTime();
     const endMs = new Date(ev.end).getTime();
     if (startMs <= now && endMs > now) return ev;
   }
-  for (const ev of events) {
+  for (const ev of onToday) {
     if (new Date(ev.start).getTime() > now) return ev;
   }
   return null;

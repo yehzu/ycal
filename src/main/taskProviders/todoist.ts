@@ -361,10 +361,14 @@ export const todoistProvider: TaskProvider = {
     if (!key) throw new Error('Todoist API key not set.');
     const title = (input.title ?? '').trim();
     if (!title) throw new Error('Task title is required.');
-    // No project_id → Todoist routes to Inbox by default.
-    const created = await rest<{ id: string }>(key, 'POST', '/tasks', {
-      content: title,
-    });
+    // No project_id → Todoist routes to Inbox by default. due_date as
+    // YYYY-MM-DD is the date-only assignment Todoist exposes — the popup
+    // resolved @today/@tomorrow before getting here.
+    const body: Record<string, unknown> = { content: title };
+    if (input.due && /^\d{4}-\d{2}-\d{2}$/.test(input.due)) {
+      body.due_date = input.due;
+    }
+    const created = await rest<{ id: string }>(key, 'POST', '/tasks', body);
     return { id: created.id };
   },
 

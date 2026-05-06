@@ -8,15 +8,17 @@
 //
 //   #30m  #1h  #1.5h  #1h30m   duration
 //   #low  #mid  #high          energy
-//   #<anything else>           location / freeform label
+//   #<anything else>           freeform label (status / location / context)
 //   !p1 .. !p4                 priority (!p1 = highest)
-//   @today  @tomorrow          due date shortcuts
+//   @today  @tomorrow  @YYYY-MM-DD   due date
 //
 // As the user types one of the trigger chars (#, !, @) we open a small
 // dropdown with matching candidates so they don't have to remember the
-// exact spelling. Static suggestions cover the well-known categories;
-// existing locations are pulled from the cached tasks list so the user's
-// project / context labels are one keystroke away.
+// exact spelling. The user's full label library (Todoist /labels or every
+// #tag in tasks.md) leads the `#` pool so personal status/context tags
+// like `waiting` or `thinking` are one keystroke away — duration and
+// energy presets trail behind. The `@` pool is fixed (today / tomorrow);
+// any explicit YYYY-MM-DD the user types is honoured on submit.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TaskItem } from '@shared/types';
@@ -67,6 +69,42 @@ const DATE_SUGGESTIONS: Suggestion[] = [
   { value: 'tomorrow', display: '@tomorrow', hint: 'due tomorrow' },
 ];
 
+// Pull a due-date intent out of the typed title. We accept @today,
+// @tomorrow, and @YYYY-MM-DD; the first match wins, matching the
+// markdown provider's parser. Resolving to a concrete YYYY-MM-DD here
+// (rather than passing the raw token) means a popup left open across
+// midnight still files the task for the day the user *meant*.
+function extractDue(raw: string): { title: string; due?: string } {
+  const re = /(?:^|\s)@(today|tomorrow|\d{4}-\d{2}-\d{2})\b/i;
+  const m = raw.match(re);
+  if (!m) return { title: raw };
+  const tok = m[1].toLowerCase();
+  const due = tok === 'today'
+    ? isoDate(new Date())
+    : tok === 'tomorrow'
+      ? isoDate(addDays(new Date(), 1))
+      : tok;
+  // Splice out the matched chunk (including the leading whitespace it
+  // captured, so we don't leave a double space) and tidy whitespace.
+  const title = (raw.slice(0, m.index ?? 0) + raw.slice((m.index ?? 0) + m[0].length))
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { title, due };
+}
+
+function isoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function addDays(d: Date, n: number): Date {
+  const out = new Date(d);
+  out.setDate(out.getDate() + n);
+  return out;
+}
+
 // Find the tag context (trigger + partial query) immediately before the
 // caret. Returns null if the user isn't mid-tag.
 function findTagContext(title: string, caret: number): TagContext | null {
@@ -90,28 +128,38 @@ function findTagContext(title: string, caret: number): TagContext | null {
   return null;
 }
 
+// Cap on rows in the dropdown. High enough that a user with a couple
+// dozen Todoist labels can scroll their full library; the popup is
+// allowed to grow to ~600px so this still fits.
+const SUGGEST_CAP = 16;
+
 function suggestionsFor(
   ctx: TagContext,
-  locations: string[],
+  labels: string[],
 ): Suggestion[] {
   const q = ctx.query.toLowerCase();
   let pool: Suggestion[] = [];
   if (ctx.trigger === '#') {
+    // Lead with the user's own labels (status / location / context — all
+    // generic, so we mark them with a neutral "label" hint rather than
+    // mis-classifying "thinking" or "waiting" as a location). The static
+    // duration / energy chips trail behind and stay reachable by typing
+    // their first character.
     pool = [
+      ...labels.map((name) => ({
+        value: name,
+        display: `#${name}`,
+        hint: 'label',
+      })),
       ...DURATION_SUGGESTIONS,
       ...ENERGY_SUGGESTIONS,
-      ...locations.map((loc) => ({
-        value: loc,
-        display: `#${loc}`,
-        hint: 'location',
-      })),
     ];
   } else if (ctx.trigger === '!') {
     pool = PRIORITY_SUGGESTIONS;
   } else if (ctx.trigger === '@') {
     pool = DATE_SUGGESTIONS;
   }
-  if (!q) return pool.slice(0, 8);
+  if (!q) return pool.slice(0, SUGGEST_CAP);
   // Prefix matches first, then substring. De-dupe by value.
   const seen = new Set<string>();
   const prefix: Suggestion[] = [];
@@ -122,7 +170,7 @@ function suggestionsFor(
     if (v.startsWith(q)) { prefix.push(s); seen.add(s.value); }
     else if (v.includes(q)) { contains.push(s); seen.add(s.value); }
   }
-  return [...prefix, ...contains].slice(0, 8);
+  return [...prefix, ...contains].slice(0, SUGGEST_CAP);
 }
 
 export function QuickAdd(): JSX.Element {
@@ -130,7 +178,7 @@ export function QuickAdd(): JSX.Element {
   const [providerLabel, setProviderLabel] = useState<string>('Quick add task');
   const [caret, setCaret] = useState(0);
   const [activeIdx, setActiveIdx] = useState(0);
-  const [locations, setLocations] = useState<string[]>([]);
+  const [labels, setLabels] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   // Focus the input on mount; an alwaysOnTop window doesn't always pull
@@ -150,17 +198,20 @@ export function QuickAdd(): JSX.Element {
     return () => { cancelled = true; };
   }, []);
 
-  // Pull location labels from three sources, in priority order:
+  // Pull labels from three sources, in priority order:
   //   1. User-defined tags from Settings → Tasks → Quick-add suggestions.
   //   2. Provider's full label library (Todoist /labels, or every #tag in
-  //      tasks.md). Catches labels the user has defined but hasn't yet
-  //      attached to any open task.
+  //      tasks.md). This is the canonical pool — every label the user has
+  //      defined, regardless of whether any open task currently carries it.
   //   3. Locations on cached tasks (fallback when /labels errors).
   // Reserved tokens (durations / energies) are stripped because they have
-  // their own dedicated suggestion lists higher in the menu. The function
-  // is re-runnable so the persistent popup can refresh its pool on each
+  // their own dedicated suggestion lists higher in the menu. Spaces are
+  // normalised to underscores so a free-form Todoist label like "Deep
+  // Work" survives the tag-shape check (Todoist permits spaces; yCal's
+  // markdown grammar doesn't, hence the rewrite). The function is
+  // re-runnable so the persistent popup can refresh its pool on each
   // chord — labels added to Todoist mid-session still show up.
-  const refreshLocations = useCallback(async () => {
+  const refreshLabels = useCallback(async () => {
     const [ui, local, labelsRes] = await Promise.all([
       window.ycal.getUiSettings(),
       window.ycal.tasksGetLocal(),
@@ -171,7 +222,7 @@ export function QuickAdd(): JSX.Element {
     const seen = new Set<string>();
     const out: string[] = [];
     const push = (raw: string): void => {
-      const t = raw.trim();
+      const t = raw.trim().replace(/\s+/g, '_');
       if (!t || !tagPattern.test(t) || reserved.test(t) || seen.has(t)) return;
       seen.add(t);
       out.push(t);
@@ -184,10 +235,10 @@ export function QuickAdd(): JSX.Element {
     for (const t of cache) {
       if (t.location) push(t.location);
     }
-    setLocations(out);
+    setLabels(out);
   }, []);
 
-  useEffect(() => { void refreshLocations(); }, [refreshLocations]);
+  useEffect(() => { void refreshLabels(); }, [refreshLabels]);
 
   // Persistent popup: every chord re-shows the same window, so the
   // renderer needs to reset its input + caret + suggestion state and
@@ -199,7 +250,7 @@ export function QuickAdd(): JSX.Element {
       setTitle('');
       setCaret(0);
       setActiveIdx(0);
-      void refreshLocations();
+      void refreshLabels();
       // Refocus the input on the next paint — the show() call from main
       // beats React's state flush, and the input may have been blurred
       // when the previous chord hid the window.
@@ -208,15 +259,15 @@ export function QuickAdd(): JSX.Element {
         inputRef.current?.setSelectionRange(0, 0);
       });
     });
-  }, [refreshLocations]);
+  }, [refreshLabels]);
 
   const tagCtx = useMemo(
     () => findTagContext(title, caret),
     [title, caret],
   );
   const suggestions = useMemo(
-    () => (tagCtx ? suggestionsFor(tagCtx, locations) : []),
-    [tagCtx, locations],
+    () => (tagCtx ? suggestionsFor(tagCtx, labels) : []),
+    [tagCtx, labels],
   );
   const showSuggestions = suggestions.length > 0;
 
@@ -259,11 +310,16 @@ export function QuickAdd(): JSX.Element {
   function submit(): void {
     const t = title.trim();
     if (!t) return;
+    // Resolve @today / @tomorrow / @YYYY-MM-DD into a due date so the
+    // provider gets a real assigned-day field instead of treating the
+    // token as a label tag (Todoist's @x syntax is its label sigil).
+    const { title: cleanTitle, due } = extractDue(t);
+    if (!cleanTitle) return;
     // Fire-and-forget: don't await the provider's network call before
     // dismissing the popup. The user gets instant Enter→close so the
     // chord feels native; the main process surfaces a system notification
     // if the upstream add later fails.
-    void window.ycal.tasksAdd({ title: t });
+    void window.ycal.tasksAdd({ title: cleanTitle, due });
     void window.ycal.closeWindow();
   }
 

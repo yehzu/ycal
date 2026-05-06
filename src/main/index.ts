@@ -370,7 +370,7 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
-  ipcMain.handle(IPC.TasksAdd, async (_e, input: { title: string }) => {
+  ipcMain.handle(IPC.TasksAdd, async (_e, input: { title: string; due?: string }) => {
     try {
       const provider = getActiveProvider();
       const created = await provider.addTask(input);

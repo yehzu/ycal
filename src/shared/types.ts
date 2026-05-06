@@ -342,12 +342,17 @@ export interface TaskProjectNode {
   childOrder: number;
 }
 
-// Input for adding a task. Quick-add only carries the title for now —
-// projects, due dates, etc. live in the panel UI. Both providers are
-// expected to accept this shape and route the task to the user's Inbox /
-// default project.
+// Input for adding a task. Quick-add carries the title plus an optional
+// due date (resolved YYYY-MM-DD by the popup so providers don't have to
+// re-interpret "today"/"tomorrow" against shifting clocks). Both providers
+// route the task to the user's Inbox / default project.
 export interface TaskAddInput {
   title: string;
+  // ISO date YYYY-MM-DD. Set when the user typed @today / @tomorrow /
+  // @YYYY-MM-DD in the quick-add popup. Providers translate to their
+  // native due-date field — Todoist's `due_date`, markdown's `@<date>`
+  // token. Without it, no due is set.
+  due?: string;
 }
 
 // Result of a Todoist fetch — note it returns ALL tasks regardless of

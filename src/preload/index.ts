@@ -67,7 +67,7 @@ const api = {
   tasksReopen: (taskId: string): Promise<Result<{}>> => ipcRenderer.invoke(IPC.TasksReopen, taskId),
   tasksAddComment: (taskId: string, text: string): Promise<Result<{ comment: TaskComment }>> =>
     ipcRenderer.invoke(IPC.TasksAddComment, taskId, text),
-  tasksAdd: (input: { title: string }): Promise<Result<{ id: string }>> =>
+  tasksAdd: (input: { title: string; due?: string }): Promise<Result<{ id: string }>> =>
     ipcRenderer.invoke(IPC.TasksAdd, input),
   tasksListLabels: (): Promise<Result<{ labels: string[] }>> =>
     ipcRenderer.invoke(IPC.TasksListLabels),
