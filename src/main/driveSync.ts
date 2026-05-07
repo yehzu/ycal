@@ -21,7 +21,7 @@ import type { BrowserWindow } from 'electron';
 import { authClientForAccount } from './auth';
 import { getAccount } from './tokenStore';
 import {
-  CLOUD_FILES, onCloudFileChange, readRaw, writeJson, writeText,
+  CLOUD_FILES, onCloudFileChange, onCloudFileWrite, readRaw, writeJson, writeText,
 } from './cloudStore';
 import {
   getDriveSyncAccountId, getDriveSyncEnabled,
@@ -46,21 +46,29 @@ const PULL_INTERVAL_MS = 5 * 60 * 1000;
 export function startDriveSync(window: BrowserWindow): void {
   win = window;
 
-  // Watch local changes. The cloudStore watcher fires whenever a synced
-  // file's bytes change on disk — from a local edit, from iCloud
-  // delivering a change from another Mac, OR from us writing a remote
-  // pull through cloudStore.writeJson. The lastSeen check below tells
-  // those apart.
-  onCloudFileChange((filename, body) => {
+  // Two sources of "this file's bytes changed and we should consider
+  // pushing to Drive":
+  //   1. onCloudFileChange — cloudStore's poll-watcher firing because
+  //      iCloud delivered an edit from another Mac. The watcher only
+  //      fires when the on-disk body differs from cloudStore's lastSeen
+  //      (which is what makes it cross-Mac specific).
+  //   2. onCloudFileWrite — every successful local writeAtomic. This
+  //      is what catches drag-to-schedule, settings toggles, etc. on
+  //      THIS Mac. The watcher would otherwise miss these because
+  //      cloudStore.lastSeen is updated synchronously inside
+  //      writeAtomic, so the watcher's next poll sees no diff.
+  //
+  // Both routes funnel through the same dedup-and-debounce push trigger.
+  // driveSync's own per-filename `lastSeen` tracks what we last sent to
+  // Drive — equality means "we already pushed this, skip".
+  const queuePush = (filename: string, body: string): void => {
     if (!isOurFile(filename)) return;
     if (!getDriveSyncEnabled()) return;
-    if (lastSeen.get(filename) === body) {
-      // We just wrote this body via a Drive pull; cloudStore's watcher
-      // is reflecting it back. Don't push it back to Drive.
-      return;
-    }
+    if (lastSeen.get(filename) === body) return; // already on Drive
     schedulePush(filename, body);
-  });
+  };
+  onCloudFileChange(queuePush);
+  onCloudFileWrite(queuePush);
 
   // Initial pull on boot, plus a periodic catch-up. Failures don't kill
   // the timer — they just surface in the status panel until the next

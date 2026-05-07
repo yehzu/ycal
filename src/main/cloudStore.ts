@@ -185,6 +185,17 @@ function writeAtomic(filename: string, body: string): void {
       writeFileSync(tmp, body, 'utf-8');
       renameSync(tmp, p);
       lastSeen.set(filename, body);
+      // Notify any local-write subscribers (e.g. driveSync's push
+      // debouncer). Without this, the file watcher misses local writes
+      // because its diff check sees lastSeen has already been updated
+      // by the line above. The watcher continues to be the right hook
+      // for REMOTE iCloud-delivered changes; this hook is for LOCAL
+      // ones (drag-to-schedule, settings toggle, etc.).
+      for (const h of writeHandlers) {
+        try { h(filename, body); } catch (e) {
+          console.error('[yCal] cloud file write handler error', e);
+        }
+      }
       return;
     } catch (e) {
       lastErr = e;
@@ -290,12 +301,26 @@ export const CLOUD_FILES = [
 
 type CloudFileHandler = (filename: string, body: string) => void;
 const handlers = new Set<CloudFileHandler>();
+/// Subscribers notified after a successful LOCAL writeAtomic (e.g. for
+/// driveSync's push trigger). Separate from `handlers`, which fires for
+/// REMOTE changes detected by the file watcher. Loop prevention: the
+/// dedup gate at the top of writeAtomic ensures handlers only fire when
+/// the body actually differs from the last-known on-disk body.
+const writeHandlers = new Set<CloudFileHandler>();
 
 let watchedDir: string | null = null;
 
 export function onCloudFileChange(handler: CloudFileHandler): () => void {
   handlers.add(handler);
   return () => { handlers.delete(handler); };
+}
+
+/// Subscribe to local-write notifications. Fires immediately after a
+/// cloudStore.writeJson / writeText that produced a content change (the
+/// dedup gate gates this, so a no-op write doesn't re-trigger).
+export function onCloudFileWrite(handler: CloudFileHandler): () => void {
+  writeHandlers.add(handler);
+  return () => { writeHandlers.delete(handler); };
 }
 
 function pollListener(filename: string): () => void {
