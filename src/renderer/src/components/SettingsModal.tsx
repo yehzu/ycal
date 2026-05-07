@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import type {
-  AccountSummary, CalendarSummary, CloudStorageInfo, LoadBands, LoadWindowSettings,
+  AccountSummary, CalendarSummary, CloudStorageInfo, DriveSyncStatus,
+  LoadBands, LoadWindowSettings,
   MergeCriteria, RhythmData, TaskProviderInfo, TempUnits, UpdateStatus,
 } from '@shared/types';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
@@ -61,6 +62,12 @@ interface Props {
   // Cloud storage (rhythm + tasks schedule)
   cloudStorage: CloudStorageInfo | null;
   setCloudStorage: (pref: 'icloud' | 'local') => Promise<void>;
+  // Drive sync (cross-device with iOS yCal)
+  driveSync: DriveSyncStatus | null;
+  setDriveSyncEnabled: (v: boolean) => Promise<void>;
+  setDriveSyncAccount: (accountId: string | null) => Promise<void>;
+  driveSyncPushNow: () => Promise<void>;
+  driveSyncPullNow: () => Promise<void>;
 }
 
 const TABS: Array<{ id: TabId; label: string }> = [
@@ -200,6 +207,12 @@ export function SettingsModal(props: Props) {
               <PrefsSync
                 storage={props.cloudStorage}
                 setStorage={props.setCloudStorage}
+                accounts={props.accounts}
+                driveSync={props.driveSync}
+                setDriveSyncEnabled={props.setDriveSyncEnabled}
+                setDriveSyncAccount={props.setDriveSyncAccount}
+                driveSyncPushNow={props.driveSyncPushNow}
+                driveSyncPullNow={props.driveSyncPullNow}
               />
             )}
             {tab === 'shortcuts' && <PrefsShortcuts />}
@@ -1236,58 +1249,154 @@ function PrefsRhythm({
 
 function PrefsSync({
   storage, setStorage,
+  accounts, driveSync,
+  setDriveSyncEnabled, setDriveSyncAccount,
+  driveSyncPushNow, driveSyncPullNow,
 }: {
   storage: CloudStorageInfo | null;
   setStorage: (pref: 'icloud' | 'local') => Promise<void>;
+  accounts: AccountSummary[];
+  driveSync: DriveSyncStatus | null;
+  setDriveSyncEnabled: (v: boolean) => Promise<void>;
+  setDriveSyncAccount: (accountId: string | null) => Promise<void>;
+  driveSyncPushNow: () => Promise<void>;
+  driveSyncPullNow: () => Promise<void>;
 }) {
   return (
-    <div className="pref-section">
-      <h3 className="pref-h">Storage location</h3>
-      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
-        These files travel with the toggle below: <code>rhythm.json</code>{' '}
-        (wake/sleep defaults + per-day overrides) and{' '}
-        <code>tasks-schedule.json</code> (which calendar slot you dropped
-        each task into, plus the per-task &ldquo;done today&rdquo; mirror).
-        OAuth tokens stay in the local Keychain on each machine — they
-        don&apos;t move.
-      </p>
-      <PrefRow
-        label="Storage"
-        hint={
-          storage?.icloudAvailable
-            ? 'iCloud Drive mirrors yCal data across your Macs.'
-            : 'iCloud Drive is not available on this machine.'
-        }
-      >
-        <PrefSegmented<'local' | 'icloud'>
-          value={storage?.preferred ?? 'local'}
-          options={[
-            { value: 'local', label: 'Local' },
-            { value: 'icloud', label: 'iCloud Drive' },
-          ]}
-          onChange={(v) => void setStorage(v)}
-        />
-      </PrefRow>
-      {storage && (
-        <div className="pref-note" style={{ wordBreak: 'break-all' }}>
-          Folder: <code>{storage.dir}</code>
-          {storage.preferred === 'icloud' && storage.effective !== 'icloud' && (
-            <>
-              <br />
-              <strong>Falling back to local</strong> — iCloud Drive
-              folder isn&apos;t available right now. Files will move
-              automatically once it is.
-            </>
-          )}
+    <>
+      <div className="pref-section">
+        <h3 className="pref-h">Storage location</h3>
+        <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+          These files travel with the toggle below: <code>rhythm.json</code>{' '}
+          (wake/sleep defaults + per-day overrides) and{' '}
+          <code>tasks-schedule.json</code> (which calendar slot you dropped
+          each task into, plus the per-task &ldquo;done today&rdquo; mirror).
+          OAuth tokens stay in the local Keychain on each machine — they
+          don&apos;t move.
+        </p>
+        <PrefRow
+          label="Storage"
+          hint={
+            storage?.icloudAvailable
+              ? 'iCloud Drive mirrors yCal data across your Macs.'
+              : 'iCloud Drive is not available on this machine.'
+          }
+        >
+          <PrefSegmented<'local' | 'icloud'>
+            value={storage?.preferred ?? 'local'}
+            options={[
+              { value: 'local', label: 'Local' },
+              { value: 'icloud', label: 'iCloud Drive' },
+            ]}
+            onChange={(v) => void setStorage(v)}
+          />
+        </PrefRow>
+        {storage && (
+          <div className="pref-note" style={{ wordBreak: 'break-all' }}>
+            Folder: <code>{storage.dir}</code>
+            {storage.preferred === 'icloud' && storage.effective !== 'icloud' && (
+              <>
+                <br />
+                <strong>Falling back to local</strong> — iCloud Drive
+                folder isn&apos;t available right now. Files will move
+                automatically once it is.
+              </>
+            )}
+          </div>
+        )}
+        <div className="pref-note">
+          Switching storage copies the existing files to the new location;
+          the old file stays put as a one-shot backup so a botched move can
+          be undone by hand.
         </div>
-      )}
-      <div className="pref-note">
-        Switching storage copies the existing files to the new location;
-        the old file stays put as a one-shot backup so a botched move can
-        be undone by hand.
       </div>
-    </div>
+
+      <div className="pref-section">
+        <h3 className="pref-h">Cross-device sync · Google Drive</h3>
+        <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+          Mirrors the same four files (<code>rhythm.json</code>,{' '}
+          <code>tasks-schedule.json</code>, <code>settings.json</code>,{' '}
+          <code>tasks.md</code>) through Google Drive&apos;s hidden{' '}
+          <em>appdata</em> folder so iOS yCal sees the same state. Layered
+          on top of the storage choice above — works alongside iCloud.
+          Existing Google accounts authorized before yCal grew the{' '}
+          <code>drive.appdata</code> scope must be removed and re-added once
+          for sync to engage.
+        </p>
+        <PrefRow
+          label="Enable Drive sync"
+          hint="Auto-pushes local edits and pulls remote ones every 5 min."
+        >
+          <PrefSwitch
+            value={driveSync?.enabled ?? false}
+            onChange={(v) => void setDriveSyncEnabled(v)}
+          />
+        </PrefRow>
+        {driveSync?.enabled && (
+          <>
+            <PrefRow
+              label="Sync account"
+              hint="Drive's appdata is per-Google-account; the iPhone uses the same Cloud project so picking any account that's connected on both devices works."
+            >
+              <select
+                className="pref-select"
+                value={driveSync.accountId ?? ''}
+                onChange={(e) => void setDriveSyncAccount(e.target.value || null)}
+              >
+                <option value="">— select account —</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.email}</option>
+                ))}
+              </select>
+            </PrefRow>
+            <PrefRow label="Manual sync" hint="Use after a reconnect to seed Drive with current state.">
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="pref-btn"
+                  onClick={() => void driveSyncPushNow()}
+                  disabled={!driveSync.accountId || driveSync.state === 'syncing'}
+                >
+                  PUSH NOW
+                </button>
+                <button
+                  className="pref-btn"
+                  onClick={() => void driveSyncPullNow()}
+                  disabled={!driveSync.accountId || driveSync.state === 'syncing'}
+                >
+                  PULL NOW
+                </button>
+              </div>
+            </PrefRow>
+            <PrefRow label="Status">
+              <span className="pref-row-hint">
+                {driveSync.state === 'syncing' && 'Syncing…'}
+                {driveSync.state === 'idle' && (
+                  driveSync.lastPushedAt || driveSync.lastPulledAt
+                    ? `Last sync ${formatRelativeTime(Math.max(
+                        driveSync.lastPushedAt ?? 0,
+                        driveSync.lastPulledAt ?? 0,
+                      ))}`
+                    : 'Idle'
+                )}
+                {driveSync.state === 'error' && (
+                  <span style={{ color: '#d50000' }}>{driveSync.lastError}</span>
+                )}
+              </span>
+            </PrefRow>
+          </>
+        )}
+      </div>
+    </>
   );
+}
+
+function formatRelativeTime(epochMs: number): string {
+  if (!epochMs) return 'never';
+  const diff = Date.now() - epochMs;
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return new Date(epochMs).toLocaleString();
 }
 
 function LoadWindowEditor({

@@ -9,6 +9,12 @@ import { upsertAccount, type StoredAccount } from './tokenStore';
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/calendar.events.readonly',
+  // appdata = a hidden per-app folder Google Drive provides; nothing here
+  // is visible at drive.google.com. Used by Drive sync to round-trip
+  // rhythm.json / tasks-schedule.json / settings.json / tasks.md across
+  // Macs + iPhone. Existing accounts authorized before this scope was
+  // added will need to be removed + re-added for sync to work.
+  'https://www.googleapis.com/auth/drive.appdata',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
   'openid',

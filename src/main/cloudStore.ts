@@ -218,6 +218,22 @@ export function readText(filename: string, fallback: string): string {
   }
 }
 
+/// Raw body bytes if the file exists; null otherwise. Used by Drive sync
+/// to push the *current* on-disk state without re-encoding through the
+/// JSON / settings layer (which would risk format drift between push and
+/// what the file actually contains).
+export function readRaw(filename: string): string | null {
+  const { path: p } = pathFor(filename);
+  if (!existsSync(p)) return null;
+  try {
+    const body = readFileSync(p, 'utf-8');
+    lastSeen.set(filename, body);
+    return body;
+  } catch {
+    return null;
+  }
+}
+
 export function writeText(filename: string, body: string): void {
   writeAtomic(filename, body);
 }

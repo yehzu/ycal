@@ -17,9 +17,20 @@ import type { CloudStorage } from '@shared/types';
 
 interface DeviceState {
   cloudStorage: CloudStorage;
+  /// Cross-device Drive sync (separate from the iCloud / local choice).
+  /// When enabled, the synced files round-trip through Google Drive's
+  /// hidden appdata folder so a user with iOS yCal sees the same state.
+  /// Drive sync is ADDITIVE — works alongside iCloud for users who want
+  /// both Mac↔Mac (iCloud) and Mac↔iPhone (Drive) sync.
+  driveSyncEnabled?: boolean;
+  driveSyncAccountId?: string | null;
 }
 
-const DEFAULTS: DeviceState = { cloudStorage: 'local' };
+const DEFAULTS: DeviceState = {
+  cloudStorage: 'local',
+  driveSyncEnabled: false,
+  driveSyncAccountId: null,
+};
 
 const FILE = (): string => path.join(app.getPath('userData'), 'device.json');
 
@@ -30,6 +41,9 @@ function read(): DeviceState {
     const parsed = JSON.parse(readFileSync(f, 'utf-8')) as Partial<DeviceState>;
     return {
       cloudStorage: parsed.cloudStorage === 'icloud' ? 'icloud' : 'local',
+      driveSyncEnabled: !!parsed.driveSyncEnabled,
+      driveSyncAccountId: typeof parsed.driveSyncAccountId === 'string'
+        ? parsed.driveSyncAccountId : null,
     };
   } catch {
     return { ...DEFAULTS };
@@ -50,6 +64,26 @@ export function setCloudStoragePref(pref: CloudStorage): void {
   const cur = read();
   if (cur.cloudStorage === pref) return;
   write({ ...cur, cloudStorage: pref });
+}
+
+export function getDriveSyncEnabled(): boolean {
+  return read().driveSyncEnabled === true;
+}
+
+export function setDriveSyncEnabled(enabled: boolean): void {
+  const cur = read();
+  if (cur.driveSyncEnabled === enabled) return;
+  write({ ...cur, driveSyncEnabled: enabled });
+}
+
+export function getDriveSyncAccountId(): string | null {
+  return read().driveSyncAccountId ?? null;
+}
+
+export function setDriveSyncAccountId(accountId: string | null): void {
+  const cur = read();
+  if ((cur.driveSyncAccountId ?? null) === accountId) return;
+  write({ ...cur, driveSyncAccountId: accountId });
 }
 
 // One-shot: when upgrading from a build that wrote `cloudStorage` into

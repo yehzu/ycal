@@ -421,6 +421,19 @@ export interface CloudStorageInfo {
   icloudAvailable: boolean;
 }
 
+/// Status of cross-device Drive sync. Mirrors what iOS DriveSyncStore
+/// surfaces so the desktop and iOS panels can read consistently. Drive
+/// sync is layered on top of cloudStore — files still live on disk per
+/// cloudStorage, this struct just describes the round-trip with Drive.
+export interface DriveSyncStatus {
+  enabled: boolean;
+  accountId: string | null;
+  state: 'idle' | 'syncing' | 'error';
+  lastError: string | null;
+  lastPushedAt: number | null;   // epoch ms
+  lastPulledAt: number | null;
+}
+
 // IPC channel names — typed once, shared.
 export const IPC = {
   AddAccount: 'ycal:addAccount',
@@ -469,6 +482,15 @@ export const IPC = {
   // Cloud (iCloud / local) — covers rhythm + task schedule + future files.
   CloudGetStorageInfo: 'ycal:cloudGetStorageInfo',
   CloudSetStorage: 'ycal:cloudSetStorage',
+  // Cross-device sync via Google Drive's appdata folder. Layered on top
+  // of cloudStore so users can keep iCloud (Mac↔Mac) AND Drive (Mac↔
+  // iPhone) sync at once. See main/driveSync.ts.
+  DriveSyncGetStatus: 'ycal:driveSyncGetStatus',
+  DriveSyncSetEnabled: 'ycal:driveSyncSetEnabled',
+  DriveSyncSetAccount: 'ycal:driveSyncSetAccount',
+  DriveSyncPushNow: 'ycal:driveSyncPushNow',
+  DriveSyncPullNow: 'ycal:driveSyncPullNow',
+  DriveSyncStatusChanged: 'ycal:driveSyncStatusChanged',  // main → renderer push
   // Cross-device sync — main → renderer pushes when a synced file changes
   // on disk (typically because iCloud Drive just delivered an edit from
   // another Mac). Payload is the new state for the affected slice; the

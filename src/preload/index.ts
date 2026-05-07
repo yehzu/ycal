@@ -6,6 +6,7 @@ import type {
   CalendarEvent,
   CloudStorage,
   CloudStorageInfo,
+  DriveSyncStatus,
   GoogleColors,
   ListEventsRequest,
   RhythmData,
@@ -91,6 +92,25 @@ const api = {
   cloudGetStorageInfo: (): Promise<CloudStorageInfo> => ipcRenderer.invoke(IPC.CloudGetStorageInfo),
   cloudSetStorage: (pref: CloudStorage): Promise<Result<{ info: CloudStorageInfo }>> =>
     ipcRenderer.invoke(IPC.CloudSetStorage, pref),
+
+  // Cross-device sync via Google Drive's appdata folder. Layered on
+  // top of cloudStore — see main/driveSync.ts.
+  driveSyncGetStatus: (): Promise<DriveSyncStatus> =>
+    ipcRenderer.invoke(IPC.DriveSyncGetStatus),
+  driveSyncSetEnabled: (enabled: boolean): Promise<DriveSyncStatus> =>
+    ipcRenderer.invoke(IPC.DriveSyncSetEnabled, enabled),
+  driveSyncSetAccount: (accountId: string | null): Promise<DriveSyncStatus> =>
+    ipcRenderer.invoke(IPC.DriveSyncSetAccount, accountId),
+  driveSyncPushNow: (): Promise<Result<{ status: DriveSyncStatus }>> =>
+    ipcRenderer.invoke(IPC.DriveSyncPushNow),
+  driveSyncPullNow: (): Promise<Result<{ status: DriveSyncStatus }>> =>
+    ipcRenderer.invoke(IPC.DriveSyncPullNow),
+  onDriveSyncStatusChanged: (handler: (next: DriveSyncStatus) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: DriveSyncStatus): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.DriveSyncStatusChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.DriveSyncStatusChanged, listener);
+  },
 
   // Cross-device push events. Each subscribes to a main → renderer push
   // channel and returns an unsubscribe fn. Fires when iCloud Drive

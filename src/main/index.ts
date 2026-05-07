@@ -33,6 +33,14 @@ import {
   setStorage, startCloudWatcher,
 } from './cloudStore';
 import {
+  getStatus as driveSyncGetStatus,
+  setEnabled as driveSyncSetEnabled,
+  setAccount as driveSyncSetAccount,
+  pushAllNow as driveSyncPushAllNow,
+  pullAllNow as driveSyncPullAllNow,
+  startDriveSync,
+} from './driveSync';
+import {
   getActiveProvider, getActiveProviderInfo, listProviders, revealMarkdownFile,
   setActiveProvider,
 } from './taskProviders';
@@ -487,6 +495,31 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // ── Drive sync (cross-device with iOS) ────────────────────────────
+  ipcMain.handle(IPC.DriveSyncGetStatus, () => driveSyncGetStatus());
+  ipcMain.handle(IPC.DriveSyncSetEnabled, (_e, enabled: boolean) =>
+    driveSyncSetEnabled(!!enabled),
+  );
+  ipcMain.handle(IPC.DriveSyncSetAccount, (_e, accountId: string | null) =>
+    driveSyncSetAccount(accountId ?? null),
+  );
+  ipcMain.handle(IPC.DriveSyncPushNow, async () => {
+    try {
+      await driveSyncPushAllNow();
+      return { ok: true as const, status: driveSyncGetStatus() };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.DriveSyncPullNow, async () => {
+    try {
+      await driveSyncPullAllNow();
+      return { ok: true as const, status: driveSyncGetStatus() };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
 }
 
 if (isCliInvocation(process.argv)) {
@@ -569,6 +602,9 @@ if (isCliInvocation(process.argv)) {
       }
       try { startCloudSync(win); } catch (e) {
         console.error('[yCal] cloud sync setup failed', e);
+      }
+      try { startDriveSync(win); } catch (e) {
+        console.error('[yCal] drive sync setup failed', e);
       }
     });
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  CalendarEvent, CloudStorageInfo, LoadBands, LoadWindowSettings,
+  CalendarEvent, CloudStorageInfo, DriveSyncStatus, LoadBands, LoadWindowSettings,
   MergeCriteria, RhythmData, TempUnits, UiSettings,
 } from '@shared/types';
 import {
@@ -164,10 +164,17 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   // ── Day rhythm + cloud storage state ──────────────────────────────
   const [rhythmData, setRhythmData] = useState<RhythmData | null>(null);
   const [cloudStorage, setCloudStorageInfo] = useState<CloudStorageInfo | null>(null);
+  const [driveSync, setDriveSync] = useState<DriveSyncStatus | null>(null);
 
   useEffect(() => {
     void window.ycal.rhythmGet().then(setRhythmData);
     void window.ycal.cloudGetStorageInfo().then(setCloudStorageInfo);
+    void window.ycal.driveSyncGetStatus().then(setDriveSync);
+  }, []);
+
+  useEffect(() => {
+    const off = window.ycal.onDriveSyncStatusChanged(setDriveSync);
+    return off;
   }, []);
 
   // Cross-device sync: live-apply remote rhythm + settings edits. The
@@ -231,6 +238,33 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       // The tasks store internally re-fetches via its own hooks on next
       // refresh; trigger one so the panel reflects the move.
       void tasks.refresh();
+    }
+  }, []);
+
+  // ── Drive sync action callbacks ────────────────────────────────────
+  const setDriveSyncEnabled = useCallback(async (v: boolean) => {
+    const next = await window.ycal.driveSyncSetEnabled(v);
+    setDriveSync(next);
+  }, []);
+  const setDriveSyncAccount = useCallback(async (accountId: string | null) => {
+    const next = await window.ycal.driveSyncSetAccount(accountId);
+    setDriveSync(next);
+  }, []);
+  const driveSyncPushNow = useCallback(async () => {
+    const res = await window.ycal.driveSyncPushNow();
+    if (res.ok) setDriveSync(res.status);
+  }, []);
+  const driveSyncPullNow = useCallback(async () => {
+    const res = await window.ycal.driveSyncPullNow();
+    if (res.ok) {
+      setDriveSync(res.status);
+      // A successful pull may have rewritten rhythm.json / settings.json on
+      // disk; the cloudStore watcher already broadcasts SettingsChanged /
+      // RhythmChanged for those, but explicitly re-pull tasks-local since
+      // its push channel is keyed off TasksLocalChanged.
+      void tasks.refresh();
+      const data = await window.ycal.rhythmGet();
+      setRhythmData(data);
     }
   }, []);
 
@@ -830,6 +864,11 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setRhythmDefault={setRhythmDefault}
           cloudStorage={cloudStorage}
           setCloudStorage={setCloudStorage}
+          driveSync={driveSync}
+          setDriveSyncEnabled={setDriveSyncEnabled}
+          setDriveSyncAccount={setDriveSyncAccount}
+          driveSyncPushNow={driveSyncPushNow}
+          driveSyncPullNow={driveSyncPullNow}
         />
       )}
 
