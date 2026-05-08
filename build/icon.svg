@@ -1,31 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fdf8eb"/>
-      <stop offset="0.7" stop-color="#f4ead2"/>
-      <stop offset="1" stop-color="#ecdfbe"/>
+      <stop offset="0" stop-color="#f5f1e8"></stop>
+      <stop offset="1" stop-color="#e9e2d2"></stop>
     </linearGradient>
-    <radialGradient id="hl" cx="50%" cy="0%" r="60%">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
-      <stop offset="0.7" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-    <!-- Apple icon-grid: 824x824 squircle inside 1024 canvas (~80%) -->
-    <clipPath id="squircle">
-      <rect x="100" y="100" width="824" height="824" rx="184" ry="184"/>
-    </clipPath>
+    <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="229" ry="229"></rect></clipPath>
   </defs>
-
-  <g clip-path="url(#squircle)">
-    <rect x="100" y="100" width="824" height="824" fill="url(#bg)"/>
-    <rect x="100" y="100" width="824" height="824" fill="url(#hl)"/>
-
-    <!-- Italic Y in tomato — sized to match iOS internal ratio (~55% of squircle) -->
-    <text x="512" y="679" text-anchor="middle"
-          font-family="'Playfair Display','Times New Roman',Georgia,serif"
-          font-style="italic" font-weight="800" font-size="450"
-          fill="#c33824">Y</text>
-
-    <!-- Hairline editorial rule -->
-    <line x1="401" y1="800" x2="623" y2="800" stroke="#9b2a18" stroke-width="4"/>
+  <g clip-path="url(#sq)">
+    <rect width="1024" height="1024" fill="url(#bg)"></rect>
+    <circle cx="512" cy="512" r="320" fill="none" stroke="#15171a" stroke-width="3"></circle>
+    <circle cx="512" cy="512" r="180" fill="none" stroke="#15171a" stroke-width="1.2" opacity="0.3"></circle>
+    <circle cx="512" cy="512" r="6" fill="#15171a" opacity="0.85"></circle>
+    <circle cx="352.00" cy="789.13" r="38" fill="#d9614e"></circle>
   </g>
 </svg>
