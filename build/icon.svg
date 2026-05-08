@@ -5,10 +5,10 @@
       <stop offset="1" stop-color="#e9e2d2"/>
     </linearGradient>
     <clipPath id="sq">
-      <rect x="100" y="100" width="824" height="824" rx="184" ry="184"/>
+      <rect x="42" y="42" width="940" height="940" rx="210" ry="210"/>
     </clipPath>
   </defs>
-  <g clip-path="url(#sq)" transform="translate(100 100) scale(0.8047)">
+  <g clip-path="url(#sq)" transform="translate(42 42) scale(0.918)">
     <rect width="1024" height="1024" fill="url(#bg)"/>
     <circle cx="512" cy="512" r="320" fill="none" stroke="#15171a" stroke-width="3"/>
     <circle cx="512" cy="512" r="180" fill="none" stroke="#15171a" stroke-width="1.2" opacity="0.3"/>
