@@ -9,22 +9,23 @@
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
       <stop offset="0.7" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
-    <clipPath id="round">
-      <rect width="1024" height="1024" rx="236" ry="236"/>
+    <!-- Apple icon-grid: 824x824 squircle inside 1024 canvas (~80%) -->
+    <clipPath id="squircle">
+      <rect x="100" y="100" width="824" height="824" rx="184" ry="184"/>
     </clipPath>
   </defs>
 
-  <g clip-path="url(#round)">
-    <rect width="1024" height="1024" fill="url(#bg)"/>
-    <rect width="1024" height="1024" fill="url(#hl)"/>
+  <g clip-path="url(#squircle)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#bg)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#hl)"/>
 
-    <!-- Italic Y in tomato — sized to Apple's icon grid (~60% of canvas) -->
+    <!-- Italic Y in tomato — proportional to the inner squircle -->
     <text x="512" y="640" text-anchor="middle"
           font-family="'Playfair Display','Times New Roman',Georgia,serif"
-          font-style="italic" font-weight="800" font-size="560"
+          font-style="italic" font-weight="800" font-size="400"
           fill="#c33824">Y</text>
 
     <!-- Hairline editorial rule -->
-    <line x1="406" y1="800" x2="618" y2="800" stroke="#9b2a18" stroke-width="4"/>
+    <line x1="424" y1="780" x2="600" y2="780" stroke="#9b2a18" stroke-width="3"/>
   </g>
 </svg>
