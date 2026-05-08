@@ -1,6 +1,6 @@
 {
   "name": "ycal",
-  "version": "0.6.16",
+  "version": "0.6.17",
   "description": "An editorial-styled macOS calendar with multi-Google-account support and per-event colors.",
   "main": "out/main/index.js",
   "author": "yCal",
