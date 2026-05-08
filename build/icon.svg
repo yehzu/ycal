@@ -1,16 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f5f1e8"></stop>
-      <stop offset="1" stop-color="#e9e2d2"></stop>
+      <stop offset="0" stop-color="#f5f1e8"/>
+      <stop offset="1" stop-color="#e9e2d2"/>
     </linearGradient>
-    <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="229" ry="229"></rect></clipPath>
+    <clipPath id="sq">
+      <rect x="100" y="100" width="824" height="824" rx="184" ry="184"/>
+    </clipPath>
   </defs>
-  <g clip-path="url(#sq)">
-    <rect width="1024" height="1024" fill="url(#bg)"></rect>
-    <circle cx="512" cy="512" r="320" fill="none" stroke="#15171a" stroke-width="3"></circle>
-    <circle cx="512" cy="512" r="180" fill="none" stroke="#15171a" stroke-width="1.2" opacity="0.3"></circle>
-    <circle cx="512" cy="512" r="6" fill="#15171a" opacity="0.85"></circle>
-    <circle cx="352.00" cy="789.13" r="38" fill="#d9614e"></circle>
+  <g clip-path="url(#sq)" transform="translate(100 100) scale(0.8047)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <circle cx="512" cy="512" r="320" fill="none" stroke="#15171a" stroke-width="3"/>
+    <circle cx="512" cy="512" r="180" fill="none" stroke="#15171a" stroke-width="1.2" opacity="0.3"/>
+    <circle cx="512" cy="512" r="6" fill="#15171a" opacity="0.85"/>
+    <circle cx="352.00" cy="789.13" r="38" fill="#d9614e"/>
   </g>
 </svg>
