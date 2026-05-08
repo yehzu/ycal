@@ -1,45 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6efe2"/>
-      <stop offset="1" stop-color="#ece4d3"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdf8eb"/>
+      <stop offset="0.7" stop-color="#f4ead2"/>
+      <stop offset="1" stop-color="#ecdfbe"/>
     </linearGradient>
-    <filter id="grain">
-      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3"/>
-      <feColorMatrix values="0 0 0 0 0.10  0 0 0 0 0.09  0 0 0 0 0.08  0 0 0 0.05 0"/>
-      <feComposite in2="SourceGraphic" operator="in"/>
-    </filter>
+    <radialGradient id="hl" cx="50%" cy="0%" r="60%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.7" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="round">
+      <rect width="1024" height="1024" rx="236" ry="236"/>
+    </clipPath>
   </defs>
 
-  <!-- Rounded paper card -->
-  <rect x="64" y="64" width="896" height="896" rx="180" ry="180" fill="url(#paper)"/>
-  <rect x="64" y="64" width="896" height="896" rx="180" ry="180" fill="transparent" filter="url(#grain)"/>
-  <rect x="64" y="64" width="896" height="896" rx="180" ry="180"
-        fill="none" stroke="#1a1814" stroke-opacity="0.55" stroke-width="3"/>
+  <g clip-path="url(#round)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#hl)"/>
 
-  <!-- Top hairline rule (almanac/newspaper feel) -->
-  <line x1="160" y1="240" x2="864" y2="240" stroke="#1a1814" stroke-width="3"/>
-  <line x1="160" y1="252" x2="864" y2="252" stroke="#1a1814" stroke-width="1"/>
+    <!-- Italic Y in tomato; baseline at y=720 so cap-top ~ 220 -->
+    <text x="512" y="720" text-anchor="middle"
+          font-family="'Playfair Display','Times New Roman',Georgia,serif"
+          font-style="italic" font-weight="800" font-size="720"
+          fill="#c33824">Y</text>
 
-  <!-- Mast head: tiny serif eyebrow -->
-  <text x="512" y="210" text-anchor="middle"
-        font-family="Georgia, 'Times New Roman', serif"
-        font-style="italic" font-weight="500" font-size="58"
-        fill="#1a1814" letter-spacing="6">yCal</text>
-
-  <!-- Big italic display ordinal "26" -->
-  <text x="512" y="640" text-anchor="middle"
-        font-family="Georgia, 'Times New Roman', serif"
-        font-style="italic" font-weight="700" font-size="440"
-        fill="#1a1814">26</text>
-
-  <!-- Bottom hairline rule -->
-  <line x1="160" y1="780" x2="864" y2="780" stroke="#1a1814" stroke-width="1"/>
-  <line x1="160" y1="792" x2="864" y2="792" stroke="#1a1814" stroke-width="3"/>
-
-  <!-- Day-of-week below -->
-  <text x="512" y="868" text-anchor="middle"
-        font-family="Georgia, 'Times New Roman', serif"
-        font-weight="600" font-size="46"
-        fill="#1a1814" letter-spacing="14">SUNDAY</text>
+    <!-- Hairline editorial rule -->
+    <line x1="374" y1="870" x2="650" y2="870" stroke="#9b2a18" stroke-width="5"/>
+  </g>
 </svg>
