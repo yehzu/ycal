@@ -19,13 +19,13 @@
     <rect x="100" y="100" width="824" height="824" fill="url(#bg)"/>
     <rect x="100" y="100" width="824" height="824" fill="url(#hl)"/>
 
-    <!-- Italic Y in tomato — proportional to the inner squircle -->
-    <text x="512" y="640" text-anchor="middle"
+    <!-- Italic Y in tomato — sized to match iOS internal ratio (~55% of squircle) -->
+    <text x="512" y="679" text-anchor="middle"
           font-family="'Playfair Display','Times New Roman',Georgia,serif"
-          font-style="italic" font-weight="800" font-size="400"
+          font-style="italic" font-weight="800" font-size="450"
           fill="#c33824">Y</text>
 
     <!-- Hairline editorial rule -->
-    <line x1="424" y1="780" x2="600" y2="780" stroke="#9b2a18" stroke-width="3"/>
+    <line x1="401" y1="800" x2="623" y2="800" stroke="#9b2a18" stroke-width="4"/>
   </g>
 </svg>
