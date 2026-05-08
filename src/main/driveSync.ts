@@ -64,6 +64,12 @@ export function startDriveSync(window: BrowserWindow): void {
   const queuePush = (filename: string, body: string): void => {
     if (!isOurFile(filename)) return;
     if (!getDriveSyncEnabled()) return;
+    // Refuse to push a 0-byte body — none of CLOUD_FILES has a legitimate
+    // empty form (JSON files need at least `{}`, tasks.md is never written
+    // empty by the markdown provider). An empty body here means cloudStore
+    // briefly observed an iCloud placeholder; pushing it would propagate
+    // the data loss to every other device on the appdata bucket.
+    if (!body) return;
     if (lastSeen.get(filename) === body) return; // already on Drive
     schedulePush(filename, body);
   };
@@ -117,6 +123,9 @@ async function getAuth() {
 
 async function pushFile(filename: string, body: string): Promise<void> {
   if (!getDriveSyncEnabled()) return;
+  // Same 0-byte guard as queuePush, in case a caller (pushAllNow, future
+  // direct invokers) bypasses the queue.
+  if (!body) return;
   if (lastSeen.get(filename) === body) return;
   pushing += 1;
   notify();
@@ -154,6 +163,11 @@ async function pullAll(): Promise<void> {
         continue;
       }
       const body = bodyBuf.toString('utf-8');
+      // Refuse empty bodies even on the way IN — guards against a peer
+      // device that pushed garbage before this fix landed, and against
+      // tasks.md (which writeText would overwrite without a JSON.parse
+      // gate to fall back on).
+      if (!body) continue;
       if (lastSeen.get(f) === body) continue;
       lastSeen.set(f, body);
       // Write through cloudStore so its own lastSeen + the cross-device

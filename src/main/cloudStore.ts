@@ -338,6 +338,14 @@ function pollListener(filename: string): () => void {
       } catch {
         return;
       }
+      // 0-byte read is almost always an iCloud Drive placeholder during a
+      // sync transition — never a legitimate body for any CLOUD_FILES
+      // entry. Don't update lastSeen and don't fire handlers; the next
+      // poll will see the real bytes once iCloud finishes materializing.
+      // Without this guard, driveSync's queuePush echoes the empty body
+      // up to Drive and any cross-device pull blindly writes 0 bytes
+      // locally (the bug that wiped iOS's tasks-schedule.json on 2026-05-08).
+      if (!body) return;
       if (lastSeen.get(filename) === body) return;
       lastSeen.set(filename, body);
       for (const h of handlers) {
