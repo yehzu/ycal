@@ -4065,6 +4065,42 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   text-decoration-thickness: 0.5px;
 }
 
+/* Short task chips (≤30 min): time subtitle is dropped (the chip's vertical
+   position implies the time anyway) and the checkbox + title sit on one
+   line so a 15-min chip is still readable inside its 20px clamp. */
+.tv-task-chip.short,
+.tv-task-chip.tiny {
+  padding: 1px 5px 1px 6px;
+  align-items: center;
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.tv-task-chip.short .tv-task-tbox,
+.tv-task-chip.tiny .tv-task-tbox {
+  margin-top: 0;
+  width: 10px;
+  height: 10px;
+}
+.tv-task-chip.short .tv-task-body,
+.tv-task-chip.tiny .tv-task-body {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+.tv-task-chip.short .tv-task-ttl,
+.tv-task-chip.tiny .tv-task-ttl {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.tv-task-chip.tiny {
+  font-size: 10px;
+  padding: 0 5px 0 6px;
+}
+
 .tp-card, .tv-task-chip {
   user-select: none;
   -webkit-user-drag: none;

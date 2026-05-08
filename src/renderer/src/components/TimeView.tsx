@@ -52,105 +52,54 @@ const HOUR_HEIGHT = 56;
 const START_HOUR = 0;
 const END_HOUR = 23;
 
-interface Placed {
-  item: CalendarEvent;
-  col: number;
-  cols: number;
-  sMin: number;
-  eMin: number;
-}
+type Block =
+  | { kind: 'event'; event: CalendarEvent; sMin: number; eMin: number }
+  | { kind: 'task'; task: TaskItem; start: string; sMin: number; eMin: number };
 
-interface PlacedTask {
-  task: TaskItem;
-  start: string;
-  col: number;
-  cols: number;
-  sMin: number;
-  eMin: number;
-}
+type PlacedBlock = Block & { col: number; cols: number };
 
-// Same clustering algorithm as `layoutColumns` for events, applied to
-// scheduled task chips. Chips overlap by start time + duration; without
-// this they all stack at left:1/right:1 and the user can't see how many
-// are stacked on a slot.
-function layoutTaskColumns(items: Array<{ task: TaskItem; start: string }>): PlacedTask[] {
-  const clipped = items.map(({ task, start }) => {
-    const [h, m] = start.split(':').map((n) => parseInt(n, 10) || 0);
-    const sMin = h * 60 + m;
-    const dur = task.dur || 30;
-    const eMin = Math.min(24 * 60, sMin + dur);
-    return { task, start, sMin, eMin };
-  });
-
-  const sorted = clipped.slice().sort((a, b) => {
-    if (a.sMin !== b.sMin) return a.sMin - b.sMin;
-    return b.eMin - a.eMin;
-  });
-
-  const placed: Array<{ task: TaskItem; start: string; col: number; sMin: number; eMin: number }> = [];
-  const clusterIds: number[] = [];
-  const clusterCounts: number[] = [];
-  let curCluster = -1;
-  let curEnd = -Infinity;
-
-  for (const c of sorted) {
-    const { task, start, sMin, eMin } = c;
-    if (sMin >= curEnd) {
-      curCluster++;
-      curEnd = eMin;
-      clusterCounts[curCluster] = 0;
-    } else {
-      curEnd = Math.max(curEnd, eMin);
-    }
-    const usedCols = new Set<number>();
-    for (let i = 0; i < placed.length; i++) {
-      if (clusterIds[i] !== curCluster) continue;
-      if (placed[i].eMin > sMin && placed[i].sMin < eMin) {
-        usedCols.add(placed[i].col);
-      }
-    }
-    let col = 0;
-    while (usedCols.has(col)) col++;
-    placed.push({ task, start, col, sMin, eMin });
-    clusterIds.push(curCluster);
-    clusterCounts[curCluster] = Math.max(clusterCounts[curCluster] ?? 0, col + 1);
-  }
-
-  return placed.map((p, i) => ({
-    task: p.task,
-    start: p.start,
-    col: p.col,
-    sMin: p.sMin,
-    eMin: p.eMin,
-    cols: clusterCounts[clusterIds[i]],
-  }));
-}
-
-function layoutColumns(items: CalendarEvent[], day: Date): Placed[] {
+// Lay events and scheduled tasks into shared columns. Tasks used to be
+// laid out independently from events, so a 9–10 task and a 9–10 event
+// would both take 100% width and the task (z-index: 1) would obscure the
+// event. Treating them as one population means a task that overlaps an
+// event gets its own column at width 1/N instead.
+function layoutBlocks(
+  events: CalendarEvent[],
+  tasks: Array<{ task: TaskItem; start: string }>,
+  day: Date,
+): PlacedBlock[] {
   const dayStartMs = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
   const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
 
-  const clipped = items.map((e) => {
+  const blocks: Block[] = [];
+  for (const e of events) {
     const evS = new Date(e.start).getTime();
     const evE = new Date(e.end).getTime();
     const sMin = evS <= dayStartMs ? 0 : Math.round((evS - dayStartMs) / 60000);
     const eMin = evE >= dayEndMs ? 24 * 60 : Math.round((evE - dayStartMs) / 60000);
-    return { item: e, sMin, eMin };
-  });
+    blocks.push({ kind: 'event', event: e, sMin, eMin });
+  }
+  for (const { task, start } of tasks) {
+    const [h, m] = start.split(':').map((n) => parseInt(n, 10) || 0);
+    const sMin = h * 60 + m;
+    const dur = task.dur || 30;
+    const eMin = Math.min(24 * 60, sMin + dur);
+    blocks.push({ kind: 'task', task, start, sMin, eMin });
+  }
 
-  const sorted = clipped.slice().sort((a, b) => {
+  const sorted = blocks.slice().sort((a, b) => {
     if (a.sMin !== b.sMin) return a.sMin - b.sMin;
     return b.eMin - a.eMin;
   });
 
-  const placed: Array<{ item: CalendarEvent; col: number; sMin: number; eMin: number }> = [];
+  const placed: Array<Block & { col: number }> = [];
   const clusterIds: number[] = [];
   const clusterCounts: number[] = [];
   let curCluster = -1;
   let curEnd = -Infinity;
 
-  for (const c of sorted) {
-    const { item: e, sMin, eMin } = c;
+  for (const b of sorted) {
+    const { sMin, eMin } = b;
     if (sMin >= curEnd) {
       curCluster++;
       curEnd = eMin;
@@ -167,16 +116,13 @@ function layoutColumns(items: CalendarEvent[], day: Date): Placed[] {
     }
     let col = 0;
     while (usedCols.has(col)) col++;
-    placed.push({ item: e, col, sMin, eMin });
+    placed.push({ ...b, col });
     clusterIds.push(curCluster);
     clusterCounts[curCluster] = Math.max(clusterCounts[curCluster] ?? 0, col + 1);
   }
 
   return placed.map((p, i) => ({
-    item: p.item,
-    col: p.col,
-    sMin: p.sMin,
-    eMin: p.eMin,
+    ...p,
     cols: clusterCounts[clusterIds[i]],
   }));
 }
@@ -523,8 +469,7 @@ function DayColumn({
 }: DayColumnProps) {
   const colRef = useRef<HTMLDivElement | null>(null);
   const dateStr = fmtDate(day);
-  const laid = layoutColumns(events, day);
-  const laidTasks = layoutTaskColumns(tasks);
+  const laid = layoutBlocks(events, tasks, day);
 
   const [dropPreview, setDropPreview] = useState<{ y: number; min: number } | null>(null);
 
@@ -581,23 +526,25 @@ function DayColumn({
         />
       ))}
 
-      {/* Scheduled task chips. Drawn before events so events sit on top.
-          Laid out in side-by-side columns the same way events are, so
-          multiple tasks at one slot are individually visible. */}
-      {laidTasks.map(({ task, start, col, cols }) => (
-        <ScheduledTaskChip
-          key={task.id}
-          task={task}
-          dateStr={dateStr}
-          start={start}
-          col={col}
-          cols={cols}
-          onToggleDone={onToggleTaskDone}
-          onOpen={onOpenTask}
-        />
-      ))}
-
-      {laid.map(({ item: e, col, sMin, eMin, cols }) => {
+      {/* Tasks and events share the same column layout so they don't cover
+          each other when scheduled at the same time slot. */}
+      {laid.map((b) => {
+        if (b.kind === 'task') {
+          return (
+            <ScheduledTaskChip
+              key={'t:' + b.task.id}
+              task={b.task}
+              dateStr={dateStr}
+              start={b.start}
+              col={b.col}
+              cols={b.cols}
+              onToggleDone={onToggleTaskDone}
+              onOpen={onOpenTask}
+            />
+          );
+        }
+        const e = b.event;
+        const { col, sMin, eMin, cols } = b;
         const top = ((sMin / 60) - START_HOUR) * HOUR_HEIGHT;
         const dur = eMin - sMin;
         const height = (dur / 60) * HOUR_HEIGHT;
@@ -611,7 +558,7 @@ function DayColumn({
         if (rc) cn.push(rc);
         return (
           <button
-            key={e.id}
+            key={'e:' + e.id}
             className={cn.join(' ')}
             style={{
               ['--cal' as never]: e.color,
@@ -703,9 +650,19 @@ function ScheduledTaskChip({
     ),
   });
 
+  // Short chips can't fit the two-row body (time/dur subtitle + title) inside
+  // their height. Mirror the event "short"/"tiny" treatment: drop the time
+  // subtitle and lay the checkbox + title out in a single line.
+  const cn = ['tv-task-chip'];
+  if (task.done) cn.push('done');
+  if (dur < 15) cn.push('tiny');
+  else if (dur <= 30) cn.push('short');
+
+  const compact = dur <= 30;
+
   return (
     <div
-      className={'tv-task-chip' + (task.done ? ' done' : '')}
+      className={cn.join(' ')}
       style={{
         top,
         height,
@@ -720,7 +677,7 @@ function ScheduledTaskChip({
         if ((e.target as HTMLElement).closest('.tv-task-tbox')) return;
         onOpen?.(task.id);
       }}
-      title={task.title + ' — drag to reschedule, drag back to inbox to unschedule'}
+      title={`${task.title} · ${minToLabel(sMin)} · ${formatDur(dur)} — drag to reschedule, drag back to inbox to unschedule`}
       data-date={dateStr}
     >
       <button
@@ -729,7 +686,9 @@ function ScheduledTaskChip({
         aria-label="Mark done"
       />
       <div className="tv-task-body">
-        <div className="tv-task-t">{minToLabel(sMin)} · {formatDur(dur)}</div>
+        {!compact && (
+          <div className="tv-task-t">{minToLabel(sMin)} · {formatDur(dur)}</div>
+        )}
         <div className="tv-task-ttl">{renderInlineCode(task.title)}</div>
       </div>
     </div>
