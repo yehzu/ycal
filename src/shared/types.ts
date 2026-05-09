@@ -163,7 +163,11 @@ export interface UiSettings {
   // 'computer', 'office']. Merged with locations pulled from cached
   // tasks; cache wins on duplicates.
   customTagSuggestions?: string[];
+  // Color scheme. 'system' follows OS appearance via prefers-color-scheme.
+  theme?: ThemeMode;
 }
+
+export type ThemeMode = 'light' | 'dark' | 'system';
 
 // Energy bands for the day-load intensity color. Thresholds are in
 // equivalent-meeting-hours: meetings count 1.0×/h, tasks scale by their

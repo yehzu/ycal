@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CalendarEvent, CloudStorageInfo, DriveSyncStatus, LoadBands, LoadWindowSettings,
-  MergeCriteria, RhythmData, TempUnits, UiSettings,
+  MergeCriteria, RhythmData, TempUnits, ThemeMode, UiSettings,
 } from '@shared/types';
 import {
   DEFAULT_LOAD_BANDS, DEFAULT_LOAD_WINDOW, DEFAULT_MERGE_CRITERIA,
@@ -129,6 +129,26 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [customTagSuggestions, setCustomTagSuggestions] = useState<string[]>(
     () => initialUi.customTagSuggestions ?? [],
   );
+  const [theme, setTheme] = useState<ThemeMode>(
+    () => initialUi.theme ?? 'system',
+  );
+
+  // Resolve theme → data-theme attribute on <html>. 'system' tracks
+  // prefers-color-scheme so the OS appearance leads.
+  useEffect(() => {
+    const root = document.documentElement;
+    const apply = () => {
+      const resolved = theme === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : theme;
+      root.setAttribute('data-theme', resolved);
+    };
+    apply();
+    if (theme !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, [theme]);
 
   const setCalRole = useCallback((key: string, role: CalRole) => {
     setCalRoles((prev) => ({ ...prev, [key]: role }));
@@ -203,6 +223,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
       setCustomTagSuggestions(ui.customTagSuggestions ?? []);
+      setTheme(ui.theme ?? 'system');
       // Slices owned by the events store (account / calendar visibility,
       // weather URL) need explicit imperative setters — they're not
       // react state in App.
@@ -303,11 +324,12 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       loadWindow,
       loadBands,
       customTagSuggestions,
+      theme,
     });
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
-    autoRolloverPastTasks, loadWindow, loadBands, customTagSuggestions,
+    autoRolloverPastTasks, loadWindow, loadBands, customTagSuggestions, theme,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -830,6 +852,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setShowWeekNums={setShowWeekNums}
           mergeCriteria={mergeCriteria}
           setMergeCriteria={setMergeCriteria}
+          theme={theme}
+          setTheme={setTheme}
           showWeather={showWeather}
           setShowWeather={setShowWeather}
           units={units}

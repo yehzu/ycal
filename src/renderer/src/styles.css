@@ -5,10 +5,10 @@
 /* Unified scrollbar styling — editorial, hairline, ink-toned. Applies
    everywhere via the universal selector so each scroll surface (sidebar,
    week/day time grid, day detail panel, account picker, etc.) shares the
-   same treatment. */
+   same treatment. Token-driven so dark mode flips ink↔paper for the thumb. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(26, 24, 20, 0.28) transparent;
+  scrollbar-color: var(--sb-thumb) transparent;
 }
 *::-webkit-scrollbar {
   width: 10px;
@@ -17,25 +17,25 @@
 }
 *::-webkit-scrollbar-track {
   background: transparent;
-  border-left: 0.5px solid rgba(26, 24, 20, 0.08);
+  border-left: 0.5px solid var(--sb-track);
 }
 *::-webkit-scrollbar-track:horizontal {
   border-left: 0;
-  border-top: 0.5px solid rgba(26, 24, 20, 0.08);
+  border-top: 0.5px solid var(--sb-track);
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(26, 24, 20, 0.22);
+  background: var(--sb-thumb);
   border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 0;
   min-height: 32px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(26, 24, 20, 0.42);
+  background: var(--sb-thumb-hover);
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:active {
-  background: rgba(26, 24, 20, 0.55);
+  background: var(--sb-thumb-active);
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-corner {
@@ -53,6 +53,23 @@
   --rule:         #1a1814;
   --rule-soft:    rgba(26,24,20,0.18);
   --rule-faint:   rgba(26,24,20,0.10);
+  /* Title-bar text colors. Hardcoded to black-on-paper in light mode so the
+     macOS hiddenInset chrome reads native; in dark mode they flip to ink. */
+  --tb-title:     rgba(0,0,0,0.75);
+  --tb-title-meta:rgba(0,0,0,0.5);
+  --tb-btn-text:  rgba(0,0,0,0.78);
+  --tb-btn-border:rgba(0,0,0,0.22);
+  --tb-btn-bg:    linear-gradient(#fdfaf2, #ede2c9);
+  --tb-btn-bg-hover: linear-gradient(#fff, #f0e6cf);
+  --acct-add-text:rgba(0,0,0,0.55);
+  --acct-add-border:rgba(0,0,0,0.35);
+  /* Today-column wash. Black-tinted on paper, paper-tinted on ink. */
+  --today-col-bg: rgba(26,24,20,0.025);
+  /* Scrollbar — ink-on-paper in light, paper-on-ink in dark. */
+  --sb-thumb:        rgba(26,24,20,0.28);
+  --sb-thumb-hover:  rgba(26,24,20,0.42);
+  --sb-thumb-active: rgba(26,24,20,0.55);
+  --sb-track:        rgba(26,24,20,0.08);
 
   --serif-display: 'Playfair Display', 'GFS Didot', Didot, 'Times New Roman', serif;
   --serif-body:    'Source Serif 4', 'Source Serif Pro', Georgia, 'Times New Roman', serif;
@@ -62,6 +79,41 @@
   --row-h: 124px;
   --mac-radius: 12px;
   --sf-font: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Helvetica Neue', sans-serif;
+
+  color-scheme: light;
+}
+
+/* Dark mode — paper-and-ink editorial flipped for night reading. The token
+   names stay the same so existing rules (var(--paper), var(--ink), …) keep
+   working; only the values invert. Hardcoded rgba(0,0,0,X) overlays remain
+   as-is on purpose — semi-transparent black on a dark surface still reads as
+   "depressed" / "shadow", which is the intent at every callsite. */
+[data-theme="dark"] {
+  --paper:        #161310;
+  --paper-2:      #1f1c17;
+  --paper-edge:   #2a2620;
+  --ink:          #ede4cf;
+  --ink-soft:     #cdc2a8;
+  --ink-mute:     #968b73;
+  --ink-faint:    #5a5345;
+  --rule:         #ede4cf;
+  --rule-soft:    rgba(237,228,207,0.18);
+  --rule-faint:   rgba(237,228,207,0.10);
+  --tb-title:     rgba(237,228,207,0.85);
+  --tb-title-meta:rgba(237,228,207,0.55);
+  --tb-btn-text:  rgba(237,228,207,0.85);
+  --tb-btn-border:rgba(237,228,207,0.22);
+  --tb-btn-bg:    linear-gradient(#262017, #1a1612);
+  --tb-btn-bg-hover: linear-gradient(#2c2519, #1f1a14);
+  --acct-add-text:rgba(237,228,207,0.55);
+  --acct-add-border:rgba(237,228,207,0.30);
+  --today-col-bg: rgba(237,228,207,0.05);
+  --sb-thumb:        rgba(237,228,207,0.28);
+  --sb-thumb-hover:  rgba(237,228,207,0.42);
+  --sb-thumb-active: rgba(237,228,207,0.55);
+  --sb-track:        rgba(237,228,207,0.08);
+
+  color-scheme: dark;
 }
 
 [data-density="dense"] { --pad: 10px; --row-h: 96px; }
@@ -118,7 +170,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   font-family: var(--sf-font);
   font-size: 13px;
   font-weight: 600;
-  color: rgba(0,0,0,0.75);
+  color: var(--tb-title);
   letter-spacing: 0.01em;
   text-align: center;
   white-space: nowrap;
@@ -127,7 +179,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   display: block;
   font-weight: 400;
   font-size: 11px;
-  color: rgba(0,0,0,0.5);
+  color: var(--tb-title-meta);
   margin-top: -1px;
 }
 
@@ -161,27 +213,27 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .acct-avatar:first-child { margin-left: 0; }
 .acct-avatar.add-acct {
   background: transparent;
-  color: rgba(0,0,0,0.55);
-  border: 1px dashed rgba(0,0,0,0.35);
+  color: var(--acct-add-text);
+  border: 1px dashed var(--acct-add-border);
   font-weight: 400;
   font-size: 14px;
 }
 
 .tb-btn {
   appearance: none;
-  background: linear-gradient(#fdfaf2, #ede2c9);
-  border: 0.5px solid rgba(0,0,0,0.22);
+  background: var(--tb-btn-bg);
+  border: 0.5px solid var(--tb-btn-border);
   border-radius: 5px;
   padding: 3px 10px;
   font-family: var(--sf-font);
   font-size: 12px;
   font-weight: 500;
-  color: rgba(0,0,0,0.78);
+  color: var(--tb-btn-text);
   box-shadow: 0 0.5px 0 rgba(255,255,255,0.6) inset, 0 0.5px 1px rgba(0,0,0,0.06);
   white-space: nowrap;
   flex-shrink: 0;
 }
-.tb-btn:hover { background: linear-gradient(#fff, #f0e6cf); }
+.tb-btn:hover { background: var(--tb-btn-bg-hover); }
 .tb-btn.primary { background: linear-gradient(#3a73e4, #2960ce); color: #fff; border-color: rgba(0,0,0,0.35); }
 .tb-btn.primary:hover { background: linear-gradient(#4a83f5, #2960ce); }
 
@@ -999,7 +1051,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   position: relative;
 }
 .tv-col:last-child { border-right: 0; }
-.tv-col.today-col { background: rgba(26,24,20,0.025); }
+.tv-col.today-col { background: var(--today-col-bg); }
 .tv-col-head {
   padding: 8px 10px;
   border-right: 0.5px solid var(--rule-soft);

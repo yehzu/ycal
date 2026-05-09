@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import type {
   AccountSummary, CalendarSummary, CloudStorageInfo, DriveSyncStatus,
   LoadBands, LoadWindowSettings,
-  MergeCriteria, RhythmData, TaskProviderInfo, TempUnits, UpdateStatus,
+  MergeCriteria, RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
 } from '@shared/types';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
 import { calKey } from '../store';
@@ -22,6 +22,8 @@ interface Props {
   setShowWeekNums: (v: boolean) => void;
   mergeCriteria: MergeCriteria;
   setMergeCriteria: (next: MergeCriteria) => void;
+  theme: ThemeMode;
+  setTheme: (next: ThemeMode) => void;
   // Weather
   showWeather: boolean;
   setShowWeather: (v: boolean) => void;
@@ -153,6 +155,8 @@ export function SettingsModal(props: Props) {
                 setShowWeekNums={props.setShowWeekNums}
                 mergeCriteria={props.mergeCriteria}
                 setMergeCriteria={props.setMergeCriteria}
+                theme={props.theme}
+                setTheme={props.setTheme}
               />
             )}
             {tab === 'weather' && (
@@ -291,14 +295,33 @@ function PrefSwitch({
 
 function PrefsGeneral({
   showWeekNums, setShowWeekNums, mergeCriteria, setMergeCriteria,
+  theme, setTheme,
 }: {
   showWeekNums: boolean;
   setShowWeekNums: (v: boolean) => void;
   mergeCriteria: MergeCriteria;
   setMergeCriteria: (m: MergeCriteria) => void;
+  theme: ThemeMode;
+  setTheme: (next: ThemeMode) => void;
 }) {
   return (
     <div className="pref-section">
+      <h3 className="pref-h">Appearance</h3>
+      <PrefRow
+        label="Theme"
+        hint="Light, dark, or follow the system appearance."
+      >
+        <PrefSegmented<ThemeMode>
+          value={theme}
+          options={[
+            { value: 'light', label: 'Light' },
+            { value: 'dark', label: 'Dark' },
+            { value: 'system', label: 'System' },
+          ]}
+          onChange={setTheme}
+        />
+      </PrefRow>
+
       <h3 className="pref-h">Layout</h3>
       <PrefRow
         label="Show week numbers"

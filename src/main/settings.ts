@@ -156,6 +156,7 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   }
   if (patch.loadWindow !== undefined) next.loadWindow = patch.loadWindow;
   if (patch.loadBands !== undefined) next.loadBands = patch.loadBands;
+  if (patch.theme !== undefined) next.theme = patch.theme;
   s.ui = next;
   write(s);
 }
