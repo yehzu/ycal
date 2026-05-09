@@ -89,29 +89,36 @@
    as-is on purpose — semi-transparent black on a dark surface still reads as
    "depressed" / "shadow", which is the intent at every callsite. */
 [data-theme="dark"] {
-  --paper:        #161310;
-  --paper-2:      #1f1c17;
-  --paper-edge:   #2a2620;
-  --ink:          #ede4cf;
-  --ink-soft:     #cdc2a8;
-  --ink-mute:     #968b73;
-  --ink-faint:    #5a5345;
-  --rule:         #ede4cf;
-  --rule-soft:    rgba(237,228,207,0.18);
-  --rule-faint:   rgba(237,228,207,0.10);
-  --tb-title:     rgba(237,228,207,0.85);
-  --tb-title-meta:rgba(237,228,207,0.55);
-  --tb-btn-text:  rgba(237,228,207,0.85);
-  --tb-btn-border:rgba(237,228,207,0.22);
-  --tb-btn-bg:    linear-gradient(#262017, #1a1612);
-  --tb-btn-bg-hover: linear-gradient(#2c2519, #1f1a14);
-  --acct-add-text:rgba(237,228,207,0.55);
-  --acct-add-border:rgba(237,228,207,0.30);
-  --today-col-bg: rgba(237,228,207,0.05);
-  --sb-thumb:        rgba(237,228,207,0.28);
-  --sb-thumb-hover:  rgba(237,228,207,0.42);
-  --sb-thumb-active: rgba(237,228,207,0.55);
-  --sb-track:        rgba(237,228,207,0.08);
+  /* Editorial Ink × Inkwell Outline — warm charcoal "paper", cream "ink".
+     Per design handoff /Users/yehzu/Downloads/design_handoff_dark_mode.
+     Token names match light mode so existing rules continue to work. */
+  --paper:        #1c1814;
+  --paper-2:      #231e18;
+  --paper-3:      #14110d;
+  --paper-edge:   #2c2620;
+  --ink:          #e8dfcd;
+  --ink-soft:     #c4b9a4;
+  --ink-mute:     #8a8170;
+  --ink-faint:    #5a5347;
+  --ink-ghost:    #3a352c;
+  --rule:         rgba(232,223,205,0.16);
+  --rule-soft:    rgba(232,223,205,0.09);
+  --rule-faint:   rgba(232,223,205,0.05);
+  --accent:       #e8c466;
+  --now:          #d97a73;
+  --tb-title:     rgba(232,223,205,0.85);
+  --tb-title-meta:rgba(232,223,205,0.50);
+  --tb-btn-text:  rgba(232,223,205,0.85);
+  --tb-btn-border:rgba(232,223,205,0.22);
+  --tb-btn-bg:    linear-gradient(#2a241d, #1d1813);
+  --tb-btn-bg-hover: linear-gradient(#332c23, #221c16);
+  --acct-add-text:rgba(232,223,205,0.55);
+  --acct-add-border:rgba(232,223,205,0.30);
+  --today-col-bg: rgba(232,223,205,0.05);
+  --sb-thumb:        rgba(232,223,205,0.22);
+  --sb-thumb-hover:  rgba(232,223,205,0.36);
+  --sb-thumb-active: rgba(232,223,205,0.50);
+  --sb-track:        rgba(232,223,205,0.06);
 
   color-scheme: dark;
 }
@@ -5368,4 +5375,111 @@ body.mode-quickadd #root {
   text-transform: uppercase;
   color: var(--ink-faint);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Dark mode — Editorial Ink × Inkwell Outline
+   Solid-fill events become outlined+tint so saturated calendar colors don't
+   read as glowing UI chrome on the charcoal canvas. Token overrides live in
+   `[data-theme="dark"]` near the top of this file — these rules consume
+   `--cal` (set inline by the event renderers) and replace per-component
+   light-mode treatments.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Outlined timed event (Week / Day grids) ───────────────────────────── */
+[data-theme="dark"] .tv-event {
+  background: color-mix(in srgb, var(--cal) 13%, var(--paper));
+  border: 0.5px solid color-mix(in srgb, var(--cal) 50%, transparent);
+  border-left: 0.5px solid color-mix(in srgb, var(--cal) 50%, transparent);
+  border-radius: 2px;
+  color: var(--cal);
+}
+[data-theme="dark"] .tv-event:hover {
+  background: color-mix(in srgb, var(--cal) 22%, var(--paper));
+}
+[data-theme="dark"] .tv-event .et {
+  color: color-mix(in srgb, var(--cal) 75%, var(--ink-mute));
+}
+[data-theme="dark"] .tv-event .en {
+  color: var(--ink);
+  font-weight: 500;
+}
+[data-theme="dark"] .tv-event.tiny {
+  background: color-mix(in srgb, var(--cal) 18%, var(--paper));
+}
+/* Tentative on dark: dashed outline, transparent fill, italic title */
+[data-theme="dark"] .tv-event.rsvp-tentative {
+  background: transparent;
+  border: 0.5px dashed color-mix(in srgb, var(--cal) 60%, transparent);
+  border-left: 0.5px dashed color-mix(in srgb, var(--cal) 60%, transparent);
+}
+[data-theme="dark"] .tv-event.rsvp-tentative .en {
+  color: var(--cal);
+  font-style: italic;
+  font-weight: 400;
+}
+/* needs-action keeps its existing dashed-outline treatment, but tune the
+   border color so it's visible on dark paper */
+[data-theme="dark"] .tv-event.rsvp-needsaction {
+  background: transparent;
+  border: 0.5px dashed color-mix(in srgb, var(--cal) 55%, transparent);
+}
+
+/* ─── Outlined all-day pill (Week / Day all-day strip) ──────────────────── */
+[data-theme="dark"] .tv-allday-pill {
+  background: color-mix(in srgb, var(--cal) 13%, var(--paper)) !important;
+  border: 0.5px solid color-mix(in srgb, var(--cal) 55%, transparent);
+  color: var(--cal);
+  font-style: italic;
+}
+[data-theme="dark"] .tv-allday-pill.holiday-pill {
+  background: transparent !important;
+  font-style: normal;
+  letter-spacing: 0.05em;
+}
+
+/* ─── Outlined multi-day ribbon (Month overlay + Week all-day strip) ────── */
+[data-theme="dark"] .ribbon {
+  background: color-mix(in srgb, var(--cal) 13%, var(--paper));
+  border: 0.5px solid color-mix(in srgb, var(--cal) 55%, transparent);
+  color: var(--cal);
+  box-shadow: none;
+}
+[data-theme="dark"] .ribbon.clip-l {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--cal) 6%, var(--paper)) 0%,
+    color-mix(in srgb, var(--cal) 13%, var(--paper)) 8px
+  );
+}
+[data-theme="dark"] .ribbon .ribbon-arrow { opacity: 0.85; }
+
+/* ─── Outlined month all-day cell pill (single-day) ─────────────────────── */
+[data-theme="dark"] .evt.all-day {
+  background: color-mix(in srgb, var(--cal) 13%, var(--paper));
+  border: 0.5px solid color-mix(in srgb, var(--cal) 55%, transparent);
+  color: var(--cal);
+  font-style: italic;
+}
+[data-theme="dark"] .evt.all-day .evt-ttl { color: var(--cal); }
+
+/* ─── Now line ──────────────────────────────────────────────────────────── */
+[data-theme="dark"] .now-line {
+  border-top-color: var(--now);
+}
+[data-theme="dark"] .now-line::before {
+  background: var(--now);
+}
+
+/* ─── Mini-month today pill: cream-on-charcoal ──────────────────────────── */
+[data-theme="dark"] .mini-day.today {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* ─── Titlebar gradient ─────────────────────────────────────────────────── */
+[data-theme="dark"] .mac-titlebar {
+  background: linear-gradient(#2a241d, #1d1813);
+  border-bottom: 0.5px solid rgba(0, 0, 0, 0.5);
+}
+
 
