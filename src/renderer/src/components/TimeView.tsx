@@ -335,10 +335,7 @@ export function TimeView({
                     <button
                       key={e.id}
                       className={cn.join(' ')}
-                      style={{
-                        ['--cal' as never]: e.color,
-                        ...(holiday ? {} : { background: e.color }),
-                      }}
+                      style={{ ['--cal' as never]: e.color }}
                       onClick={(ev) => onEventClick(e, ev.currentTarget)}
                     >
                       {e.title}
@@ -369,7 +366,6 @@ export function TimeView({
                     className={cn.join(' ')}
                     style={{
                       ['--cal' as never]: e.color,
-                      ...(holiday ? {} : { background: e.color }),
                       gridColumn: `${r.colStart + 2} / ${r.colEnd + 2}`,
                       gridRow: r.lane + 1,
                     }}

@@ -262,7 +262,6 @@ function Ribbon({
       className={cn.join(' ')}
       style={{
         ['--cal' as never]: e.color,
-        background: e.color,
         gridColumn: `${placement.colStart + 1} / ${placement.colEnd + 1}`,
         gridRow: placement.lane + 1,
       }}
