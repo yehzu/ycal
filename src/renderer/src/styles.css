@@ -5580,4 +5580,39 @@ body.mode-quickadd #root {
   background: linear-gradient(to bottom, #2a241d, #1d1813);
 }
 
+/* ─── Overdue / carry-over task card ────────────────────────────────────── */
+/* Light mode uses cream-on-paper diagonal stripes as the "rolled over"
+   visual. On dark paper those stripes flip to bright cream-on-charcoal
+   and crush the title underneath. Use a very low-opacity ink tint instead
+   so the stripe pattern stays as a hint, not a foreground. */
+[data-theme="dark"] .tp-card {
+  background: var(--paper);
+}
+[data-theme="dark"] .tp-card.carry {
+  background:
+    repeating-linear-gradient(-45deg,
+      var(--paper), var(--paper) 6px,
+      rgba(232, 223, 205, 0.06) 6px, rgba(232, 223, 205, 0.07) 7px);
+}
+[data-theme="dark"] .tp-card:hover {
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* ─── Tasks panel done-footer + section washes ──────────────────────────── */
+[data-theme="dark"] .tp-doneFoot {
+  background: rgba(232, 223, 205, 0.04);
+}
+[data-theme="dark"] .tp-today {
+  background: rgba(217, 122, 115, 0.05);
+}
+[data-theme="dark"] .tp-today .tp-mast {
+  border-bottom-color: rgba(217, 122, 115, 0.30);
+}
+[data-theme="dark"] .tp-overdue {
+  background: rgba(217, 122, 115, 0.07);
+}
+[data-theme="dark"] .tp-overdue .tp-mast {
+  border-bottom-color: rgba(217, 122, 115, 0.40);
+}
+
 
