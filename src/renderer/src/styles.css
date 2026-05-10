@@ -5482,4 +5482,102 @@ body.mode-quickadd #root {
   border-bottom: 0.5px solid rgba(0, 0, 0, 0.5);
 }
 
+/* ─── Toolbar search button ─────────────────────────────────────────────── */
+[data-theme="dark"] .tb-search-btn {
+  background: rgba(232, 223, 205, 0.06);
+  border-color: rgba(232, 223, 205, 0.16);
+  box-shadow: none;
+}
+[data-theme="dark"] .tb-search-btn:hover {
+  background: rgba(232, 223, 205, 0.12);
+}
+
+/* ─── Search palette (⌘K) ───────────────────────────────────────────────── */
+[data-theme="dark"] .sp-backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+[data-theme="dark"] .sp-shell {
+  background: var(--paper);
+  border-color: var(--rule-soft);
+  box-shadow:
+    0 1px 0 rgba(232, 223, 205, 0.05) inset,
+    0 18px 60px -16px rgba(0, 0, 0, 0.65),
+    0 4px 18px -8px rgba(0, 0, 0, 0.5);
+}
+[data-theme="dark"] .sp-header {
+  background: linear-gradient(to bottom, rgba(232, 223, 205, 0.04), rgba(232, 223, 205, 0));
+}
+[data-theme="dark"] .sp-kbd,
+[data-theme="dark"] .sp-hint kbd {
+  background: rgba(232, 223, 205, 0.06);
+  border-color: var(--rule-soft);
+}
+[data-theme="dark"] .sp-kbd-esc:hover {
+  background: rgba(232, 223, 205, 0.14);
+}
+[data-theme="dark"] .sp-scopes {
+  background: rgba(0, 0, 0, 0.18);
+}
+[data-theme="dark"] .sp-scope.on {
+  background: var(--paper-2);
+  box-shadow: 0 1px 0 rgba(232, 223, 205, 0.05) inset;
+}
+
+/* ─── Tasks panel (Inbox rail) ──────────────────────────────────────────── */
+[data-theme="dark"] .tasks-panel,
+[data-theme="dark"] .tp-head {
+  background: var(--paper-2);
+}
+
+/* ─── TaskSheet composer ────────────────────────────────────────────────── */
+[data-theme="dark"] .ts-composer-input {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+/* ─── Day-load gauge / capacity pill ────────────────────────────────────── */
+[data-theme="dark"] .day-load-gauge {
+  background: rgba(232, 223, 205, 0.10);
+}
+[data-theme="dark"] .day-load-summary {
+  background: rgba(232, 223, 205, 0.04);
+  border-color: var(--rule-soft);
+}
+[data-theme="dark"] .day-load-summary .dls-bar {
+  background: rgba(232, 223, 205, 0.08);
+}
+/* Intensity ramp — soften the saturated greens/golds/reds on dark paper.
+   Keeps the calm→heavy hue progression but maps each color to a desaturated
+   cousin so the gauge reads as ink-tone weight, not as alert chrome. */
+[data-theme="dark"] .day-load-gauge.i-calm,
+[data-theme="dark"] .day-load-summary.i-calm   { --i-color: #9bc28c; }
+[data-theme="dark"] .day-load-gauge.i-steady,
+[data-theme="dark"] .day-load-summary.i-steady { --i-color: #e8c466; }
+[data-theme="dark"] .day-load-gauge.i-full,
+[data-theme="dark"] .day-load-summary.i-full   { --i-color: #e89072; }
+[data-theme="dark"] .day-load-gauge.i-heavy,
+[data-theme="dark"] .day-load-summary.i-heavy  { --i-color: #d97a73; }
+[data-theme="dark"] .day-load-readout.i-calm   { --i-color: #9bc28c; }
+[data-theme="dark"] .day-load-readout.i-steady { --i-color: #e8c466; }
+[data-theme="dark"] .day-load-readout.i-full   { --i-color: #e89072; }
+[data-theme="dark"] .day-load-readout.i-heavy,
+[data-theme="dark"] .day-load-readout.i-packed { --i-color: #d97a73; }
+
+/* ─── Wake / sleep rhythm lines ─────────────────────────────────────────── */
+/* Light mode uses warm oklch tones (orange wake, dusk sleep). On dark paper
+   those read as alert chrome — pull them to muted ink-tones so they sit as
+   margin annotations, matching the editorial restraint of the rest of dark. */
+[data-theme="dark"] .tv-rhythm-line.wake  { --rhythm-stroke: rgba(232, 223, 205, 0.35); }
+[data-theme="dark"] .tv-rhythm-line.sleep { --rhythm-stroke: rgba(232, 223, 205, 0.30); }
+[data-theme="dark"] .tv-rhythm-line.wake .tv-rhythm-label,
+[data-theme="dark"] .tv-rhythm-line.sleep .tv-rhythm-label {
+  color: var(--ink-mute);
+  background: var(--paper);
+}
+
+/* ─── Settings (Prefs) titlebar ─────────────────────────────────────────── */
+[data-theme="dark"] .prefs-titlebar {
+  background: linear-gradient(to bottom, #2a241d, #1d1813);
+}
+
 
