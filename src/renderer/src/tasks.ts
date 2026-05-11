@@ -344,7 +344,15 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     for (const t of tasks) {
       seen.add(t.id);
       const slot = local.scheduled[t.id] ?? null;
-      const localDone = !!local.doneOn[t.id];
+      // Optimistic-tick marker: only trust localDone on the same calendar
+      // day. Why: Todoist rolls a recurring task's due date forward on
+      // close and immediately returns the next occurrence with
+      // is_completed=false. Without an expiry, the stale marker would
+      // silently hide every future firing of the same task. Tasks that
+      // are *really* done (non-recurring closes) keep their snapshot in
+      // local.completed below, so they stay visible there.
+      const localDoneAt = local.doneOn[t.id];
+      const localDone = !!localDoneAt && localDoneAt === todayStr;
       out.push({
         ...t,
         scheduledAt: slot,
@@ -364,7 +372,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
       }
     }
     return out;
-  }, [tasks, local.scheduled, local.doneOn, local.completed, completedCutoff]);
+  }, [tasks, local.scheduled, local.doneOn, local.completed, completedCutoff, todayStr]);
 
   // Carryover: any undone task whose "promise date" is in the past —
   // either the local schedule slot OR a Todoist due date when there's no

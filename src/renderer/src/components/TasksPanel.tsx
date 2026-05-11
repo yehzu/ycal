@@ -133,8 +133,15 @@ export function TasksPanel(props: Props) {
     return false;
   };
 
+  // Scheduled tasks stay in their project section (greyed via .scheduled
+  // styling) rather than moving up to Today. Reason: the calendar grid
+  // already shows the chip on its slot, so re-listing in Today is noise;
+  // and pulling a parent into Today while leaving its children in the
+  // project pool would unnest the hierarchy and visually orphan the
+  // children. The Today bucket is reserved for tasks the user hasn't
+  // planned a slot for yet (due-today, recurring-today).
   const isTodayTask = (task: TaskItem): boolean => {
-    if (task.scheduledAt && task.scheduledAt.date === todayStr) return true;
+    if (task.scheduledAt) return false;
     if (task.due === todayStr) return true;
     return firesToday(task);
   };
