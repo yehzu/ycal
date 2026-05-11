@@ -105,6 +105,36 @@ export interface ListEventsRequest {
   force?: boolean;
 }
 
+// Per-calendar (or per-account) fetch failure surfaced to the renderer so
+// the UI can show "N calendars couldn't sync — retry?" rather than
+// silently dropping a calendar's events when Google blips. Account-level
+// failures (`calendarId: null`) happen when the OAuth refresh itself
+// rejects; per-calendar failures are the common transient case (rate
+// limit, 5xx, network drop).
+export interface CalendarFetchFailure {
+  accountId: string;
+  // null = whole-account failure (auth refresh) where we never got far
+  // enough to enumerate calendars.
+  calendarId: string | null;
+  accountEmail: string;
+  calendarName: string | null;
+  message: string;
+  // True for failures that look retryable (HTTP 5xx, 429, transient
+  // network). The renderer auto-retries these on focus + manual click.
+  transient: boolean;
+  // True when the failure is `invalid_grant` style — user needs to
+  // remove + re-add the account in Settings before more retries make sense.
+  needsReauth: boolean;
+}
+
+// Wire shape returned by ListEvents IPC. Failures live alongside events
+// so a partial fetch still renders what we have AND surfaces the missing
+// calendars.
+export interface ListEventsResult {
+  events: CalendarEvent[];
+  failures: CalendarFetchFailure[];
+}
+
 export interface WeatherDay {
   date: string; // YYYY-MM-DD
   glyph: string | null;

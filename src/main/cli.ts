@@ -613,12 +613,21 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
   const calendarIds = Array.from(new Set(targetPairs.map((p) => p.calendarId)));
   const pairKeys = new Set(targetPairs.map((p) => calKey(p.accountId, p.calendarId)));
 
-  let events = await listEvents({
+  const fetch = await listEvents({
     timeMin: opts.range.from.toISOString(),
     timeMax: opts.range.to.toISOString(),
     calendarIds,
   });
-  events = events.filter((ev) => pairKeys.has(calKey(ev.accountId, ev.calendarId)));
+  if (fetch.failures.length > 0) {
+    // CLI surfaces sync failures on stderr so the user knows the JSON
+    // / markdown / text output below is partial. Exit code stays 0 —
+    // partial data is still useful to LLM callers.
+    for (const f of fetch.failures) {
+      const target = f.calendarName ? `${f.accountEmail}/${f.calendarName}` : f.accountEmail;
+      process.stderr.write(`[ycal] ${target}: ${f.message}\n`);
+    }
+  }
+  let events = fetch.events.filter((ev) => pairKeys.has(calKey(ev.accountId, ev.calendarId)));
   // Google's timeMin is documented as exclusive on event end, but multi-day
   // all-day events whose exclusive end.date equals our local midnight still
   // come back (e.g. an event whose last day is "yesterday" leaks into today).

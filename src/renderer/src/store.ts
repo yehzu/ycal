@@ -3,6 +3,7 @@ import type {
   AccountSummary,
   CalendarSummary,
   CalendarEvent,
+  CalendarFetchFailure,
   MergeCriteria,
   UiSettings,
   WeatherDay,
@@ -24,6 +25,9 @@ export interface Store {
   events: CalendarEvent[];
   loading: boolean;
   error: string | null;
+  // Per-calendar/account fetch failures from the last refresh. Drives the
+  // "N calendars couldn't sync — Retry" banner. Empty array when healthy.
+  eventFailures: CalendarFetchFailure[];
 
   // Visibility toggles, keyed by id. Defaults to whatever Google says.
   accountsActive: Record<string, boolean>;
@@ -88,6 +92,7 @@ export function useStore(
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [eventFailures, setEventFailures] = useState<CalendarFetchFailure[]>([]);
 
   const [accountsActive, setAccountsActiveState] =
     useState<Record<string, boolean>>(() => ({ ...initialUi.accountsActive }));
@@ -169,6 +174,7 @@ export function useStore(
       }
       fetchedRangeRef.current = { start: startTs, end: endTs };
       setEvents(res.events);
+      setEventFailures(res.failures);
       setError(null);
     } finally {
       setLoading(false);
@@ -323,6 +329,7 @@ export function useStore(
     events: visibleEvents,
     loading,
     error,
+    eventFailures,
     accountsActive,
     calVisible,
     setAccountActive,

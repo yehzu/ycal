@@ -275,7 +275,8 @@ function registerIpc() {
 
   ipcMain.handle(IPC.ListEvents, async (_e, req) => {
     try {
-      return { ok: true as const, events: await listEvents(req) };
+      const { events, failures } = await listEvents(req);
+      return { ok: true as const, events, failures };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }

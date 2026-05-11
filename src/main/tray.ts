@@ -136,12 +136,14 @@ async function fetchAgenda(): Promise<CalendarEvent[]> {
   start.setHours(0, 0, 0, 0);
   const end = new Date(now.getTime() + 36 * 60 * 60 * 1000);
 
-  let events = await listEvents({
+  const fetch = await listEvents({
     timeMin: start.toISOString(),
     timeMax: end.toISOString(),
     calendarIds,
   });
-  events = events.filter((ev) => pairKeys.has(`${ev.accountId}|${ev.calendarId}`));
+  // Tray surfaces the next event; failures don't need a banner here, the
+  // main window already shows them. Silently consume the failure array.
+  let events = fetch.events.filter((ev) => pairKeys.has(`${ev.accountId}|${ev.calendarId}`));
   events = dedupEvents(events, allCals, ui.mergeCriteria ?? DEFAULT_MERGE_CRITERIA);
   events = events.filter((ev) => ev.rsvp !== 'declined');
   // All-day events are noise on the menubar — they don't have a "starts

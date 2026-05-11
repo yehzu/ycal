@@ -4,9 +4,11 @@ import { listAccounts, getAccount } from './tokenStore';
 import type {
   CalendarSummary,
   CalendarEvent,
+  CalendarFetchFailure,
   EventAttendee,
   GoogleColors,
   ListEventsRequest,
+  ListEventsResult,
   AccountSummary,
 } from '@shared/types';
 
@@ -57,6 +59,55 @@ function friendlyAuthError(email: string, err: unknown): Error {
     return wrapped;
   }
   return new Error(`${email}: ${message || 'unknown error'}`);
+}
+
+// Heuristic for "this might work on the next attempt." HTTP 429, 5xx, and
+// the usual Node-level network drops fall into this bucket. We DON'T retry
+// 401/403 (auth) or 404 (calendar gone) — those need user action.
+function classifyTransient(err: unknown): boolean {
+  const e = err as {
+    code?: string | number;
+    status?: number;
+    response?: { status?: number };
+  };
+  const status = e?.response?.status ?? (typeof e?.status === 'number' ? e.status : undefined);
+  if (typeof status === 'number') {
+    if (status === 429) return true;
+    if (status >= 500 && status <= 599) return true;
+    return false;
+  }
+  const code = typeof e?.code === 'string' ? e.code : '';
+  return /^(ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EPIPE|ECONNREFUSED)$/.test(code);
+}
+
+function isNeedsReauth(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'needsReauth' in (err as object)) {
+    return !!(err as { needsReauth?: boolean }).needsReauth;
+  }
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  const data = (err as { response?: { data?: { error?: string } } } | null)?.response?.data;
+  const code = data?.error ?? '';
+  return /invalid_grant/i.test(raw) || code === 'invalid_grant';
+}
+
+// Sleep helper for retry backoff. Kept local — no global timer dependency.
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Wrap a flaky async fn with one retry on transient failure. 500ms wait —
+// long enough that a 429 cooldown helps, short enough that the user sees
+// the recovery as part of the current refresh rather than a separate
+// round-trip.
+async function withTransientRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!classifyTransient(err)) throw err;
+    console.warn('[yCal] transient error on', label, '— retrying after 500ms:', err instanceof Error ? err.message : err);
+    await delay(500);
+    return fn();
+  }
 }
 
 function cal(accountId: string): calendar_v3.Calendar {
@@ -291,7 +342,7 @@ function isoFromGoogleDate(g: calendar_v3.Schema$EventDateTime | undefined): {
   return { iso: g.dateTime ?? new Date(0).toISOString(), allDay: false };
 }
 
-export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[]> {
+export async function listEvents(req: ListEventsRequest): Promise<ListEventsResult> {
   // Build the set of (accountId, calendarId) we need to query.
   const calendars = await listAllCalendars();
   const filterIds = req.calendarIds && req.calendarIds.length > 0
@@ -313,17 +364,21 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
   if (!req.force) {
     const cached = eventsCache.get(cacheKey);
     if (cached && Date.now() - cached.at < EVENTS_CACHE_TTL_MS) {
-      return cached.data;
+      return { events: cached.data, failures: [] };
     }
   }
 
   const colors = await fetchColors();
   const accounts = listAccounts();
 
-  // Group targets by account so a single auth failure (invalid_grant on
-  // refresh) collapses to one rejected promise per account instead of one
-  // per calendar. Then allSettled gives us per-account isolation: if
-  // account A's refresh dies, account B's events still load.
+  // Group targets by account so we can isolate auth refresh from per-cal
+  // fetches: if account A's refresh dies (`invalid_grant`), we record ONE
+  // account-level failure and never enumerate its calendars. If account
+  // A's refresh works but one of its calendars 5xx's, only THAT calendar
+  // surfaces as a failure — the rest of A's events still load. This was
+  // the bug: the old code's inner `Promise.all` poisoned the entire
+  // account on any single calendar reject, making "one bad calendar"
+  // look like "lost half a day of events" to the user.
   const targetsByAccount = new Map<string, typeof targets>();
   for (const t of targets) {
     const list = targetsByAccount.get(t.accountId);
@@ -332,26 +387,34 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
   }
   const accountIds = Array.from(targetsByAccount.keys());
 
-  const settled = await Promise.allSettled(
+  const out: FlatEventRow[] = [];
+  const failures: CalendarFetchFailure[] = [];
+
+  await Promise.all(
     accountIds.map(async (accountId) => {
       const acc = accounts.find((a) => a.id === accountId);
-      if (!acc) return [] as FlatEventRow[];
+      if (!acc) return;
       const client = google.calendar({ version: 'v3', auth: authClientForAccount(acc) });
-      const accOut: FlatEventRow[] = [];
-      // Fan out per calendar within the account in parallel.
-      await Promise.all(
-        targetsByAccount.get(accountId)!.map(async (cal) => {
+      const calList = targetsByAccount.get(accountId)!;
+      // Fan out per calendar within the account; per-calendar isolation
+      // via allSettled.
+      const perCal = await Promise.allSettled(
+        calList.map(async (cal) => {
+          const localRows: FlatEventRow[] = [];
           let pageToken: string | undefined;
           do {
-            const res = await client.events.list({
-              calendarId: cal.id,
-              timeMin: req.timeMin,
-              timeMax: req.timeMax,
-              singleEvents: true,
-              orderBy: 'startTime',
-              maxResults: 2500,
-              pageToken,
-            });
+            const pt = pageToken;
+            const res = await withTransientRetry(`${acc.email}/${cal.name}`, () =>
+              client.events.list({
+                calendarId: cal.id,
+                timeMin: req.timeMin,
+                timeMax: req.timeMax,
+                singleEvents: true,
+                orderBy: 'startTime',
+                maxResults: 2500,
+                pageToken: pt,
+              }),
+            );
             for (const ev of res.data.items ?? []) {
               if (!ev.id || !ev.start || !ev.end) continue;
               if (ev.status === 'cancelled') continue;
@@ -365,7 +428,7 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
               const workingLocation = resolveWorkingLocation(ev, eventType);
               const meet = resolveMeet(ev);
               const attendees = resolveAttendees(ev);
-              accOut.push({
+              localRows.push({
                 id: ev.id,
                 calendarId: cal.id,
                 accountId: cal.accountId,
@@ -389,30 +452,46 @@ export async function listEvents(req: ListEventsRequest): Promise<CalendarEvent[
             }
             pageToken = res.data.nextPageToken ?? undefined;
           } while (pageToken);
+          return localRows;
         }),
       );
-      return accOut;
+
+      for (let i = 0; i < calList.length; i++) {
+        const cal = calList[i];
+        const r = perCal[i];
+        if (r.status === 'fulfilled') {
+          out.push(...r.value);
+        } else {
+          const needsReauth = isNeedsReauth(r.reason);
+          // An invalid_grant surfacing on a per-calendar fetch means the
+          // token died mid-fan-out — record once at account scope, then
+          // skip recording it again for the sibling calendars in the
+          // same account (they'll all fail with the same root cause).
+          if (needsReauth && failures.some((f) => f.accountId === accountId && f.calendarId === null)) {
+            continue;
+          }
+          const friendly = friendlyAuthError(acc.email, r.reason);
+          const transient = !needsReauth && classifyTransient(r.reason);
+          failures.push({
+            accountId,
+            calendarId: needsReauth ? null : cal.id,
+            accountEmail: acc.email,
+            calendarName: needsReauth ? null : cal.name,
+            message: friendly.message,
+            transient,
+            needsReauth,
+          });
+          console.error('[yCal] events list failed for', acc.email, '/', cal.name, '—', friendly.message);
+        }
+      }
     }),
   );
 
-  const out: FlatEventRow[] = [];
-  const failures: Error[] = [];
-  for (let i = 0; i < accountIds.length; i++) {
-    const accountId = accountIds[i];
-    const result = settled[i];
-    if (result.status === 'fulfilled') {
-      out.push(...result.value);
-    } else {
-      const acc = accounts.find((a) => a.id === accountId);
-      const friendly = friendlyAuthError(acc?.email ?? accountId, result.reason);
-      failures.push(friendly);
-      console.error('[yCal] events list failed for', acc?.email ?? accountId, '—', friendly.message);
-    }
+  // Only cache when fully successful. A partial-failure result needs to
+  // retry on the next refresh — caching it would mean the user clicks
+  // "Retry" and instantly gets back the same gap.
+  if (failures.length === 0) {
+    eventsCache.set(cacheKey, { at: Date.now(), data: out });
   }
-  if (out.length === 0 && accountIds.length > 0 && failures.length === accountIds.length) {
-    throw new Error(failures.map((e) => e.message).join('\n'));
-  }
-
-  eventsCache.set(cacheKey, { at: Date.now(), data: out });
-  return out;
+  return { events: out, failures };
 }

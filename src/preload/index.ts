@@ -4,6 +4,7 @@ import type {
   AccountSummary,
   CalendarSummary,
   CalendarEvent,
+  CalendarFetchFailure,
   CloudStorage,
   CloudStorageInfo,
   DriveSyncStatus,
@@ -32,7 +33,7 @@ const api = {
   listAccounts: (): Promise<AccountSummary[]> => ipcRenderer.invoke(IPC.ListAccounts),
   listCalendars: (): Promise<Result<{ calendars: CalendarSummary[] }>> =>
     ipcRenderer.invoke(IPC.ListCalendars),
-  listEvents: (req: ListEventsRequest): Promise<Result<{ events: CalendarEvent[] }>> =>
+  listEvents: (req: ListEventsRequest): Promise<Result<{ events: CalendarEvent[]; failures: CalendarFetchFailure[] }>> =>
     ipcRenderer.invoke(IPC.ListEvents, req),
   getColors: (): Promise<Result<{ colors: GoogleColors }>> =>
     ipcRenderer.invoke(IPC.GetColors),

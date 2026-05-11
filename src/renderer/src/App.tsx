@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  CalendarEvent, CloudStorageInfo, DriveSyncStatus, LoadBands, LoadWindowSettings,
+  CalendarEvent, CalendarFetchFailure, CloudStorageInfo, DriveSyncStatus, LoadBands, LoadWindowSettings,
   MergeCriteria, RhythmData, TempUnits, ThemeMode, UiSettings,
 } from '@shared/types';
 import {
@@ -374,6 +374,30 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     };
   }, [refreshEvents]);
 
+  // Auto-retry transient calendar fetch failures with exponential backoff
+  // (8s → 24s → 72s, capped). Stops as soon as the failure list empties
+  // or shrinks to needsReauth-only entries (those need user action, no
+  // amount of retrying will fix them). Bypasses the 30s focus throttle
+  // because the user can see they're missing data right now.
+  const eventFailures = store.eventFailures;
+  const retryAttemptRef = useRef(0);
+  useEffect(() => {
+    const transient = eventFailures.filter((f) => f.transient && !f.needsReauth);
+    if (transient.length === 0) {
+      retryAttemptRef.current = 0;
+      return;
+    }
+    const attempt = retryAttemptRef.current;
+    if (attempt >= 3) return;        // give up — banner sticks until user clicks Retry
+    const delayMs = 8_000 * Math.pow(3, attempt);
+    const timer = window.setTimeout(() => {
+      retryAttemptRef.current = attempt + 1;
+      lastRefreshRef.current = Date.now();
+      void refreshEvents();
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [eventFailures, refreshEvents]);
+
   // Browser-style back/forward across (anchor, selected, view) snapshots.
   // The effect below detects user-initiated changes and pushes the previous
   // snapshot onto `back`; navigateHistory itself flips a flag so its own
@@ -639,6 +663,13 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           }}>
             {store.error}
           </div>
+        )}
+        {store.eventFailures.length > 0 && (
+          <SyncFailureBanner
+            failures={store.eventFailures}
+            onRetry={() => { void store.refreshEvents(); }}
+            busy={store.loading}
+          />
         )}
 
         <div className="app">
@@ -933,6 +964,77 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       )}
 
       <UpdateOverlay />
+    </div>
+  );
+}
+
+/// Non-blocking banner shown when one or more calendars failed to sync.
+/// Surfaces a count + the first failed target + a Retry button. Hidden
+/// automatically the moment a refresh comes back clean (the store
+/// replaces eventFailures wholesale on every fetch).
+function SyncFailureBanner({
+  failures,
+  onRetry,
+  busy,
+}: {
+  failures: CalendarFetchFailure[];
+  onRetry: () => void;
+  busy: boolean;
+}) {
+  // De-dup repeated needsReauth entries (same account, every cal) into
+  // one row per account. Per-calendar transient failures stay distinct
+  // so the user can see which calendar is the problem.
+  const reauthAccounts = new Set<string>();
+  const shown: CalendarFetchFailure[] = [];
+  for (const f of failures) {
+    if (f.needsReauth) {
+      if (reauthAccounts.has(f.accountId)) continue;
+      reauthAccounts.add(f.accountId);
+    }
+    shown.push(f);
+  }
+  const needsReauth = failures.some((f) => f.needsReauth);
+  const head = shown[0];
+  const more = shown.length - 1;
+  const target = head.calendarName
+    ? `${head.accountEmail} · ${head.calendarName}`
+    : head.accountEmail;
+  const summary = needsReauth
+    ? `${target} — sign-in expired. Reconnect in Settings → Accounts.`
+    : more > 0
+      ? `${target} (+${more} more) couldn't sync.`
+      : `${target} couldn't sync.`;
+  return (
+    <div style={{
+      padding: '8px 22px',
+      fontFamily: 'var(--serif-body)',
+      fontSize: 12.5,
+      color: 'var(--ink)',
+      background: needsReauth ? '#f6e7c1' : '#efe6d2',
+      borderBottom: '0.5px solid var(--rule)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 12,
+    }}>
+      <span style={{ flex: 1 }}>{summary}</span>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={busy}
+        style={{
+          fontFamily: 'var(--serif-body)',
+          fontSize: 12,
+          padding: '3px 10px',
+          background: 'transparent',
+          border: '0.5px solid var(--rule)',
+          borderRadius: 2,
+          color: 'var(--ink)',
+          cursor: busy ? 'default' : 'pointer',
+          opacity: busy ? 0.5 : 1,
+        }}
+      >
+        {busy ? 'Retrying…' : 'Retry'}
+      </button>
     </div>
   );
 }
