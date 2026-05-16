@@ -12,7 +12,7 @@ import {
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
 import { dayHolidayInfo } from '../holidays';
-import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
@@ -72,7 +72,7 @@ export function MonthGrid({
   // Multi-day ribbons skip holiday-role events and location indicators —
   // both render as date-adjacent chips, not as connected bars.
   const ribbonEvents = useMemo(
-    () => events.filter((e) => !isHolidayEvent(e, calRoles) && !isLocationEvent(e)),
+    () => events.filter((e) => !isHolidayEvent(e, calRoles) && !isLocationChip(e)),
     [events, calRoles],
   );
 
@@ -311,7 +311,7 @@ const Cell = memo(function Cell({
 }: CellProps) {
   const isWeekend = day.getDay() === 0 || day.getDay() === 6;
   const hInfo = dayHolidayInfo(day, dayEvents, calRoles);
-  const isOOO = dayEvents.some((e) => isLocationEvent(e) && locKindOf(e) === 'ooo');
+  const isOOO = dayEvents.some((e) => isLocationChip(e) && locKindOf(e) === 'ooo');
   const dayLoad = computeDayLoad({
     date: day,
     events: allEvents,
@@ -336,7 +336,7 @@ const Cell = memo(function Cell({
 
   const seenLoc = new Set<string>();
   const locationEvents = touching
-    .filter((e) => isLocationEvent(e))
+    .filter((e) => isLocationChip(e))
     .filter((e) => {
       const k = locLabelOf(e).trim().toLowerCase();
       if (seenLoc.has(k)) return false;
@@ -350,7 +350,7 @@ const Cell = memo(function Cell({
   const ordered = touching
     .filter((e) => !isMultiDayAllDay(e)
       && !isHolidayEvent(e, calRoles)
-      && !isLocationEvent(e))
+      && !isLocationChip(e))
     .slice()
     .sort(compareEventsByStart);
   const shown = ordered.slice(0, maxPerCell);

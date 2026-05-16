@@ -10,7 +10,7 @@ import { calKey } from '../store';
 import {
   type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda,
 } from '../calRoles';
-import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { MergeBadge } from './MergeBadge';
 import { MiniMonth } from './MiniMonth';
@@ -53,13 +53,13 @@ function AgendaSummary({
 }) {
   const touching = eventsTouchingDay(events, date);
   const todays = touching
-    .filter((e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e))
+    .filter((e) => !isExcludedFromAgenda(e, calRoles) && !isLocationChip(e))
     .slice()
     .sort(compareEventsByStart);
 
   const seenLoc = new Set<string>();
   const locations = touching
-    .filter((e) => isLocationEvent(e))
+    .filter((e) => isLocationChip(e))
     .filter((e) => {
       const k = locLabelOf(e).trim().toLowerCase();
       if (seenLoc.has(k)) return false;

@@ -11,7 +11,7 @@ import {
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
 import { dayHolidayInfo, type DayHolidayInfo } from '../holidays';
-import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
@@ -158,7 +158,7 @@ export function TimeView({
       m[fmtDate(d)] = events.filter(
         (e) => e.allDay
           && !isMultiDayAllDay(e)
-          && !isLocationEvent(e)
+          && !isLocationChip(e)
           && eventTouchesDay(e, d),
       );
     }
@@ -168,7 +168,7 @@ export function TimeView({
   const ribbons = useMemo<RibbonPlacement[]>(
     () => (days.length === 0
       ? []
-      : layoutRangeRibbons(events.filter((e) => !isLocationEvent(e)), days[0], days.length)),
+      : layoutRangeRibbons(events.filter((e) => !isLocationChip(e)), days[0], days.length)),
     [days, events],
   );
   const ribbonLanes = ribbons.length === 0
@@ -180,7 +180,7 @@ export function TimeView({
     for (const d of days) m[fmtDate(d)] = [];
     for (const e of events) {
       if (e.allDay) continue;
-      if (isLocationEvent(e)) continue;
+      if (isLocationChip(e)) continue;
       for (const d of days) {
         if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
       }
@@ -193,7 +193,7 @@ export function TimeView({
     for (const d of days) {
       const seen = new Set<string>();
       m[fmtDate(d)] = events
-        .filter((e) => isLocationEvent(e) && eventTouchesDay(e, d))
+        .filter((e) => isLocationChip(e) && eventTouchesDay(e, d))
         .filter((e) => {
           const k = locLabelOf(e).trim().toLowerCase();
           if (seen.has(k)) return false;

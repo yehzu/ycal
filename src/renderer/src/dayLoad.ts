@@ -22,7 +22,7 @@ import type {
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
 import { type CalRoles, isExcludedFromAgenda } from './calRoles';
 import { eventTouchesDay } from './multiday';
-import { isLocationEvent } from './locations';
+import { isLocationChip } from './locations';
 import { resolveRhythm } from './rhythm';
 import { fmtDate } from './dates';
 
@@ -131,7 +131,7 @@ export function computeDayLoad({
 
   for (const e of events) {
     if (e.allDay) continue;
-    if (isLocationEvent(e)) continue;
+    if (isLocationChip(e)) continue;
     if (isExcludedFromAgenda(e, calRoles)) continue;
     if (e.rsvp === 'declined') continue;
     if (!eventTouchesDay(e, date)) continue;

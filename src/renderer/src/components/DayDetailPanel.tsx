@@ -7,7 +7,7 @@ import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import {
   type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent,
 } from '../calRoles';
-import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
@@ -54,14 +54,14 @@ export function DayDetailPanel({
     .slice()
     .sort(compareEventsByStart);
   const agenda = todays.filter(
-    (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationEvent(e),
+    (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationChip(e),
   );
   const allDay = agenda.filter((e) => e.allDay).slice().sort(compareEventsByStart);
   const timed = agenda.filter((e) => !e.allDay).slice().sort(compareEventsByStart);
 
   const seenLoc = new Set<string>();
   const locations = todays
-    .filter((e) => isLocationEvent(e))
+    .filter((e) => isLocationChip(e))
     .filter((e) => {
       const k = locLabelOf(e).trim().toLowerCase();
       if (seenLoc.has(k)) return false;

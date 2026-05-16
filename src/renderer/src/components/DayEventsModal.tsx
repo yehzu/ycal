@@ -3,7 +3,7 @@ import type { CalendarEvent, CalendarSummary } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import { type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent } from '../calRoles';
-import { isLocationEvent, locKindOf, locLabelOf } from '../locations';
+import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 
@@ -52,7 +52,7 @@ export function DayEventsModal({
 
   const seenL = new Set<string>();
   const locations = occurs
-    .filter((e) => isLocationEvent(e))
+    .filter((e) => isLocationChip(e))
     .filter((e) => {
       const k = locLabelOf(e).trim().toLowerCase();
       if (seenL.has(k)) return false;
@@ -63,7 +63,7 @@ export function DayEventsModal({
   const rest = occurs.filter(
     (e) =>
       !isHolidayEvent(e, calRoles) &&
-      !isLocationEvent(e) &&
+      !isLocationChip(e) &&
       !isExcludedFromAgenda(e, calRoles),
   );
   const allDay = rest.filter((e) => e.allDay).slice().sort(compareEventsByStart);
