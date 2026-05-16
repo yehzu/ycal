@@ -1231,6 +1231,29 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Timed OOO — render as a red "I'm out" block. Calendar color is replaced
+   so the user can pick out the unavailable slot at a glance; doesn't count
+   toward day-load either (see dayLoad.ts). All-day OOO renders as a chip
+   beside the date and never hits this rule. */
+.tv-event.ooo {
+  background: color-mix(in srgb, #d50000 14%, var(--paper) 86%);
+  border-left-color: #d50000;
+  border-top-color: color-mix(in srgb, #d50000 35%, transparent);
+  border-right-color: color-mix(in srgb, #d50000 35%, transparent);
+  border-bottom-color: color-mix(in srgb, #d50000 35%, transparent);
+}
+.tv-event.ooo:hover {
+  background: color-mix(in srgb, #d50000 22%, var(--paper) 78%);
+}
+.tv-event.ooo .et { color: #d50000; }
+.tv-event.ooo .en::before { content: "OOO · "; font-weight: 600; color: #d50000; }
+[data-theme="dark"] .tv-event.ooo {
+  background: color-mix(in srgb, #d50000 22%, var(--paper) 78%);
+}
+[data-theme="dark"] .tv-event.ooo:hover {
+  background: color-mix(in srgb, #d50000 32%, var(--paper) 68%);
+}
+
 .now-line {
   position: absolute; left: 0; right: 0;
   height: 0;

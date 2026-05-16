@@ -22,7 +22,7 @@ import type {
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
 import { type CalRoles, isExcludedFromAgenda } from './calRoles';
 import { eventTouchesDay } from './multiday';
-import { isLocationChip } from './locations';
+import { isLocationEvent } from './locations';
 import { resolveRhythm } from './rhythm';
 import { fmtDate } from './dates';
 
@@ -131,7 +131,10 @@ export function computeDayLoad({
 
   for (const e of events) {
     if (e.allDay) continue;
-    if (isLocationChip(e)) continue;
+    // Drop every location-flagged event — working-location has no time,
+    // and timed OOO is the user's deliberate "I'm out" marker, not
+    // committed time. Mirrors the iOS DayLoad filter.
+    if (isLocationEvent(e)) continue;
     if (isExcludedFromAgenda(e, calRoles)) continue;
     if (e.rsvp === 'declined') continue;
     if (!eventTouchesDay(e, date)) continue;

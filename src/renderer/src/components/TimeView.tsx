@@ -552,6 +552,11 @@ function DayColumn({
         else if (dur <= 30) cn.push('short');
         const rc = rsvpClass(e);
         if (rc) cn.push(rc);
+        // Timed OOO renders as a red "I'm out" block — drops calendar
+        // color in favor of the tomato accent so the unavailable slot
+        // reads at a glance. All-day OOO went to the location chip
+        // upstream; this only fires for the partial-day case.
+        if (e.eventType === 'outOfOffice') cn.push('ooo');
         return (
           <button
             key={'e:' + e.id}
