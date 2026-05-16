@@ -1,18 +1,36 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Squircle bounds measured directly off /System/Applications/*.app
+    (Weather, Calculator, Reminders, Notes) — they ship a 256-px PNG
+    whose opaque pixels span 23..232 horizontal × 25..235 vertical,
+    i.e. ~92px padding all sides in 1024-space, squircle width 840.
+    Corner radius eyeballs to ~200/1024.
+    Earlier versions stuck a clip-path INSIDE the same <g> as a
+    translate+scale transform — clip rect is in local user space, so
+    the transform shrank the visible squircle to ~65% of canvas
+    instead of the intended 80%. Now: viewport-space coords everywhere,
+    no nested transform.
+  -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#f5f1e8"/>
       <stop offset="1" stop-color="#e9e2d2"/>
     </linearGradient>
     <clipPath id="sq">
-      <rect x="100" y="100" width="824" height="824" rx="185" ry="185"/>
+      <rect x="92" y="92" width="840" height="840" rx="200" ry="200"/>
     </clipPath>
   </defs>
-  <g clip-path="url(#sq)" transform="translate(100 100) scale(0.8047)">
-    <rect width="1024" height="1024" fill="url(#bg)"/>
-    <circle cx="512" cy="512" r="320" fill="none" stroke="#15171a" stroke-width="3"/>
-    <circle cx="512" cy="512" r="180" fill="none" stroke="#15171a" stroke-width="1.2" opacity="0.3"/>
-    <circle cx="512" cy="512" r="6" fill="#15171a" opacity="0.85"/>
-    <circle cx="352.00" cy="789.13" r="38" fill="#d9614e"/>
+  <rect x="92" y="92" width="840" height="840" rx="200" ry="200" fill="url(#bg)"/>
+  <g clip-path="url(#sq)">
+    <!-- Outer orbit (62.5% of squircle's inner radius — fills the
+         tile with a comfortable margin) -->
+    <circle cx="512" cy="512" r="262" fill="none" stroke="#15171a" stroke-width="2.4"/>
+    <!-- Mid ring -->
+    <circle cx="512" cy="512" r="147" fill="none" stroke="#15171a" stroke-width="1" opacity="0.3"/>
+    <!-- Center pin -->
+    <circle cx="512" cy="512" r="5" fill="#15171a" opacity="0.85"/>
+    <!-- Orbit dot, 240° from north (~7 o'clock).
+         (cx,cy) = (512 + 262·cos120°, 512 + 262·sin120°) = (381, 739) -->
+    <circle cx="381" cy="739" r="31" fill="#d9614e"/>
   </g>
 </svg>

@@ -11,7 +11,7 @@ import {
 } from '../multiday';
 import { type CalRoles, isHolidayEvent } from '../calRoles';
 import { dayHolidayInfo, type DayHolidayInfo } from '../holidays';
-import { isLocationChip, locKindOf, locLabelOf } from '../locations';
+import { isLocationChip, isLocationEvent, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
 import { MergeBadge } from './MergeBadge';
@@ -180,7 +180,28 @@ export function TimeView({
     for (const d of days) m[fmtDate(d)] = [];
     for (const e of events) {
       if (e.allDay) continue;
-      if (isLocationChip(e)) continue;
+      // Drop every location-flagged event from the column-packed event
+      // list — workingLocation goes to the date chips, and OOO (timed or
+      // all-day) gets its own treatment so it doesn't fight real
+      // meetings for column width.
+      if (isLocationEvent(e)) continue;
+      for (const d of days) {
+        if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
+      }
+    }
+    return m;
+  }, [days, events]);
+
+  // Timed OOO events surface as a full-width, hatched background band
+  // behind regular events — "I'm out 2-5pm" should mark that slot, not
+  // shove a meeting at 3pm into a half-column. All-day OOO renders as a
+  // date-adjacent chip via locationsByDay; this bucket is timed only.
+  const oooByDay = useMemo(() => {
+    const m: Record<string, CalendarEvent[]> = {};
+    for (const d of days) m[fmtDate(d)] = [];
+    for (const e of events) {
+      if (e.allDay) continue;
+      if (e.eventType !== 'outOfOffice') continue;
       for (const d of days) {
         if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
       }
@@ -422,6 +443,7 @@ export function TimeView({
                 isOOO={isOOO}
                 hInfo={hInfo}
                 events={timedByDay[fmtDate(d)] ?? []}
+                ooos={oooByDay[fmtDate(d)] ?? []}
                 onEventClick={onEventClick}
                 nowOffset={nowOffset}
                 tasks={dayTasks}
@@ -447,6 +469,7 @@ interface DayColumnProps {
   isOOO: boolean;
   hInfo: DayHolidayInfo | null;
   events: CalendarEvent[];
+  ooos: CalendarEvent[];
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   nowOffset: number;
   tasks: Array<{ task: TaskItem; start: string }>;
@@ -459,7 +482,7 @@ interface DayColumnProps {
 }
 
 function DayColumn({
-  day, isToday, isWeekend, isOOO, hInfo, events, onEventClick, nowOffset,
+  day, isToday, isWeekend, isOOO, hInfo, events, ooos, onEventClick, nowOffset,
   tasks, onScheduleTask, onToggleTaskDone, onOpenTask,
   rhythmData, onSetRhythmOverride, onClearRhythmOverride,
 }: DayColumnProps) {
@@ -522,6 +545,31 @@ function DayColumn({
         />
       ))}
 
+      {/* Timed OOO bands — hatched warm wash spanning the event's time
+          range, full column width, sitting BEHIND regular events so a
+          meeting that overlaps an OOO range still reads on top. */}
+      {ooos.map((e) => {
+        const dayStartMs = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+        const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
+        const evS = new Date(e.start).getTime();
+        const evE = new Date(e.end).getTime();
+        const sMin = evS <= dayStartMs ? 0 : Math.round((evS - dayStartMs) / 60000);
+        const eMin = evE >= dayEndMs ? 24 * 60 : Math.round((evE - dayStartMs) / 60000);
+        const top = ((sMin / 60) - START_HOUR) * HOUR_HEIGHT;
+        const height = Math.max(16, ((eMin - sMin) / 60) * HOUR_HEIGHT);
+        return (
+          <button
+            key={'ooo:' + e.id}
+            className="tv-ooo-band"
+            style={{ top, height }}
+            onClick={(ev) => onEventClick(e, ev.currentTarget)}
+            title={e.title}
+          >
+            <span className="tv-ooo-label">OOO</span>
+          </button>
+        );
+      })}
+
       {/* Tasks and events share the same column layout so they don't cover
           each other when scheduled at the same time slot. */}
       {laid.map((b) => {
@@ -552,11 +600,6 @@ function DayColumn({
         else if (dur <= 30) cn.push('short');
         const rc = rsvpClass(e);
         if (rc) cn.push(rc);
-        // Timed OOO renders as a red "I'm out" block — drops calendar
-        // color in favor of the tomato accent so the unavailable slot
-        // reads at a glance. All-day OOO went to the location chip
-        // upstream; this only fires for the partial-day case.
-        if (e.eventType === 'outOfOffice') cn.push('ooo');
         return (
           <button
             key={'e:' + e.id}
