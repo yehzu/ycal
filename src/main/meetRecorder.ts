@@ -294,7 +294,27 @@ async function stopRecording(eventId: string): Promise<void> {
 async function postProcess(eventId: string, audioFile: string, title: string): Promise<void> {
   notify('yCal · transcribing', title);
   try {
-    const stdout = await execScript([POST_SH, audioFile, title], { timeoutMs: 30 * 60_000 });
+    // If the user has a custom summary prompt in Settings → Recording,
+    // materialise it on disk so post-meet.sh can read it via
+    // YCAL_SUMMARY_PROMPT. Empty / unset → script falls back to its
+    // built-in heredoc (which mirrors DEFAULT_SUMMARY_PROMPT). One
+    // file per call: live next to the audio so the user can inspect
+    // what was sent to Claude if a summary looks wrong.
+    let promptFile: string | undefined;
+    const custom = (getUiSettings().recordingSummaryPrompt ?? '').trim();
+    if (custom) {
+      promptFile = `${audioFile.replace(/\.m4a$/, '')}.summary.prompt.txt`;
+      try {
+        fs.writeFileSync(promptFile, custom);
+      } catch (e) {
+        console.error('[yCal recorder] failed to write prompt file', e);
+        promptFile = undefined;
+      }
+    }
+    const stdout = await execScript([POST_SH, audioFile, title], {
+      timeoutMs: 30 * 60_000,
+      envExtras: promptFile ? { YCAL_SUMMARY_PROMPT: promptFile } : undefined,
+    });
     const summary = stdout.trim() || audioFile.replace(/\.m4a$/, '.summary.md');
     const status = recordings.get(eventId);
     if (status) {
@@ -359,17 +379,20 @@ function notify(title: string, body: string): void {
 
 function execScript(
   argv: string[],
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; envExtras?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const [cmd, ...args] = argv;
     // Pin YCAL_COREAUDIO_TAP to the bundled binary so the script always
     // uses the version that ships with this yCal release, even if the
-    // user has an older copy floating around in ~/.ycal/bin.
+    // user has an older copy floating around in ~/.ycal/bin. Callers can
+    // tack on more env via opts.envExtras (e.g. a per-call
+    // YCAL_SUMMARY_PROMPT pointing at the user's customised prompt).
     const bundledTap = resolveBundled('native', 'coreaudio-tap');
     const env = {
       ...process.env,
       ...(bundledTap ? { YCAL_COREAUDIO_TAP: bundledTap } : {}),
+      ...(opts.envExtras ?? {}),
     };
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     let stdout = '';

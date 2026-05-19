@@ -197,10 +197,15 @@ export interface UiSettings {
   theme?: ThemeMode;
   // Auto-record meetings that have a meetUrl, run them through whisper.cpp
   // for a local transcript, then claude -p for a summary. Requires the
-  // helper scripts in ~/.ycal/ (see tools/recording/README.md). Defaults
-  // to false because it needs system audio capture (BlackHole) which the
-  // user has to set up once before it'll actually work.
+  // helper scripts + ScreenCaptureKit permission. Defaults to false;
+  // the user must complete one-time setup in Settings → Recording first.
   autoRecordMeetings?: boolean;
+  // Override the LLM prompt used to summarise the transcript. Empty or
+  // undefined means "use the built-in default" (DEFAULT_SUMMARY_PROMPT
+  // in `@shared/recorderPrompt`). The body should keep the
+  // `__TITLE__` and `__TRANSCRIPT__` placeholders — post-meet.sh
+  // substitutes them per call before piping to `claude -p`.
+  recordingSummaryPrompt?: string;
 }
 
 // Recording-pipeline dependency status. Surfaced to the Settings →

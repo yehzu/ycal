@@ -5,6 +5,7 @@ import type {
   MergeCriteria, RecorderSetupProgress, RecorderSetupStatus,
   RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
 } from '@shared/types';
+import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
 import { calKey } from '../store';
 import { type CalRole, type CalRoles, ROLE_OPTIONS } from '../calRoles';
@@ -54,6 +55,8 @@ interface Props {
   setAutoRolloverPastTasks: (v: boolean) => void;
   autoRecordMeetings: boolean;
   setAutoRecordMeetings: (v: boolean) => void;
+  recordingSummaryPrompt: string;
+  setRecordingSummaryPrompt: (v: string) => void;
   // Day-load gauge window
   loadWindow: LoadWindowSettings;
   setLoadWindow: (next: LoadWindowSettings) => void;
@@ -228,6 +231,8 @@ export function SettingsModal(props: Props) {
               <PrefsRecording
                 autoRecord={props.autoRecordMeetings}
                 setAutoRecord={props.setAutoRecordMeetings}
+                summaryPrompt={props.recordingSummaryPrompt}
+                setSummaryPrompt={props.setRecordingSummaryPrompt}
               />
             )}
             {tab === 'shortcuts' && <PrefsShortcuts />}
@@ -1639,10 +1644,12 @@ function hhmmToMin(s: string): number | null {
 }
 
 function PrefsRecording({
-  autoRecord, setAutoRecord,
+  autoRecord, setAutoRecord, summaryPrompt, setSummaryPrompt,
 }: {
   autoRecord: boolean;
   setAutoRecord: (v: boolean) => void;
+  summaryPrompt: string;
+  setSummaryPrompt: (v: string) => void;
 }) {
   const [status, setStatus] = useState<RecorderSetupStatus | null>(null);
   const [installing, setInstalling] = useState<boolean>(false);
@@ -1890,6 +1897,73 @@ function PrefsRecording({
           </pre>
         </details>
       )}
+
+      <h3 className="pref-h" style={{ marginTop: 22 }}>Summary prompt</h3>
+      <p className="pref-row-hint" style={{ maxWidth: '60ch' }}>
+        Sent to <code>claude -p</code> alongside the transcript to produce
+        the meeting note. Keep <code>__TITLE__</code> and{' '}
+        <code>__TRANSCRIPT__</code> placeholders — <code>post-meet.sh</code>{' '}
+        substitutes them on each call. Leave empty to use the built-in
+        default.
+      </p>
+      <textarea
+        value={summaryPrompt}
+        onChange={(e) => setSummaryPrompt(e.target.value)}
+        rows={14}
+        spellCheck={false}
+        placeholder="(empty → use built-in default. Click “Load default” to seed the textarea.)"
+        style={{
+          width: '100%',
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontSize: 12,
+          lineHeight: 1.45,
+          padding: 10,
+          borderRadius: 6,
+          border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+          background: 'var(--input-bg, rgba(0,0,0,0.02))',
+          color: 'inherit',
+          resize: 'vertical',
+          whiteSpace: 'pre',
+          overflowX: 'auto',
+        }}
+      />
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button
+          type="button"
+          className="pref-button"
+          onClick={() => setSummaryPrompt(DEFAULT_SUMMARY_PROMPT)}
+          style={{
+            padding: '4px 12px',
+            borderRadius: 6,
+            border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+            background: 'transparent',
+            cursor: 'pointer',
+          }}
+        >
+          Load default
+        </button>
+        <button
+          type="button"
+          className="pref-button"
+          onClick={() => setSummaryPrompt('')}
+          disabled={summaryPrompt === ''}
+          style={{
+            padding: '4px 12px',
+            borderRadius: 6,
+            border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+            background: 'transparent',
+            cursor: summaryPrompt === '' ? 'default' : 'pointer',
+            opacity: summaryPrompt === '' ? 0.5 : 1,
+          }}
+        >
+          Reset to default (empty)
+        </button>
+        <span className="pref-row-hint" style={{ marginTop: 0, alignSelf: 'center' }}>
+          {summaryPrompt
+            ? `Custom prompt active (${summaryPrompt.length.toLocaleString()} chars)`
+            : 'Using built-in default'}
+        </span>
+      </div>
 
       <h3 className="pref-h" style={{ marginTop: 22 }}>First-run permissions</h3>
       <p className="pref-row-hint" style={{ maxWidth: '60ch' }}>
