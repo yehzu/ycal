@@ -156,7 +156,16 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   }
   if (patch.loadWindow !== undefined) next.loadWindow = patch.loadWindow;
   if (patch.loadBands !== undefined) next.loadBands = patch.loadBands;
+  if (patch.customTagSuggestions !== undefined) {
+    next.customTagSuggestions = patch.customTagSuggestions.slice();
+  }
   if (patch.theme !== undefined) next.theme = patch.theme;
+  if (patch.autoRecordMeetings !== undefined) {
+    next.autoRecordMeetings = patch.autoRecordMeetings;
+  }
+  if (patch.recordingSummaryPrompt !== undefined) {
+    next.recordingSummaryPrompt = patch.recordingSummaryPrompt || undefined;
+  }
   s.ui = next;
   write(s);
 }

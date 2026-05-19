@@ -306,24 +306,40 @@ function RecordingRow({
     }
   }
 
-  // No in-memory recording — surface the "will auto-record" hint only
-  // when the event genuinely qualifies for auto-record (meetUrl, RSVP not
-  // declined, hasn't started yet, setting on). Anything else gets no
-  // row to keep the popover quiet.
-  const qualifies = autoRecord
-    && !!event.meetUrl
+  // No in-memory recording — offer a "Start now" button for any event
+  // that's recordable (has a video link, not declined, not all-day,
+  // still has time left). When the user is sitting in a meeting early
+  // and wants to capture it before its scheduled start, this is the
+  // entry point. Tag on a "Will auto-record at <time>" hint when the
+  // event is future AND the user has the auto-record toggle on, so
+  // they understand they don't HAVE to click — yCal would do it for
+  // them in N minutes anyway.
+  const canStart = !!event.meetUrl
     && event.rsvp !== 'declined'
     && !event.allDay
-    && Date.parse(event.start) > Date.now();
-  if (qualifies) {
-    return (
-      <div className="pp-row">
-        <span className="k">Recording</span>
-        <span className="v" style={{ opacity: 0.7 }}>
-          Will auto-record when it starts
-        </span>
-      </div>
-    );
-  }
-  return null;
+    && Date.parse(event.end) > Date.now();
+  if (!canStart) return null;
+  const willAuto = autoRecord && Date.parse(event.start) > Date.now();
+  const startTime = new Date(event.start).toLocaleTimeString(undefined, {
+    hour: 'numeric', minute: '2-digit',
+  });
+  return (
+    <div className="pp-row">
+      <span className="k">Recording</span>
+      <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button
+          className="pp-btn"
+          onClick={() => { void window.ycal.recorderStart(event); }}
+          style={{ padding: '2px 12px', fontSize: 12 }}
+        >
+          Start now
+        </button>
+        {willAuto && (
+          <span style={{ opacity: 0.65, fontSize: 12 }}>
+            (auto at {startTime})
+          </span>
+        )}
+      </span>
+    </div>
+  );
 }
