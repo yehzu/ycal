@@ -1649,9 +1649,9 @@ function PrefsRecording({
         When auto-record is on, yCal spawns a helper script
         (<code>~/.ycal/record-meet.sh</code>) at the start of every calendar
         event that has a video link and you haven’t declined. The script
-        records system audio (via BlackHole) mixed with your mic, then
-        <code> ~/.ycal/post-meet.sh</code> runs whisper.cpp + <code>claude -p</code>
-        to drop a transcript + summary alongside the m4a.
+        captures system audio via Apple’s ScreenCaptureKit, mixes it with
+        your mic, then <code>~/.ycal/post-meet.sh</code> runs whisper.cpp +{' '}
+        <code>claude -p</code> to drop a transcript + summary alongside the m4a.
       </p>
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Auto-record</h3>
@@ -1660,7 +1660,7 @@ function PrefsRecording({
         hint={
           autoRecord
             ? 'yCal will record every event with a meetUrl while it’s in progress, then summarise.'
-            : 'Off. Recording must be set up first — see “Setup” below.'
+            : 'Off. Run the setup steps below before enabling.'
         }
       >
         <PrefSwitch value={autoRecord} onChange={setAutoRecord} />
@@ -1669,11 +1669,8 @@ function PrefsRecording({
       <h3 className="pref-h" style={{ marginTop: 18 }}>Setup (one time)</h3>
       <ol className="pref-row-hint" style={{ maxWidth: '70ch', lineHeight: 1.6, paddingLeft: 20 }}>
         <li>
-          Install dependencies:
-          <pre style={{ marginTop: 4 }}>
-{`brew install whisper-cpp ffmpeg
-brew install --cask blackhole-2ch`}
-          </pre>
+          Install transcription deps (no virtual audio driver needed — macOS 13+ ships ScreenCaptureKit):
+          <pre style={{ marginTop: 4 }}>{`brew install whisper-cpp ffmpeg`}</pre>
         </li>
         <li>
           Download a whisper model (~1.5 GB, multilingual):
@@ -1684,19 +1681,19 @@ brew install --cask blackhole-2ch`}
           </pre>
         </li>
         <li>
-          Open <em>Audio MIDI Setup</em> → click <kbd className="pref-kbd">+</kbd> → <em>Create Multi-Output Device</em>.
-          Tick your speakers/headphones AND <em>BlackHole 2ch</em>. Rename to
-          <em> yCal Multi-Output</em>. Use it as system output during meetings
-          (right-click the menu-bar volume icon).
-        </li>
-        <li>
-          Install the helper scripts (run from this repo):
+          Install scripts + the bundled <code>coreaudio-tap</code> helper:
           <pre style={{ marginTop: 4 }}>{`tools/recording/install.sh`}</pre>
         </li>
         <li>
-          Smoke test before trusting it on a real meeting:
+          First recording prompts for <em>Screen Recording</em> + <em>Microphone</em> permission.
+          Grant both in System Settings → Privacy &amp; Security, then fully
+          quit + relaunch yCal (macOS only surfaces newly-granted permission
+          to fresh processes).
+        </li>
+        <li>
+          Smoke test:
           <pre style={{ marginTop: 4 }}>
-{`~/.ycal/record-meet.sh start test "smoke"
+{`~/.ycal/record-meet.sh start test "smoke" 60
 sleep 10
 ~/.ycal/record-meet.sh stop test
 ~/.ycal/post-meet.sh ~/Recordings/yCal/<file>.m4a "smoke"`}

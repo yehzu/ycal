@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { BrowserWindow, Notification, shell } from 'electron';
 import { IPC, DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import type { CalendarEvent, RecordingStatus, UiSettings } from '@shared/types';
@@ -43,9 +44,72 @@ const LOOK_AHEAD_MS = 4 * 60 * 60_000;
 const STOP_SLACK_MS = 10 * 60_000;   // safety net beyond event.end
 const DONE_RETAIN_MS = 30 * 60_000;  // keep finished statuses visible this long
 
+const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
+
 const SCRIPT_DIR = path.join(os.homedir(), '.ycal');
 const RECORD_SH = path.join(SCRIPT_DIR, 'record-meet.sh');
 const POST_SH = path.join(SCRIPT_DIR, 'post-meet.sh');
+const TAP_BIN = path.join(SCRIPT_DIR, 'bin', 'coreaudio-tap');
+
+// Locate a bundled asset across dev + packaged layouts. In dev we sit at
+// <repo>/out/main/index.js, so build/<name> is two dirs up. In packaged
+// builds electron-builder copies extraResources to <Resources>/<name>.
+function resolveBundled(...parts: string[]): string | null {
+  const candidates = [
+    path.join(process.resourcesPath ?? '', ...parts),
+    path.join(__dirname_, '..', '..', 'build', ...parts),
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+// Mirror the helper scripts + coreaudio-tap into ~/.ycal/ at app launch
+// so the recorder, the standalone CLI smoke test, and a fresh
+// auto-update all see consistent files. We only copy when the source
+// looks newer than the installed copy (or when the installed copy is
+// missing entirely) — keeps user-edited prompts and override scripts
+// from being clobbered if they intentionally diverged.
+function ensureHelpersInstalled(): void {
+  try {
+    fs.mkdirSync(path.join(SCRIPT_DIR, 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(SCRIPT_DIR, 'recordings'), { recursive: true });
+  } catch { /* mkdir is best-effort */ }
+
+  const pairs: Array<[string | null, string]> = [
+    [resolveBundled('native', 'coreaudio-tap'), TAP_BIN],
+    // Repo scripts only exist in dev layout (extraResources doesn't bundle
+    // tools/recording). That's fine — `install.sh` is the user-facing
+    // installer; meetRecorder.ts only auto-syncs the binary that we DO
+    // ship inside the app bundle.
+    [pathIfExists(path.join(__dirname_, '..', '..', 'tools', 'recording', 'record-meet.sh')), RECORD_SH],
+    [pathIfExists(path.join(__dirname_, '..', '..', 'tools', 'recording', 'post-meet.sh')), POST_SH],
+  ];
+  for (const [src, dst] of pairs) {
+    if (!src) continue;
+    try {
+      const srcStat = fs.statSync(src);
+      let copy = true;
+      if (fs.existsSync(dst)) {
+        const dstStat = fs.statSync(dst);
+        if (dstStat.mtimeMs >= srcStat.mtimeMs && dstStat.size === srcStat.size) {
+          copy = false;
+        }
+      }
+      if (copy) {
+        fs.copyFileSync(src, dst);
+        fs.chmodSync(dst, 0o755);
+      }
+    } catch (e) {
+      console.error('[yCal recorder] failed to sync', dst, e);
+    }
+  }
+}
+
+function pathIfExists(p: string): string | null {
+  return fs.existsSync(p) ? p : null;
+}
 
 const recordings = new Map<string, RecordingStatus>();
 const skipped = new Set<string>();
@@ -53,11 +117,12 @@ let pollTimer: NodeJS.Timeout | null = null;
 let mainWindowRef: BrowserWindow | null = null;
 
 export function startMeetRecorder(mainWindow: BrowserWindow): void {
-  // Tray + recording only make sense on macOS today — script paths +
-  // BlackHole + claude CLI assumptions all break elsewhere.
+  // The whole pipeline assumes macOS — ScreenCaptureKit, avfoundation,
+  // and the bundled coreaudio-tap binary are all darwin-only.
   if (process.platform !== 'darwin') return;
   if (pollTimer) return;
   mainWindowRef = mainWindow;
+  ensureHelpersInstalled();
   pollTimer = setInterval(() => { void tick(); }, POLL_MS);
   // First tick after 2s — gives the window time to paint and the user
   // time to grant mic permission if this is the very first launch.
@@ -298,7 +363,15 @@ function execScript(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const [cmd, ...args] = argv;
-    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Pin YCAL_COREAUDIO_TAP to the bundled binary so the script always
+    // uses the version that ships with this yCal release, even if the
+    // user has an older copy floating around in ~/.ycal/bin.
+    const bundledTap = resolveBundled('native', 'coreaudio-tap');
+    const env = {
+      ...process.env,
+      ...(bundledTap ? { YCAL_COREAUDIO_TAP: bundledTap } : {}),
+    };
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });

@@ -1,118 +1,115 @@
 # yCal meeting recording — DIY pipeline
 
-Auto-records Google Meet sessions (system audio + your mic), transcribes
-via whisper.cpp, and summarises via the `claude` CLI. Everything runs
-locally — no third-party SaaS, no bot joining the room.
+Auto-records video meetings on macOS 13+, transcribes via whisper.cpp,
+and summarises via the `claude` CLI. Audio stays on the Mac; only the
+finished transcript is sent to the Claude API for the meeting note.
 
 ## How it fits together
 
 ```
 yCal main process
-  │
-  │  (event start, has meetUrl, not declined, setting "auto-record" on)
+  │  (event start, has meetUrl, not declined, "auto-record" setting on)
   ▼
-~/.ycal/record-meet.sh start <event_id> "<title>"
-  └─ ffmpeg captures BlackHole 2ch + your mic
-     → ~/Recordings/yCal/2026-05-19_1400__weekly-sync__<id>.m4a
-     state: ~/.ycal/recordings/<event_id>.pid + .file
+~/.ycal/record-meet.sh start <event_id> "<title>" <max_seconds>
+  ├─ ~/.ycal/bin/coreaudio-tap     (ScreenCaptureKit → 16 kHz mono PCM → FIFO)
+  └─ ffmpeg                        (FIFO + default mic → amix → m4a)
+     → ~/Recordings/yCal/2026-05-19_1400__sync__<id>.m4a
 
   (event.end reached, or you stop manually)
   ▼
-~/.ycal/record-meet.sh stop <event_id>   # SIGINT ffmpeg, flushes m4a
-  ▼
-~/.ycal/post-meet.sh <audio>             # background
-  ├─ ffmpeg → 16kHz mono wav
+~/.ycal/record-meet.sh stop <event_id>
+  ├─ SIGINT ffmpeg  (flush moov atom — without this the m4a is unseekable)
+  └─ SIGTERM coreaudio-tap
+
+~/.ycal/post-meet.sh <audio>      (kicked off automatically by yCal)
+  ├─ ffmpeg → 16 kHz mono wav
   ├─ whisper-cli  → <audio>.transcript.txt
   └─ claude -p    → <audio>.summary.md
 ```
 
-Scripts live in `tools/recording/` (source of truth) and are copied to
-`~/.ycal/` by `install.sh` so yCal can spawn them without bundling them
-inside the Electron app.
+`coreaudio-tap` is a small Mach-O helper from
+[`CJHwong/lazy-take-notes`](https://github.com/CJHwong/lazy-take-notes)
+(MIT-licensed; see `build/native/ATTRIBUTION.md`) that exposes Apple's
+ScreenCaptureKit audio-only mode as a stdout pipe. That's what lets us
+skip BlackHole and the Multi-Output Device dance — macOS 13+ ships
+everything we need.
 
 ## One-time setup
 
-1. **Install deps**
+1. **Install transcription deps** (audio is built-in via ScreenCaptureKit):
    ```sh
    brew install whisper-cpp ffmpeg
-   brew install --cask blackhole-2ch
    ```
-   BlackHole's installer asks for sudo (Touch ID is fine). It's a modern,
-   user-space audio driver — no kext, no system-extension permission grant.
 
-2. **Download a whisper model** (~1.5 GB; only needed once)
+2. **Download a whisper model** (~1.5 GB; multilingual)
    ```sh
+   mkdir -p ~/.ycal/models
    curl -L --fail \
      -o ~/.ycal/models/ggml-large-v3-turbo.bin \
      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
    ```
-   `large-v3-turbo` is the best multilingual model for the size — handles
-   中英混雜 cleanly. Swap with `YCAL_WHISPER_MODEL` env if you prefer
-   `medium` or `large-v3`.
+   Swap models with `YCAL_WHISPER_MODEL` if you prefer `medium` or
+   `large-v3` over the smaller turbo variant. Turbo handles 中英混雜 well.
 
-3. **Configure a Multi-Output Device** so you can both hear AND record
-   the meeting audio:
-   - Open **Audio MIDI Setup** (Spotlight → "Audio MIDI").
-   - Click `+` (bottom-left) → **Create Multi-Output Device**.
-   - Tick *MacBook Pro Speakers* (or your headphones) AND *BlackHole 2ch*.
-     Master device = your speakers/headphones; drift-correct = on for
-     BlackHole.
-   - Rename it `yCal Multi-Output` for clarity.
-   - When you join a Meet: in **System Settings → Sound → Output** (or
-     right-click the menubar volume icon) select `yCal Multi-Output`.
-     Audio plays through your speakers AND lands in BlackHole, which is
-     what ffmpeg records.
-
-4. **Install the scripts**
+3. **Install scripts + helper**
    ```sh
    tools/recording/install.sh
    ```
-   Confirms all deps and copies the scripts into `~/.ycal/`.
+   Copies `record-meet.sh`, `post-meet.sh`, and the `coreaudio-tap`
+   binary into `~/.ycal/` and verifies everything else is in place.
 
-5. **Grant mic permission** — first time yCal runs `record-meet.sh`,
-   macOS asks for mic access on behalf of yCal. Accept.
+4. **First-run permissions** — when yCal (or you, from Terminal) starts
+   the first recording, macOS prompts twice:
+   - **Screen Recording** — needed to access ScreenCaptureKit's audio
+     mode. Grant it to *yCal* (or to Terminal if you're testing the
+     scripts directly).
+   - **Microphone** — for your voice via ffmpeg.
+   Both are one-time; toggle later in **System Settings → Privacy & Security**.
 
-## Manual smoke test (before trusting it on a real meeting)
+That's it. No BlackHole, no Audio MIDI Setup, no switching system output
+before every meeting.
+
+## Manual smoke test
 
 ```sh
-# Start a 10s test, with the Multi-Output device selected and some music
-# playing in another app:
-~/.ycal/record-meet.sh start test "smoke"
-sleep 10
+~/.ycal/record-meet.sh start test "smoke" 60
+# Play some audio in another app + talk into your mic for ~10 seconds.
 ~/.ycal/record-meet.sh stop test
-# → echoes the audio file path. Play it back; you should hear both
-#   the music (from BlackHole) and your voice (from the mic).
-```
+# → prints the m4a path. Play it back; you should hear both sources.
 
-Then transcribe + summarise:
-```sh
 ~/.ycal/post-meet.sh ~/Recordings/yCal/<file>.m4a "Smoke test"
-# Produces .transcript.txt and .summary.md alongside.
+# Produces .transcript.txt and .summary.md alongside the .m4a.
 ```
 
 ## Env knobs
 
-| Var                  | Default                              | Purpose                                    |
-| -------------------- | ------------------------------------ | ------------------------------------------ |
-| `YCAL_RECORDING_DIR` | `~/Recordings/yCal`                  | Where m4a/transcript/summary land          |
-| `YCAL_MIC_NAME`      | first non-BlackHole audio device     | Microphone selection (substring match)     |
-| `YCAL_BH_NAME`       | `BlackHole`                          | Virtual device name fragment               |
-| `YCAL_WHISPER_MODEL` | `~/.ycal/models/ggml-large-v3-turbo.bin` | Whisper ggml model path                    |
-| `YCAL_WHISPER_BIN`   | `whisper-cli` (on PATH)              | Alternative whisper binary                 |
-| `YCAL_CLAUDE_BIN`    | `claude` (on PATH)                   | Alternative claude binary (cmux fork OK)   |
-| `YCAL_SUMMARY_PROMPT`| (built-in generic meeting-notes prompt)              | Override prompt file                       |
+| Var                  | Default                                  | Purpose                                      |
+| -------------------- | ---------------------------------------- | -------------------------------------------- |
+| `YCAL_RECORDING_DIR` | `~/Recordings/yCal`                      | Where m4a + transcript + summary land        |
+| `YCAL_MIC_NAME`      | first device in ffmpeg's audio list      | Mic selection (substring match)              |
+| `YCAL_COREAUDIO_TAP` | `~/.ycal/bin/coreaudio-tap`              | Path to the ScreenCaptureKit helper          |
+| `YCAL_WHISPER_MODEL` | `~/.ycal/models/ggml-large-v3-turbo.bin` | Whisper ggml model path                      |
+| `YCAL_WHISPER_BIN`   | `whisper-cli` (on PATH)                  | Alternative whisper binary                   |
+| `YCAL_CLAUDE_BIN`    | `claude` (on PATH)                       | Alternative claude binary (cmux fork OK)     |
+| `YCAL_SUMMARY_PROMPT`| (built-in generic meeting-notes prompt)                  | Override prompt file                         |
 
 ## Troubleshooting
 
-- **"BlackHole audio device not found"** — re-run `brew install --cask
-  blackhole-2ch`, then sign out + back in (macOS sometimes needs a
-  session restart to pick up new audio drivers).
-- **`ffmpeg died on startup`** — check `~/.ycal/recordings/<id>.ffmpeg.log`.
-  Usually means mic permission wasn't granted (first run only) or the
-  device index changed because you plugged/unplugged a USB mic.
-- **Transcript is empty** — confirm the recording isn't silent. Re-listen
-  to the .m4a; if you can't hear the meeting in it, your Multi-Output
-  Device probably isn't routing system audio to BlackHole.
-- **Claude summary fails** — `~/.ycal/recordings/<id>.summary.log` has the
-  stderr from the CLI. If you're on a metered plan, drop to `claude -p`
-  with `--model haiku` via `YCAL_CLAUDE_BIN` wrapper.
+- **"coreaudio-tap died on startup"** — almost always means Screen
+  Recording permission is missing or revoked. Check **System Settings
+  → Privacy & Security → Screen Recording** and re-enable yCal (or
+  Terminal). After granting, fully quit + relaunch yCal — macOS doesn't
+  surface fresh permission to a running process.
+- **"ffmpeg died on startup"** — check `~/.ycal/recordings/<id>.ffmpeg.log`.
+  Usually mic permission wasn't granted, or the device index shifted
+  because of a USB unplug.
+- **Silent recording** — confirm the m4a has audio at all. If both sides
+  are silent, screen-recording permission is granted but the meeting app
+  may be using a route that ScreenCaptureKit can't see (rare, mostly old
+  conferencing apps using non-CoreAudio paths).
+- **Empty transcript** — re-listen to the .m4a; if you can hear it, the
+  whisper model may not be loaded. Verify with `whisper-cli -m
+  ~/.ycal/models/ggml-large-v3-turbo.bin --help` (should not error).
+- **Claude summary fails** — `~/.ycal/recordings/<id>.summary.log`
+  has the stderr from the CLI. If you're rate-limited, drop to a faster
+  model via a `YCAL_CLAUDE_BIN` wrapper script.
