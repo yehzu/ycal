@@ -42,22 +42,33 @@ list_devices() {
       '
 }
 
+# macOS ships BSD awk, which lacks gawk's 3-arg match($0, /regex/, m).
+# We use POSIX match()+substr() and an index() containment check instead.
+# Each device line looks like:
+#   [AVFoundation indev @ 0xNNN] [N] Device Name
+# match() locates the rightmost `[<digits>] ` segment (the device index),
+# substr() peels out the digits and the trailing name.
+
 device_index() {
   # $1 = case-insensitive name fragment. Echoes the first matching index.
   list_devices | awk -v name="$1" '
-    BEGIN { IGNORECASE = 1 }
-    match($0, /\[([0-9]+)\] (.+)/, m) {
-      n=m[2]; gsub(/^[ \t]+|[ \t]+$/, "", n)
-      if (tolower(n) ~ tolower(name)) { print m[1]; exit }
+    {
+      if (match($0, /\[[0-9]+\] /)) {
+        idx  = substr($0, RSTART+1, RLENGTH-3)
+        rest = substr($0, RSTART+RLENGTH)
+        if (index(tolower(rest), tolower(name)) > 0) { print idx; exit }
+      }
     }'
 }
 
 first_non_bh_index() {
   list_devices | awk -v bh="$BH_NAME" '
-    BEGIN { IGNORECASE = 1 }
-    match($0, /\[([0-9]+)\] (.+)/, m) {
-      n=m[2]; gsub(/^[ \t]+|[ \t]+$/, "", n)
-      if (tolower(n) !~ tolower(bh)) { print m[1]; exit }
+    {
+      if (match($0, /\[[0-9]+\] /)) {
+        idx  = substr($0, RSTART+1, RLENGTH-3)
+        rest = substr($0, RSTART+RLENGTH)
+        if (index(tolower(rest), tolower(bh)) == 0) { print idx; exit }
+      }
     }'
 }
 
