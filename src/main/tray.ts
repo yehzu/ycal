@@ -30,6 +30,7 @@ import {
   app, BrowserWindow, Menu, Notification, Tray, nativeImage, shell,
 } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   invalidateEventsCache, listAccountSummaries, listAllCalendars, listEvents,
@@ -52,6 +53,28 @@ let pollTimer: NodeJS.Timeout | null = null;
 let notifyTimers: NodeJS.Timeout[] = [];
 const notifiedIds = new Set<string>();
 let mainWindowRef: BrowserWindow | null = null;
+let idleIcon: Electron.NativeImage | null = null;
+const emptyIcon = nativeImage.createEmpty();
+
+// Resolve a bundled tray asset. In dev we sit at <repo>/out/main/index.js,
+// so build/tray/* is three dirs up. In a packaged build electron-builder's
+// extraResources put the same files at <Resources>/tray/*.
+function loadIdleIcon(): Electron.NativeImage | null {
+  const candidates = [
+    path.join(process.resourcesPath ?? '', 'tray', 'tray-iconTemplate.png'),
+    path.join(__dirname_, '..', '..', 'build', 'tray', 'tray-iconTemplate.png'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (!p || !fs.existsSync(p)) continue;
+      const img = nativeImage.createFromPath(p);
+      if (img.isEmpty()) continue;
+      img.setTemplateImage(true);
+      return img;
+    } catch { /* try next */ }
+  }
+  return null;
+}
 
 export function startTray(mainWindow: BrowserWindow): void {
   // Tray API ships on all three desktop platforms but our visual + UX
@@ -61,11 +84,13 @@ export function startTray(mainWindow: BrowserWindow): void {
   if (tray) return;
   mainWindowRef = mainWindow;
 
-  // Empty image + setTitle gives a label-only menubar item — no icon
-  // square, just text. macOS handles this cleanly. We could add a small
-  // template glyph later; the title alone is more informative.
-  tray = new Tray(nativeImage.createEmpty());
-  tray.setTitle(' yCal');
+  // Two display modes for the menubar item:
+  //   * "Upcoming" — empty image + text title ("12m · Standup").
+  //   * "Idle"     — small template icon + no title. Compact + recognisable.
+  // We always keep BOTH set; switching modes just zeroes the inactive one.
+  idleIcon = loadIdleIcon();
+  tray = new Tray(idleIcon ?? emptyIcon);
+  tray.setTitle(idleIcon ? '' : ' yCal');
   tray.setToolTip('yCal — upcoming events');
 
   // Left-click should open the dropdown (default macOS behaviour for
@@ -84,6 +109,7 @@ export function stopTray(): void {
   notifiedIds.clear();
   if (tray) { tray.destroy(); tray = null; }
   mainWindowRef = null;
+  idleIcon = null;
 }
 
 // External hook: call when the user adds/removes an account or toggles
@@ -225,7 +251,18 @@ async function refresh(): Promise<void> {
   }
 
   const next = findCurrentOrNext(events);
-  tray.setTitle(formatTrayLabel(next));
+  if (next) {
+    tray.setImage(emptyIcon);
+    tray.setTitle(formatTrayLabel(next));
+  } else if (idleIcon) {
+    tray.setImage(idleIcon);
+    tray.setTitle('');
+  } else {
+    // Icon failed to load (shouldn't happen in a packaged build) — fall
+    // back to the original text-only label so the menubar still works.
+    tray.setImage(emptyIcon);
+    tray.setTitle(formatTrayLabel(null));
+  }
   tray.setContextMenu(buildMenu(events));
   scheduleNotifications(events);
 }
@@ -311,6 +348,3 @@ function scheduleNotifications(events: CalendarEvent[]): void {
   }
 }
 
-// Keep the import non-empty even if some checks above don't need it; the
-// `__dirname_` resolution is reserved for future use (custom tray icon).
-void __dirname_;

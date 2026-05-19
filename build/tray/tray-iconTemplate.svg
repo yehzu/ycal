@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!--
+    Menu-bar template image. Pure-black artwork on transparent bg;
+    macOS auto-inverts it for dark mode when setTemplateImage(true).
+    Simplified vs the app icon: outer ring + the 7 o'clock dot only —
+    inner ring and center pin are noise at 16px.
+    7 o'clock = 120° from east → (11 + 8·cos120°, 11 + 8·sin120°) ≈ (7, 17.93)
+  -->
+  <g fill="#000">
+    <circle cx="11" cy="11" r="8" fill="none" stroke="#000" stroke-width="1.6"/>
+    <circle cx="7" cy="17.93" r="1.9"/>
+  </g>
+</svg>
