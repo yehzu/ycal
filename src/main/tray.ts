@@ -38,7 +38,8 @@ import {
 import { getUiSettings } from './settings';
 import { dedupEvents } from '@shared/dedup';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
-import type { CalendarEvent } from '@shared/types';
+import type { CalendarEvent, RecordingStatus } from '@shared/types';
+import { getRecordings, onRecordingsChanged } from './recorderBus';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +56,11 @@ const notifiedIds = new Set<string>();
 let mainWindowRef: BrowserWindow | null = null;
 let idleIcon: Electron.NativeImage | null = null;
 const emptyIcon = nativeImage.createEmpty();
+// Cached at module load so stop() can SIGTERM in-flight ffmpeg from the
+// tray menu. Resolved lazily to dodge the meetRecorder ↔ tray import
+// cycle that would otherwise need an explicit bus for one function.
+let stopFn: ((eventId: string) => Promise<void>) | null = null;
+let unsubscribeBus: (() => void) | null = null;
 
 // Resolve a bundled tray asset. In dev we sit at <repo>/out/main/index.js,
 // so build/tray/* is three dirs up. In a packaged build electron-builder's
@@ -98,18 +104,29 @@ export function startTray(mainWindow: BrowserWindow): void {
   // window forward — handy when the user just wants to hop back.
   tray.on('double-click', () => focusMainWindow());
 
+  // Resolve the stop fn lazily to break the meetRecorder ↔ tray cycle.
+  // import() is async + cached; we drop the result into a module ref so
+  // the menu item handler can fire it synchronously without awaiting.
+  void import('./meetRecorder').then((m) => { stopFn = m.stopRecordingManual; });
+  // Refresh whenever the recording state transitions — that's how the
+  // "● Rec" title and the menu's recording rows stay live without our
+  // 60s poll.
+  unsubscribeBus = onRecordingsChanged(() => { void refresh(); });
+
   void refresh();
   pollTimer = setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);
 }
 
 export function stopTray(): void {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (unsubscribeBus) { unsubscribeBus(); unsubscribeBus = null; }
   for (const t of notifyTimers) clearTimeout(t);
   notifyTimers = [];
   notifiedIds.clear();
   if (tray) { tray.destroy(); tray = null; }
   mainWindowRef = null;
   idleIcon = null;
+  stopFn = null;
 }
 
 // External hook: call when the user adds/removes an account or toggles
@@ -250,26 +267,73 @@ async function refresh(): Promise<void> {
     console.error('[yCal tray] fetch failed', e);
   }
 
-  const next = findCurrentOrNext(events);
-  if (next) {
+  const recordings = getRecordings();
+  const activeRec = recordings.find((r) => r.state === 'recording');
+
+  if (activeRec) {
+    // Recording overrides the agenda title: a glanceable "● Title" so
+    // the user always knows their mic is hot. Keep the image empty so
+    // the dot has room to render in the limited menubar width.
     tray.setImage(emptyIcon);
-    tray.setTitle(formatTrayLabel(next));
-  } else if (idleIcon) {
-    tray.setImage(idleIcon);
-    tray.setTitle('');
+    tray.setTitle(` ● ${truncate(activeRec.title, TITLE_MAX)}`);
   } else {
-    // Icon failed to load (shouldn't happen in a packaged build) — fall
-    // back to the original text-only label so the menubar still works.
-    tray.setImage(emptyIcon);
-    tray.setTitle(formatTrayLabel(null));
+    const next = findCurrentOrNext(events);
+    if (next) {
+      tray.setImage(emptyIcon);
+      tray.setTitle(formatTrayLabel(next));
+    } else if (idleIcon) {
+      tray.setImage(idleIcon);
+      tray.setTitle('');
+    } else {
+      // Icon failed to load (shouldn't happen in a packaged build) — fall
+      // back to the original text-only label so the menubar still works.
+      tray.setImage(emptyIcon);
+      tray.setTitle(formatTrayLabel(null));
+    }
   }
-  tray.setContextMenu(buildMenu(events));
+  tray.setContextMenu(buildMenu(events, recordings));
   scheduleNotifications(events);
 }
 
-function buildMenu(events: CalendarEvent[]): Menu {
+function buildMenu(events: CalendarEvent[], recordings: RecordingStatus[]): Menu {
   const todayKey = new Date().toLocaleDateString();
   const items: Electron.MenuItemConstructorOptions[] = [];
+
+  // Recording state goes at the very top so it's the first thing the
+  // user sees when the menu opens. Mix of states (recording in progress,
+  // post-process still running, recently done) all show with the right
+  // verb + action.
+  if (recordings.length > 0) {
+    for (const rec of recordings) {
+      const t = truncate(rec.title || 'Meeting', 36);
+      if (rec.state === 'recording') {
+        const mins = Math.max(0, Math.round((Date.now() - rec.startedAt) / 60_000));
+        items.push({
+          label: `● Recording — ${t} · ${mins}m`,
+          enabled: false,
+        });
+        items.push({
+          label: '    Stop recording',
+          click: () => { if (stopFn) void stopFn(rec.eventId); },
+        });
+      } else if (rec.state === 'processing') {
+        items.push({ label: `⋯ Transcribing — ${t}`, enabled: false });
+      } else if (rec.state === 'done') {
+        const summary = rec.summaryFile;
+        items.push({
+          label: `✓ Notes ready — ${t}`,
+          click: () => { if (summary) void shell.openPath(summary); },
+          enabled: !!summary,
+        });
+      } else if (rec.state === 'failed') {
+        items.push({
+          label: `✗ Failed — ${t}`,
+          enabled: false,
+        });
+      }
+    }
+    items.push({ type: 'separator' });
+  }
 
   // Today only, and only events that haven't ended yet — past entries
   // are noise, and tomorrow's events live in the main calendar window.

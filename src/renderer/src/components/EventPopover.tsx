@@ -1,5 +1,7 @@
-import { useLayoutEffect, useRef, useState } from 'react';
-import type { CalendarEvent, CalendarSummary, AccountSummary } from '@shared/types';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type {
+  CalendarEvent, CalendarSummary, AccountSummary, RecordingStatus,
+} from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTimeFull, ordinal } from '../dates';
 import { rsvpClass, rsvpLabel } from '../rsvp';
 import { avatarBg, initials } from './MacTitleBar';
@@ -13,11 +15,38 @@ interface Props {
   calendars: CalendarSummary[];
   accounts: AccountSummary[];
   onClose: () => void;
+  // Auto-record setting from app state. Used to render a "Will auto-record"
+  // hint on events that match the trigger criteria but haven't started yet.
+  autoRecord: boolean;
 }
 
-export function EventPopover({ event, anchorRect, calendars, accounts, onClose }: Props) {
+export function EventPopover({
+  event, anchorRect, calendars, accounts, onClose, autoRecord,
+}: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
+  // Recording state for this specific event. Seeded from a list fetch on
+  // mount, then live-updated from the RecorderStatusChanged push. We tick
+  // a 1s timer when actively recording so the "MM:SS" elapsed counter
+  // stays current without a roundtrip.
+  const [recording, setRecording] = useState<RecordingStatus | null>(null);
+  const [, setNow] = useState<number>(Date.now());
+  useEffect(() => {
+    let cancelled = false;
+    void window.ycal.recorderList().then((list) => {
+      if (cancelled) return;
+      setRecording(list.find((r) => r.eventId === event.id) ?? null);
+    });
+    const off = window.ycal.onRecorderStatusChanged((list) => {
+      setRecording(list.find((r) => r.eventId === event.id) ?? null);
+    });
+    return () => { cancelled = true; off(); };
+  }, [event.id]);
+  useEffect(() => {
+    if (recording?.state !== 'recording') return undefined;
+    const id = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(id);
+  }, [recording?.state]);
 
   useLayoutEffect(() => {
     if (!anchorRect || !ref.current) return;
@@ -136,6 +165,11 @@ export function EventPopover({ event, anchorRect, calendars, accounts, onClose }
             </span>
           </div>
         )}
+        <RecordingRow
+          event={event}
+          recording={recording}
+          autoRecord={autoRecord}
+        />
         {event.attendees && event.attendees.length > 0 && (
           <PopoverAttendees attendees={event.attendees} />
         )}
@@ -193,4 +227,103 @@ export function EventPopover({ event, anchorRect, calendars, accounts, onClose }
       </div>
     </>
   );
+}
+
+// Renders a "Recording" row in the popover that adapts to four states:
+//   * recording  → red dot + MM:SS elapsed + Stop button
+//   * processing → "Transcribing…" hint
+//   * done       → "Notes ready · Open notes"
+//   * future + auto-record on + qualifies → "Will auto-record" hint
+// In all other cases (e.g. no meetUrl, declined, autoRecord off, no
+// matching recording in memory and event in the past), renders nothing
+// so the popover stays compact for events that aren't relevant.
+function RecordingRow({
+  event, recording, autoRecord,
+}: {
+  event: CalendarEvent;
+  recording: RecordingStatus | null;
+  autoRecord: boolean;
+}) {
+  if (recording) {
+    if (recording.state === 'recording') {
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - recording.startedAt) / 1000));
+      const mm = Math.floor(elapsedSec / 60);
+      const ss = elapsedSec % 60;
+      return (
+        <div className="pp-row">
+          <span className="k">Recording</span>
+          <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ color: '#c4451a', fontVariantNumeric: 'tabular-nums' }}>
+              ● {mm}:{String(ss).padStart(2, '0')}
+            </span>
+            <button
+              className="pp-btn"
+              onClick={() => { void window.ycal.recorderStop(recording.eventId); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+            >
+              Stop
+            </button>
+          </span>
+        </div>
+      );
+    }
+    if (recording.state === 'processing') {
+      return (
+        <div className="pp-row">
+          <span className="k">Recording</span>
+          <span className="v" style={{ opacity: 0.75 }}>⋯ Transcribing…</span>
+        </div>
+      );
+    }
+    if (recording.state === 'done') {
+      return (
+        <div className="pp-row">
+          <span className="k">Recording</span>
+          <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span>✓ Notes ready</span>
+            {recording.summaryFile && (
+              <button
+                className="pp-btn"
+                onClick={() => { void window.ycal.recorderOpenFile(recording.summaryFile!); }}
+                style={{ padding: '2px 10px', fontSize: 12 }}
+              >
+                Open notes
+              </button>
+            )}
+          </span>
+        </div>
+      );
+    }
+    if (recording.state === 'failed') {
+      return (
+        <div className="pp-row">
+          <span className="k">Recording</span>
+          <span className="v" style={{ color: '#c4451a' }}>
+            ✗ {recording.error ? recording.error.slice(0, 80) : 'failed'}
+          </span>
+        </div>
+      );
+    }
+  }
+
+  // No in-memory recording — surface the "will auto-record" hint only
+  // when the event genuinely qualifies for auto-record (meetUrl, RSVP not
+  // declined, hasn't started yet, setting on). Anything else gets no
+  // row to keep the popover quiet.
+  const qualifies = autoRecord
+    && !!event.meetUrl
+    && event.rsvp !== 'declined'
+    && !event.allDay
+    && Date.parse(event.start) > Date.now();
+  if (qualifies) {
+    return (
+      <div className="pp-row">
+        <span className="k">Recording</span>
+        <span className="v" style={{ opacity: 0.7 }}>
+          Will auto-record when it starts
+        </span>
+      </div>
+    );
+  }
+  return null;
 }

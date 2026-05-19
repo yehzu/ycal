@@ -33,10 +33,11 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { BrowserWindow, Notification, shell } from 'electron';
 import { IPC, DEFAULT_MERGE_CRITERIA } from '@shared/types';
-import type { CalendarEvent, RecordingStatus, UiSettings } from '@shared/types';
+import type { CalendarEvent, RecentRecording, RecordingStatus, UiSettings } from '@shared/types';
 import { dedupEvents } from '@shared/dedup';
 import { getUiSettings } from './settings';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
+import { setRecordings } from './recorderBus';
 
 const POLL_MS = 30_000;
 const LOOK_BEHIND_MS = 5 * 60_000;
@@ -138,6 +139,66 @@ export function stopMeetRecorder(): void {
 
 export function listRecordings(): RecordingStatus[] {
   return [...recordings.values()];
+}
+
+// Scan ~/Recordings/yCal for finished m4a files + their companion
+// transcript + summary siblings. We don't open the m4a (avoid metadata
+// reads on potentially-many files); stat is enough to surface size +
+// modified-at for the UI list.
+export function listRecentRecordings(limit = 50): RecentRecording[] {
+  const dir = process.env.YCAL_RECORDING_DIR
+    || path.join(os.homedir(), 'Recordings', 'yCal');
+  let entries: string[];
+  try { entries = fs.readdirSync(dir); } catch { return []; }
+  const results: RecentRecording[] = [];
+  for (const name of entries) {
+    if (!name.endsWith('.m4a')) continue;
+    const audioFile = path.join(dir, name);
+    try {
+      const st = fs.statSync(audioFile);
+      const base = audioFile.replace(/\.m4a$/, '');
+      const baseName = path.basename(audioFile, '.m4a');
+      // Filename shape: <stamp>__<safe-title>__<event_id>. Eventid is
+      // the trailing `__<id>` chunk; we tease it out for popover-side
+      // correlation. If the format ever drifts, eventId is null and
+      // callers just lose the event match (UI still works).
+      const m = /__([^_]+)$/.exec(baseName);
+      const eventId = m ? m[1] : null;
+      const transcriptFile = `${base}.transcript.txt`;
+      const summaryFile = `${base}.summary.md`;
+      results.push({
+        audioFile,
+        baseName,
+        eventId,
+        hasTranscript: fs.existsSync(transcriptFile),
+        hasSummary: fs.existsSync(summaryFile),
+        summaryFile: fs.existsSync(summaryFile) ? summaryFile : null,
+        transcriptFile: fs.existsSync(transcriptFile) ? transcriptFile : null,
+        modifiedAt: st.mtimeMs,
+        sizeBytes: st.size,
+      });
+    } catch { /* missing/unreadable — skip */ }
+  }
+  results.sort((a, b) => b.modifiedAt - a.modifiedAt);
+  return results.slice(0, limit);
+}
+
+export function recordingsDir(): string {
+  return process.env.YCAL_RECORDING_DIR
+    || path.join(os.homedir(), 'Recordings', 'yCal');
+}
+
+// Guard for IPC.RecorderOpenFile: only allow paths that resolve inside
+// ~/Recordings/yCal so a compromised renderer can't trick main into
+// opening /etc/passwd or similar. Returns the absolute path on success
+// or null when the requested path is unsafe.
+export function safeRecordingPath(input: string): string | null {
+  const dir = recordingsDir();
+  const abs = path.resolve(input);
+  const dirAbs = path.resolve(dir);
+  if (!abs.startsWith(dirAbs + path.sep) && abs !== dirAbs) return null;
+  if (!fs.existsSync(abs)) return null;
+  return abs;
 }
 
 export async function startRecordingManual(event: CalendarEvent): Promise<void> {
@@ -363,10 +424,15 @@ function pruneFinished(): void {
 }
 
 function pushStatus(): void {
+  const list = listRecordings();
+  // In-process bus: lets the tray flip its title without waiting for
+  // its own 60s poll. The bus has no listeners during unit tests, so
+  // calling it from any code path is safe.
+  setRecordings(list);
   const win = mainWindowRef;
   if (!win || win.isDestroyed()) return;
   try {
-    win.webContents.send(IPC.RecorderStatusChanged, listRecordings());
+    win.webContents.send(IPC.RecorderStatusChanged, list);
   } catch { /* best-effort */ }
 }
 

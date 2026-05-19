@@ -10,6 +10,7 @@ import type {
   DriveSyncStatus,
   GoogleColors,
   ListEventsRequest,
+  RecentRecording,
   RecorderSetupProgress,
   RecorderSetupStatus,
   RecordingStatus,
@@ -182,6 +183,14 @@ const api = {
     ipcRenderer.on(IPC.RecorderSetupProgress, listener);
     return () => ipcRenderer.removeListener(IPC.RecorderSetupProgress, listener);
   },
+
+  // Browse + open finished recordings on disk.
+  recorderListRecent: (limit?: number): Promise<RecentRecording[]> =>
+    ipcRenderer.invoke(IPC.RecorderListRecent, limit ?? 50),
+  recorderOpenFile: (path: string): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderOpenFile, path),
+  recorderRevealFolder: (): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderRevealFolder),
 };
 
 contextBridge.exposeInMainWorld('ycal', api);

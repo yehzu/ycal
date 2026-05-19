@@ -46,8 +46,8 @@ import {
 } from './taskProviders';
 import { getTasksLocal, setTasksLocal } from './tasksStore';
 import {
-  listRecordings, startMeetRecorder, startRecordingManual, stopMeetRecorder,
-  stopRecordingManual,
+  listRecentRecordings, listRecordings, recordingsDir, safeRecordingPath,
+  startMeetRecorder, startRecordingManual, stopMeetRecorder, stopRecordingManual,
 } from './meetRecorder';
 import {
   bindRecorderSetup, getRecorderSetupStatus, runRecorderSetup,
@@ -553,6 +553,22 @@ function registerIpc() {
     // push channel. We don't await — the renderer wires its own listener
     // and the click handler returns immediately.
     void runRecorderSetup();
+    return { ok: true as const };
+  });
+  ipcMain.handle(IPC.RecorderListRecent, (_e, limit?: number) =>
+    listRecentRecordings(typeof limit === 'number' ? limit : 50),
+  );
+  ipcMain.handle(IPC.RecorderOpenFile, (_e, p: string) => {
+    // safeRecordingPath enforces the file lives under ~/Recordings/yCal
+    // — a renderer compromised by some unrelated bug can't trick main
+    // into shell-opening arbitrary system paths.
+    const safe = safeRecordingPath(p);
+    if (!safe) return { ok: false as const, error: 'path outside recordings dir' };
+    void shell.openPath(safe);
+    return { ok: true as const };
+  });
+  ipcMain.handle(IPC.RecorderRevealFolder, () => {
+    void shell.openPath(recordingsDir());
     return { ok: true as const };
   });
 }

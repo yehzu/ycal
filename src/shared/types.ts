@@ -245,6 +245,27 @@ export interface RecorderSetupProgress {
   modelPercent?: number;
 }
 
+// A finished recording sitting on disk under ~/Recordings/yCal/. The
+// Settings → Recording "Recent recordings" list reads this and surfaces
+// the .m4a / .transcript.txt / .summary.md trio so the user can find
+// past meeting notes without opening Finder.
+export interface RecentRecording {
+  audioFile: string;
+  // Base filename without the .m4a extension, e.g.
+  // "2026-05-20_1400__weekly-sync__abcd1234" — what we show in the list.
+  baseName: string;
+  // Embedded event id (the last `__<id>` chunk in the filename) so the
+  // popover can correlate a calendar event with a past recording even
+  // after it's left the in-memory map.
+  eventId: string | null;
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  summaryFile: string | null;
+  transcriptFile: string | null;
+  modifiedAt: number;      // epoch ms
+  sizeBytes: number;
+}
+
 // One in-flight or recently-finished recording. The recorder maintains
 // an in-memory map keyed by event id; this is what gets pushed to the
 // renderer so the popover/tray can show a recording indicator.
@@ -618,4 +639,11 @@ export const IPC = {
   RecorderGetSetupStatus: 'ycal:recorderGetSetupStatus',
   RecorderRunSetup: 'ycal:recorderRunSetup',
   RecorderSetupProgress: 'ycal:recorderSetupProgress',  // main → renderer push
+  // Browse finished recordings on disk.
+  RecorderListRecent: 'ycal:recorderListRecent',
+  // Open a recording-related file (m4a / transcript / summary). Restricted
+  // server-side to paths under ~/Recordings/yCal so the renderer can't
+  // ask main to open arbitrary files.
+  RecorderOpenFile: 'ycal:recorderOpenFile',
+  RecorderRevealFolder: 'ycal:recorderRevealFolder',
 } as const;

@@ -873,6 +873,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           accounts={store.accounts}
           calendars={store.calendars}
           onClose={() => setPopover(null)}
+          autoRecord={autoRecordMeetings}
         />
       )}
 

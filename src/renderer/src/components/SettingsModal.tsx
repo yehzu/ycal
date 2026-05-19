@@ -2,8 +2,8 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type {
   AccountSummary, CalendarSummary, CloudStorageInfo, DriveSyncStatus,
   LoadBands, LoadWindowSettings,
-  MergeCriteria, RecorderSetupProgress, RecorderSetupStatus,
-  RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
+  MergeCriteria, RecentRecording, RecorderSetupProgress, RecorderSetupStatus,
+  RecordingStatus, RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
 } from '@shared/types';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
@@ -1965,6 +1965,9 @@ function PrefsRecording({
         </span>
       </div>
 
+      <h3 className="pref-h" style={{ marginTop: 22 }}>Recent recordings</h3>
+      <RecentRecordings />
+
       <h3 className="pref-h" style={{ marginTop: 22 }}>First-run permissions</h3>
       <p className="pref-row-hint" style={{ maxWidth: '60ch' }}>
         The first time a recording starts, macOS will prompt for{' '}
@@ -1975,4 +1978,204 @@ function PrefsRecording({
       </p>
     </div>
   );
+}
+
+function RecentRecordings() {
+  // Two parallel lists: in-flight recordings (live state from the recorder
+  // bus, push-updated) and finished recordings on disk (scanned once on
+  // mount + every time a recording transitions through 'done'). The two
+  // get merged for display so a recording shows up the moment it starts
+  // and stays visible after it finishes, without flashing through gaps.
+  const [active, setActive] = useState<RecordingStatus[]>([]);
+  const [recent, setRecent] = useState<RecentRecording[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const reload = async (): Promise<void> => {
+      const [a, r] = await Promise.all([
+        window.ycal.recorderList(),
+        window.ycal.recorderListRecent(20),
+      ]);
+      if (cancelled) return;
+      setActive(a);
+      setRecent(r);
+    };
+    void reload();
+    const off = window.ycal.onRecorderStatusChanged((list) => {
+      setActive(list);
+      // When something transitions away from 'recording'/'processing',
+      // re-scan the disk so finished items appear in the bottom list
+      // even though the in-memory map drops them after 30 min.
+      const anyTransitioned = list.some(
+        (r) => r.state === 'done' || r.state === 'failed',
+      );
+      if (anyTransitioned) {
+        void window.ycal.recorderListRecent(20).then((r) => setRecent(r));
+      }
+    });
+    return () => { cancelled = true; off(); };
+  }, []);
+
+  // De-dupe: any recent file whose event id matches an in-flight recording
+  // is omitted from the finished list (the in-flight row already covers it).
+  const activeEventIds = new Set(active.map((r) => r.eventId));
+  const finished = recent.filter((r) => !r.eventId || !activeEventIds.has(r.eventId));
+
+  if (active.length === 0 && finished.length === 0) {
+    return (
+      <p className="pref-row-hint" style={{ maxWidth: '60ch' }}>
+        No recordings yet. The first one will appear here as soon as a
+        meeting with a video link starts.
+      </p>
+    );
+  }
+
+  return (
+    <div>
+      {active.length > 0 && (
+        <div style={{ display: 'grid', gap: 4, marginBottom: 8 }}>
+          {active.map((r) => (
+            <ActiveRecordingRow key={r.eventId} rec={r} />
+          ))}
+        </div>
+      )}
+      {finished.length > 0 && (
+        <div style={{ display: 'grid', gap: 2 }}>
+          {finished.slice(0, 20).map((r) => (
+            <FinishedRecordingRow key={r.audioFile} rec={r} />
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        className="pref-button"
+        onClick={() => { void window.ycal.recorderRevealFolder(); }}
+        style={{
+          marginTop: 10,
+          padding: '4px 12px',
+          borderRadius: 6,
+          border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+          background: 'transparent',
+          cursor: 'pointer',
+          fontSize: 12,
+        }}
+      >
+        Reveal recordings folder
+      </button>
+    </div>
+  );
+}
+
+function ActiveRecordingRow({ rec }: { rec: RecordingStatus }) {
+  // Ticks every second only while state === 'recording' so the elapsed
+  // counter is live. Other states are static labels.
+  const [, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (rec.state !== 'recording') return undefined;
+    const id = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(id);
+  }, [rec.state]);
+
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - rec.startedAt) / 1000));
+  const mm = Math.floor(elapsedSec / 60);
+  const ss = elapsedSec % 60;
+  const elapsed = `${mm}:${String(ss).padStart(2, '0')}`;
+
+  let glyph: string; let color: string; let label: string;
+  if (rec.state === 'recording')      { glyph = '●'; color = '#c4451a'; label = `Recording · ${elapsed}`; }
+  else if (rec.state === 'processing'){ glyph = '⋯'; color = 'inherit'; label = 'Transcribing'; }
+  else if (rec.state === 'done')      { glyph = '✓'; color = '#2a9461'; label = 'Notes ready'; }
+  else                                { glyph = '✗'; color = '#c4451a'; label = rec.error ?? 'Failed'; }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0' }}>
+      <span style={{ width: 16, color, fontVariantNumeric: 'tabular-nums' }}>{glyph}</span>
+      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {rec.title}
+      </span>
+      <span className="pref-row-hint" style={{ marginTop: 0, fontVariantNumeric: 'tabular-nums' }}>
+        {label}
+      </span>
+      {rec.state === 'recording' && (
+        <button
+          type="button"
+          onClick={() => { void window.ycal.recorderStop(rec.eventId); }}
+          style={{
+            padding: '2px 10px',
+            borderRadius: 4,
+            border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+            background: 'transparent',
+            cursor: 'pointer',
+            fontSize: 11,
+          }}
+        >
+          Stop
+        </button>
+      )}
+      {rec.state === 'done' && rec.summaryFile && (
+        <button
+          type="button"
+          onClick={() => { void window.ycal.recorderOpenFile(rec.summaryFile!); }}
+          style={{
+            padding: '2px 10px',
+            borderRadius: 4,
+            border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+            background: 'transparent',
+            cursor: 'pointer',
+            fontSize: 11,
+          }}
+        >
+          Open notes
+        </button>
+      )}
+    </div>
+  );
+}
+
+function FinishedRecordingRow({ rec }: { rec: RecentRecording }) {
+  // Prefer summary > transcript > audio when the row is "opened" — the
+  // human almost always wants the synthesised note, not the raw m4a.
+  const primary = rec.summaryFile ?? rec.transcriptFile ?? rec.audioFile;
+  const niceTitle = humaniseBaseName(rec.baseName);
+  const sizeMb = (rec.sizeBytes / 1024 / 1024).toFixed(1);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '3px 0', fontSize: 12 }}>
+      <span style={{ width: 16, color: rec.hasSummary ? '#2a9461' : '#888', fontVariantNumeric: 'tabular-nums' }}>
+        {rec.hasSummary ? '✓' : '·'}
+      </span>
+      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {niceTitle}
+      </span>
+      <span className="pref-row-hint" style={{ marginTop: 0, fontVariantNumeric: 'tabular-nums' }}>
+        {sizeMb} MB
+      </span>
+      <button
+        type="button"
+        onClick={() => { void window.ycal.recorderOpenFile(primary); }}
+        style={{
+          padding: '2px 10px',
+          borderRadius: 4,
+          border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+          background: 'transparent',
+          cursor: 'pointer',
+          fontSize: 11,
+        }}
+      >
+        Open
+      </button>
+    </div>
+  );
+}
+
+// Tease "weekly-sync" out of "2026-05-20_1400__weekly-sync__<id>" into
+// "May 20 14:00 · weekly sync" for the recordings list. The filename is
+// already user-readable but display formatting helps when the list grows.
+function humaniseBaseName(base: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})__(.+?)__[^_]+$/.exec(base);
+  if (!m) return base;
+  const [, , mo, d, hh, mm, slug] = m;
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][parseInt(mo, 10) - 1] ?? mo;
+  const title = slug.replace(/-/g, ' ');
+  return `${month} ${parseInt(d, 10)} ${hh}:${mm} · ${title}`;
 }
