@@ -123,6 +123,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [autoRecordMeetings, setAutoRecordMeetings] = useState<boolean>(
     () => initialUi.autoRecordMeetings ?? false,
   );
+  const [recordingConfirmBeforeStart, setRecordingConfirmBeforeStart] = useState<boolean>(
+    () => initialUi.recordingConfirmBeforeStart ?? false,
+  );
   const [recordingSummaryPrompt, setRecordingSummaryPrompt] = useState<string>(
     () => initialUi.recordingSummaryPrompt ?? '',
   );
@@ -227,6 +230,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setHideDisabledCals(ui.hideDisabledCals ?? false);
       setAutoRolloverPastTasks(ui.autoRolloverPastTasks ?? true);
       setAutoRecordMeetings(ui.autoRecordMeetings ?? false);
+      setRecordingConfirmBeforeStart(ui.recordingConfirmBeforeStart ?? false);
       setRecordingSummaryPrompt(ui.recordingSummaryPrompt ?? '');
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
@@ -330,6 +334,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       hideDisabledCals,
       autoRolloverPastTasks,
       autoRecordMeetings,
+      recordingConfirmBeforeStart,
       recordingSummaryPrompt: recordingSummaryPrompt || undefined,
       loadWindow,
       loadBands,
@@ -339,8 +344,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
-    autoRolloverPastTasks, autoRecordMeetings, recordingSummaryPrompt,
-    loadWindow, loadBands, customTagSuggestions, theme,
+    autoRolloverPastTasks, autoRecordMeetings, recordingConfirmBeforeStart,
+    recordingSummaryPrompt, loadWindow, loadBands, customTagSuggestions, theme,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -923,6 +928,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setAutoRolloverPastTasks={setAutoRolloverPastTasks}
           autoRecordMeetings={autoRecordMeetings}
           setAutoRecordMeetings={setAutoRecordMeetings}
+          recordingConfirmBeforeStart={recordingConfirmBeforeStart}
+          setRecordingConfirmBeforeStart={setRecordingConfirmBeforeStart}
           recordingSummaryPrompt={recordingSummaryPrompt}
           setRecordingSummaryPrompt={setRecordingSummaryPrompt}
           loadWindow={loadWindow}

@@ -166,6 +166,9 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   if (patch.recordingSummaryPrompt !== undefined) {
     next.recordingSummaryPrompt = patch.recordingSummaryPrompt || undefined;
   }
+  if (patch.recordingConfirmBeforeStart !== undefined) {
+    next.recordingConfirmBeforeStart = patch.recordingConfirmBeforeStart;
+  }
   s.ui = next;
   write(s);
 }

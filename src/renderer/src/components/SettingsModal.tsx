@@ -55,6 +55,8 @@ interface Props {
   setAutoRolloverPastTasks: (v: boolean) => void;
   autoRecordMeetings: boolean;
   setAutoRecordMeetings: (v: boolean) => void;
+  recordingConfirmBeforeStart: boolean;
+  setRecordingConfirmBeforeStart: (v: boolean) => void;
   recordingSummaryPrompt: string;
   setRecordingSummaryPrompt: (v: string) => void;
   // Day-load gauge window
@@ -231,6 +233,8 @@ export function SettingsModal(props: Props) {
               <PrefsRecording
                 autoRecord={props.autoRecordMeetings}
                 setAutoRecord={props.setAutoRecordMeetings}
+                confirmBeforeStart={props.recordingConfirmBeforeStart}
+                setConfirmBeforeStart={props.setRecordingConfirmBeforeStart}
                 summaryPrompt={props.recordingSummaryPrompt}
                 setSummaryPrompt={props.setRecordingSummaryPrompt}
               />
@@ -1644,10 +1648,14 @@ function hhmmToMin(s: string): number | null {
 }
 
 function PrefsRecording({
-  autoRecord, setAutoRecord, summaryPrompt, setSummaryPrompt,
+  autoRecord, setAutoRecord,
+  confirmBeforeStart, setConfirmBeforeStart,
+  summaryPrompt, setSummaryPrompt,
 }: {
   autoRecord: boolean;
   setAutoRecord: (v: boolean) => void;
+  confirmBeforeStart: boolean;
+  setConfirmBeforeStart: (v: boolean) => void;
   summaryPrompt: string;
   setSummaryPrompt: (v: string) => void;
 }) {
@@ -1793,12 +1801,25 @@ function PrefsRecording({
         hint={
           ready
             ? (autoRecord
-              ? 'yCal will record every event with a meetUrl while it’s in progress, then summarise.'
+              ? 'yCal will react to every event with a meetUrl while it’s in progress.'
               : 'All deps in place — flip this to start recording matching events.')
             : 'Some dependencies are missing — see Setup below.'
         }
       >
         <PrefSwitch value={autoRecord} onChange={setAutoRecord} />
+      </PrefRow>
+      <PrefRow
+        label="Ask before starting"
+        hint={
+          confirmBeforeStart
+            ? 'At event start, yCal pops an actionable notification — recording only begins when you click Start (or Start now in the popover). Stops still happen automatically at event end. Good for meetings that delay.'
+            : 'Recording starts immediately at event start. Switch on if your meetings frequently begin late and you don\'t want yCal capturing empty intro time.'
+        }
+      >
+        <PrefSwitch
+          value={confirmBeforeStart}
+          onChange={setConfirmBeforeStart}
+        />
       </PrefRow>
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Setup</h3>

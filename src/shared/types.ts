@@ -206,6 +206,13 @@ export interface UiSettings {
   // `__TITLE__` and `__TRANSCRIPT__` placeholders — post-meet.sh
   // substitutes them per call before piping to `claude -p`.
   recordingSummaryPrompt?: string;
+  // When true, the recorder doesn't auto-start at event.start; instead
+  // it posts an actionable notification ("Start recording <title>?")
+  // when a matching meeting begins. The user clicks Start (or the
+  // popover's Start now button) to actually begin capture. Useful for
+  // meetings that frequently delay so yCal doesn't record empty intro
+  // time. Stops still happen automatically at event.end.
+  recordingConfirmBeforeStart?: boolean;
 }
 
 // Recording-pipeline dependency status. Surfaced to the Settings →

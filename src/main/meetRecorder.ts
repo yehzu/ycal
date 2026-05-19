@@ -114,6 +114,11 @@ function pathIfExists(p: string): string | null {
 
 const recordings = new Map<string, RecordingStatus>();
 const skipped = new Set<string>();
+// Events that have crossed event.start while the user has
+// "confirmBeforeStart" on. We've shown a notification; the user hasn't
+// clicked yet. Keep the event payload so the notification's action
+// handler can hand it to startRecording without re-fetching.
+const pendingConfirm = new Map<string, { event: CalendarEvent; notifiedAt: number }>();
 let pollTimer: NodeJS.Timeout | null = null;
 let mainWindowRef: BrowserWindow | null = null;
 
@@ -224,6 +229,10 @@ async function tick(): Promise<void> {
     for (const [id, s] of recordings) {
       if (s.state === 'recording') void stopRecording(id);
     }
+    // Also drop any pending-confirm entries: the user disabled the
+    // feature, so we shouldn't keep "deferred-recording" state for
+    // events the recorder no longer cares about.
+    pendingConfirm.clear();
     return;
   }
   if (!scriptsInstalled()) return;
@@ -243,9 +252,20 @@ async function tick(): Promise<void> {
     return [] as CalendarEvent[];
   });
 
+  // Clean up pending entries whose event has ended (user ignored the
+  // notification, the meeting passed). We treat ignored as "skip".
+  for (const [id, p] of pendingConfirm) {
+    const end = Date.parse(p.event.end);
+    if (Number.isFinite(end) && now >= end) {
+      pendingConfirm.delete(id);
+      skipped.add(id);
+    }
+  }
+
   for (const ev of candidates) {
     if (recordings.has(ev.id)) continue;
     if (skipped.has(ev.id)) continue;
+    if (pendingConfirm.has(ev.id)) continue;
     if (!ev.meetUrl) continue;
     if (ev.rsvp === 'declined') continue;
     if (ev.allDay) continue;
@@ -257,7 +277,68 @@ async function tick(): Promise<void> {
     // Skip events with bizarre durations (>4h) to avoid burning disk on
     // an all-day office-hours block that happens to have a meetUrl.
     if (end - start > 4 * 60 * 60_000) continue;
-    void startRecording(ev);
+    if (ui.recordingConfirmBeforeStart) {
+      askToStart(ev);
+    } else {
+      void startRecording(ev);
+    }
+  }
+}
+
+// "Ask before starting" path: fire an actionable notification at
+// event.start. The user clicks Start (or Skip) to decide. Body click
+// brings yCal forward so the user can use the popover instead. We
+// register the event in pendingConfirm so subsequent polls don't
+// re-fire the notification — one shot per event.
+function askToStart(event: CalendarEvent): void {
+  pendingConfirm.set(event.id, { event, notifiedAt: Date.now() });
+  if (!Notification.isSupported()) {
+    // No native notifications — fall back to recording anyway, since
+    // the user explicitly enabled auto-record but we can't ask them.
+    void startRecording(event);
+    pendingConfirm.delete(event.id);
+    return;
+  }
+  try {
+    const startTime = new Date(event.start).toLocaleTimeString(undefined, {
+      hour: 'numeric', minute: '2-digit',
+    });
+    const n = new Notification({
+      title: 'yCal · meeting starting',
+      body: `${event.title || 'Meeting'} (started ${startTime}) — record?`,
+      // macOS surfaces these as buttons when the user expands the
+      // notification (Alert style) or hovers (Banner). Banner-only
+      // users still see the body and can click it to focus yCal.
+      actions: [
+        { type: 'button', text: 'Start' },
+        { type: 'button', text: 'Skip' },
+      ],
+      // Keep silent so it doesn't interrupt the user mid-meeting with
+      // a sound. They're already in the meeting; visual is enough.
+      silent: true,
+    });
+    n.on('action', (_e, idx) => {
+      if (idx === 0) {
+        pendingConfirm.delete(event.id);
+        void startRecording(event);
+      } else if (idx === 1) {
+        pendingConfirm.delete(event.id);
+        skipped.add(event.id);
+      }
+    });
+    // Default click (notification body, not an action button) → focus
+    // yCal so the user can use the popover's Start button. We don't
+    // start recording on body click because that's ambiguous intent.
+    n.on('click', () => {
+      const w = mainWindowRef;
+      if (w && !w.isDestroyed()) { w.show(); w.focus(); }
+    });
+    n.show();
+  } catch (e) {
+    console.error('[yCal recorder] notification failed', e);
+    // Fall back to recording — better than silently doing nothing.
+    pendingConfirm.delete(event.id);
+    void startRecording(event);
   }
 }
 
@@ -443,6 +524,19 @@ function notify(title: string, body: string): void {
   } catch { /* best-effort */ }
 }
 
+// Homebrew prefixes. launchd hands Electron a stripped PATH when yCal is
+// launched from /Applications, so a `spawn('record-meet.sh')` would not
+// find `ffmpeg`/`whisper-cli`/`claude` even though they're "on PATH" in
+// the user's interactive shell. We layer these on top of whatever
+// process.env.PATH has so the scripts resolve their dependencies the
+// same way `which` does in Terminal.
+const HOMEBREW_BIN_DIRS = [
+  '/opt/homebrew/bin',
+  '/opt/homebrew/sbin',
+  '/usr/local/bin',
+  '/usr/local/sbin',
+];
+
 function execScript(
   argv: string[],
   opts: { timeoutMs?: number; envExtras?: NodeJS.ProcessEnv } = {},
@@ -459,6 +553,7 @@ function execScript(
       ...process.env,
       ...(bundledTap ? { YCAL_COREAUDIO_TAP: bundledTap } : {}),
       ...(opts.envExtras ?? {}),
+      PATH: [...HOMEBREW_BIN_DIRS, process.env.PATH ?? ''].filter(Boolean).join(':'),
     };
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     let stdout = '';
