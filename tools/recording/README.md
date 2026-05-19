@@ -91,7 +91,7 @@ before every meeting.
 | `YCAL_WHISPER_MODEL` | `~/.ycal/models/ggml-large-v3-turbo.bin` | Whisper ggml model path                      |
 | `YCAL_WHISPER_BIN`   | `whisper-cli` (on PATH)                  | Alternative whisper binary                   |
 | `YCAL_CLAUDE_BIN`    | `claude` (on PATH)                       | Alternative claude binary (cmux fork OK)     |
-| `YCAL_SUMMARY_PROMPT`| (built-in generic meeting-notes prompt)                  | Override prompt file                         |
+| `YCAL_SUMMARY_PROMPT`| (built-in generic meeting-notes prompt)  | Override prompt file                         |
 
 ## Troubleshooting
 
