@@ -45,6 +45,10 @@ import {
   setActiveProvider,
 } from './taskProviders';
 import { getTasksLocal, setTasksLocal } from './tasksStore';
+import {
+  listRecordings, startMeetRecorder, startRecordingManual, stopMeetRecorder,
+  stopRecordingManual,
+} from './meetRecorder';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -521,6 +525,25 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // ── Meeting auto-recorder (src/main/meetRecorder.ts) ─────────────
+  ipcMain.handle(IPC.RecorderList, () => listRecordings());
+  ipcMain.handle(IPC.RecorderStart, async (_e, event) => {
+    try {
+      await startRecordingManual(event);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.RecorderStop, async (_e, eventId: string) => {
+    try {
+      await stopRecordingManual(eventId);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
 }
 
 if (isCliInvocation(process.argv)) {
@@ -572,6 +595,7 @@ if (isCliInvocation(process.argv)) {
     setupAutoUpdater(win);
     startCliServer();
     startTray(win);
+    startMeetRecorder(win);
 
     // Global shortcut for the quick-add popup. registerAll-style: log on
     // failure (another app may already own the chord) but don't block app
@@ -621,6 +645,7 @@ if (isCliInvocation(process.argv)) {
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
     stopTray();
+    stopMeetRecorder();
   });
 }
 

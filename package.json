@@ -1,6 +1,6 @@
 {
   "name": "ycal",
-  "version": "0.6.34",
+  "version": "0.6.35",
   "description": "An editorial-styled macOS calendar with multi-Google-account support and per-event colors.",
   "main": "out/main/index.js",
   "author": "yCal",
@@ -70,7 +70,11 @@
       "category": "public.app-category.productivity",
       "icon": "build/icon.icns",
       "identity": null,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "yCal records your microphone during scheduled video meetings so it can produce a local transcript and meeting note. Audio stays on your Mac.",
+        "NSAppleEventsUsageDescription": "yCal coordinates audio recording with helper scripts during scheduled meetings."
+      }
     },
     "publish": {
       "provider": "github",

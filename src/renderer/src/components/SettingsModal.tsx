@@ -13,7 +13,7 @@ import { formatRhythmTime, resolveDefault } from '../rhythm';
 
 type TabId =
   | 'general' | 'tasks' | 'rhythm' | 'sync'
-  | 'weather' | 'accounts' | 'shortcuts' | 'updates';
+  | 'weather' | 'accounts' | 'recording' | 'shortcuts' | 'updates';
 
 interface Props {
   onClose: () => void;
@@ -51,6 +51,8 @@ interface Props {
   refreshTasks: () => Promise<void>;
   autoRolloverPastTasks: boolean;
   setAutoRolloverPastTasks: (v: boolean) => void;
+  autoRecordMeetings: boolean;
+  setAutoRecordMeetings: (v: boolean) => void;
   // Day-load gauge window
   loadWindow: LoadWindowSettings;
   setLoadWindow: (next: LoadWindowSettings) => void;
@@ -77,6 +79,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'tasks', label: 'Tasks' },
   { id: 'rhythm', label: 'Day rhythm' },
   { id: 'sync', label: 'Sync' },
+  { id: 'recording', label: 'Recording' },
   { id: 'weather', label: 'Weather' },
   { id: 'accounts', label: 'Accounts' },
   { id: 'shortcuts', label: 'Shortcuts' },
@@ -88,6 +91,7 @@ const TAB_TITLES: Record<TabId, string> = {
   tasks: 'Tasks',
   rhythm: 'Day rhythm',
   sync: 'Sync',
+  recording: 'Recording',
   weather: 'Weather',
   accounts: 'Accounts',
   shortcuts: 'Shortcuts',
@@ -217,6 +221,12 @@ export function SettingsModal(props: Props) {
                 setDriveSyncAccount={props.setDriveSyncAccount}
                 driveSyncPushNow={props.driveSyncPushNow}
                 driveSyncPullNow={props.driveSyncPullNow}
+              />
+            )}
+            {tab === 'recording' && (
+              <PrefsRecording
+                autoRecord={props.autoRecordMeetings}
+                setAutoRecord={props.setAutoRecordMeetings}
               />
             )}
             {tab === 'shortcuts' && <PrefsShortcuts />}
@@ -1625,4 +1635,79 @@ function hhmmToMin(s: string): number | null {
   const mm = parseInt(m[2], 10);
   if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
   return h * 60 + mm;
+}
+
+function PrefsRecording({
+  autoRecord, setAutoRecord,
+}: {
+  autoRecord: boolean;
+  setAutoRecord: (v: boolean) => void;
+}) {
+  return (
+    <div className="pref-section">
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        When auto-record is on, yCal spawns a helper script
+        (<code>~/.ycal/record-meet.sh</code>) at the start of every calendar
+        event that has a video link and you haven’t declined. The script
+        records system audio (via BlackHole) mixed with your mic, then
+        <code> ~/.ycal/post-meet.sh</code> runs whisper.cpp + <code>claude -p</code>
+        to drop a transcript + summary alongside the m4a.
+      </p>
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Auto-record</h3>
+      <PrefRow
+        label="Auto-record meetings with a video link"
+        hint={
+          autoRecord
+            ? 'yCal will record every event with a meetUrl while it’s in progress, then summarise.'
+            : 'Off. Recording must be set up first — see “Setup” below.'
+        }
+      >
+        <PrefSwitch value={autoRecord} onChange={setAutoRecord} />
+      </PrefRow>
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Setup (one time)</h3>
+      <ol className="pref-row-hint" style={{ maxWidth: '70ch', lineHeight: 1.6, paddingLeft: 20 }}>
+        <li>
+          Install dependencies:
+          <pre style={{ marginTop: 4 }}>
+{`brew install whisper-cpp ffmpeg
+brew install --cask blackhole-2ch`}
+          </pre>
+        </li>
+        <li>
+          Download a whisper model (~1.5 GB, multilingual):
+          <pre style={{ marginTop: 4 }}>
+{`curl -L --fail \\
+  -o ~/.ycal/models/ggml-large-v3-turbo.bin \\
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin`}
+          </pre>
+        </li>
+        <li>
+          Open <em>Audio MIDI Setup</em> → click <kbd className="pref-kbd">+</kbd> → <em>Create Multi-Output Device</em>.
+          Tick your speakers/headphones AND <em>BlackHole 2ch</em>. Rename to
+          <em> yCal Multi-Output</em>. Use it as system output during meetings
+          (right-click the menu-bar volume icon).
+        </li>
+        <li>
+          Install the helper scripts (run from this repo):
+          <pre style={{ marginTop: 4 }}>{`tools/recording/install.sh`}</pre>
+        </li>
+        <li>
+          Smoke test before trusting it on a real meeting:
+          <pre style={{ marginTop: 4 }}>
+{`~/.ycal/record-meet.sh start test "smoke"
+sleep 10
+~/.ycal/record-meet.sh stop test
+~/.ycal/post-meet.sh ~/Recordings/yCal/<file>.m4a "smoke"`}
+          </pre>
+        </li>
+      </ol>
+      <p className="pref-row-hint" style={{ maxWidth: '60ch' }}>
+        Full reference: <code>tools/recording/README.md</code> in the yCal repo.
+        Audio + transcripts live in <code>~/Recordings/yCal/</code> and never
+        leave your machine except the brief Claude API call for summarisation.
+      </p>
+    </div>
+  );
 }

@@ -10,6 +10,7 @@ import type {
   DriveSyncStatus,
   GoogleColors,
   ListEventsRequest,
+  RecordingStatus,
   RhythmData,
   SettingsPushPayload,
   TaskComment,
@@ -151,6 +152,20 @@ const api = {
     const listener = (): void => handler();
     ipcRenderer.on(IPC.QuickAddReset, listener);
     return () => ipcRenderer.removeListener(IPC.QuickAddReset, listener);
+  },
+
+  // Meeting recorder — list current recordings, start/stop manually, and
+  // subscribe to state-transition pushes.
+  recorderList: (): Promise<RecordingStatus[]> => ipcRenderer.invoke(IPC.RecorderList),
+  recorderStart: (event: CalendarEvent): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderStart, event),
+  recorderStop: (eventId: string): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderStop, eventId),
+  onRecorderStatusChanged: (handler: (next: RecordingStatus[]) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: RecordingStatus[]): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.RecorderStatusChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.RecorderStatusChanged, listener);
   },
 };
 

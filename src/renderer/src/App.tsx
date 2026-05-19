@@ -120,6 +120,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [autoRolloverPastTasks, setAutoRolloverPastTasks] = useState<boolean>(
     () => initialUi.autoRolloverPastTasks ?? true,
   );
+  const [autoRecordMeetings, setAutoRecordMeetings] = useState<boolean>(
+    () => initialUi.autoRecordMeetings ?? false,
+  );
   const [loadWindow, setLoadWindow] = useState<LoadWindowSettings>(
     () => ({ ...DEFAULT_LOAD_WINDOW, ...(initialUi.loadWindow ?? {}) }),
   );
@@ -220,6 +223,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setSectionOrder((ui.sectionOrder as SidebarSectionKey[]) ?? DEFAULT_SECTION_ORDER);
       setHideDisabledCals(ui.hideDisabledCals ?? false);
       setAutoRolloverPastTasks(ui.autoRolloverPastTasks ?? true);
+      setAutoRecordMeetings(ui.autoRecordMeetings ?? false);
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
       setCustomTagSuggestions(ui.customTagSuggestions ?? []);
@@ -321,6 +325,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       units,
       hideDisabledCals,
       autoRolloverPastTasks,
+      autoRecordMeetings,
       loadWindow,
       loadBands,
       customTagSuggestions,
@@ -329,7 +334,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
-    autoRolloverPastTasks, loadWindow, loadBands, customTagSuggestions, theme,
+    autoRolloverPastTasks, autoRecordMeetings, loadWindow, loadBands,
+    customTagSuggestions, theme,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -909,6 +915,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           refreshTasks={tasks.refresh}
           autoRolloverPastTasks={autoRolloverPastTasks}
           setAutoRolloverPastTasks={setAutoRolloverPastTasks}
+          autoRecordMeetings={autoRecordMeetings}
+          setAutoRecordMeetings={setAutoRecordMeetings}
           loadWindow={loadWindow}
           setLoadWindow={setLoadWindow}
           loadBands={loadBands}

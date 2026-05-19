@@ -195,6 +195,32 @@ export interface UiSettings {
   customTagSuggestions?: string[];
   // Color scheme. 'system' follows OS appearance via prefers-color-scheme.
   theme?: ThemeMode;
+  // Auto-record meetings that have a meetUrl, run them through whisper.cpp
+  // for a local transcript, then claude -p for a summary. Requires the
+  // helper scripts in ~/.ycal/ (see tools/recording/README.md). Defaults
+  // to false because it needs system audio capture (BlackHole) which the
+  // user has to set up once before it'll actually work.
+  autoRecordMeetings?: boolean;
+}
+
+// One in-flight or recently-finished recording. The recorder maintains
+// an in-memory map keyed by event id; this is what gets pushed to the
+// renderer so the popover/tray can show a recording indicator.
+export interface RecordingStatus {
+  eventId: string;
+  title: string;
+  // 'recording' — ffmpeg is actively writing the m4a.
+  // 'processing' — recording is done, whisper + claude pipeline running.
+  // 'done' — summary written, recording finished cleanly.
+  // 'failed' — see `error`.
+  state: 'recording' | 'processing' | 'done' | 'failed';
+  startedAt: number;       // epoch ms
+  // When in 'recording' state, the wall-clock at which the recorder will
+  // auto-stop (event.end). Renderer can use this for a countdown.
+  endsAt?: number;
+  audioFile?: string;
+  summaryFile?: string;
+  error?: string;
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system';
@@ -539,4 +565,11 @@ export const IPC = {
   // so the renderer can clear the input field and reset suggestion state
   // before the user sees the window again.
   QuickAddReset: 'ycal:quickAddReset',
+  // Meeting auto-recording (src/main/meetRecorder.ts). The renderer can
+  // query/list current recordings, and gets push updates whenever a
+  // recording's state transitions.
+  RecorderList: 'ycal:recorderList',
+  RecorderStart: 'ycal:recorderStart',
+  RecorderStop: 'ycal:recorderStop',
+  RecorderStatusChanged: 'ycal:recorderStatusChanged',  // main → renderer push
 } as const;
