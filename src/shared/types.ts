@@ -203,6 +203,43 @@ export interface UiSettings {
   autoRecordMeetings?: boolean;
 }
 
+// Recording-pipeline dependency status. Surfaced to the Settings →
+// Recording tab so the user can see what's missing + click "Install" to
+// fix it. Each dep is independent — the user can install only the ones
+// they're missing, and we re-probe after each successful install.
+export interface RecorderSetupStatus {
+  // Homebrew itself. If absent the user has to install brew first; we
+  // refuse to do that for them (too invasive).
+  brew: { installed: boolean; path: string | null };
+  ffmpeg: { installed: boolean; path: string | null };
+  whisperCli: { installed: boolean; path: string | null };
+  // Optional but required for post-meet summarisation. We surface it so
+  // the user knows what's missing, but install isn't covered by our
+  // setup runner (Claude Code lives outside brew).
+  claude: { installed: boolean; path: string | null };
+  // ggml-large-v3-turbo (~1.5 GB). Path is checked, not contents.
+  whisperModel: { installed: boolean; path: string; sizeBytes: number };
+  // Bundled scripts + coreaudio-tap that yCal auto-syncs into ~/.ycal/.
+  scripts: { installed: boolean };
+  coreaudioTap: { installed: boolean; path: string };
+  // Aggregate: true when everything required for auto-record (brew is
+  // NOT required — we only need it to install the others; once they're
+  // there, brew can disappear).
+  ready: boolean;
+}
+
+// Live progress event from the setup runner. `line` is one chunk of
+// stdout/stderr from brew or curl. `phase` lets the UI label which
+// step we're on without parsing free-form text.
+export interface RecorderSetupProgress {
+  phase: 'starting' | 'brew' | 'model' | 'done' | 'error';
+  line?: string;
+  // Populated when phase === 'error'.
+  error?: string;
+  // 0..100 for the model download phase; absent for other phases.
+  modelPercent?: number;
+}
+
 // One in-flight or recently-finished recording. The recorder maintains
 // an in-memory map keyed by event id; this is what gets pushed to the
 // renderer so the popover/tray can show a recording indicator.
@@ -572,4 +609,8 @@ export const IPC = {
   RecorderStart: 'ycal:recorderStart',
   RecorderStop: 'ycal:recorderStop',
   RecorderStatusChanged: 'ycal:recorderStatusChanged',  // main → renderer push
+  // Auto-setup: probe what's missing, install in one shot via brew + curl.
+  RecorderGetSetupStatus: 'ycal:recorderGetSetupStatus',
+  RecorderRunSetup: 'ycal:recorderRunSetup',
+  RecorderSetupProgress: 'ycal:recorderSetupProgress',  // main → renderer push
 } as const;

@@ -49,6 +49,9 @@ import {
   listRecordings, startMeetRecorder, startRecordingManual, stopMeetRecorder,
   stopRecordingManual,
 } from './meetRecorder';
+import {
+  bindRecorderSetup, getRecorderSetupStatus, runRecorderSetup,
+} from './recorderSetup';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -544,6 +547,14 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+  ipcMain.handle(IPC.RecorderGetSetupStatus, () => getRecorderSetupStatus());
+  ipcMain.handle(IPC.RecorderRunSetup, () => {
+    // Fire-and-forget: progress comes back over the RecorderSetupProgress
+    // push channel. We don't await — the renderer wires its own listener
+    // and the click handler returns immediately.
+    void runRecorderSetup();
+    return { ok: true as const };
+  });
 }
 
 if (isCliInvocation(process.argv)) {
@@ -596,6 +607,7 @@ if (isCliInvocation(process.argv)) {
     startCliServer();
     startTray(win);
     startMeetRecorder(win);
+    bindRecorderSetup(win);
 
     // Global shortcut for the quick-add popup. registerAll-style: log on
     // failure (another app may already own the chord) but don't block app

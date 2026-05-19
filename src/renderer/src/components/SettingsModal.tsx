@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type {
   AccountSummary, CalendarSummary, CloudStorageInfo, DriveSyncStatus,
   LoadBands, LoadWindowSettings,
-  MergeCriteria, RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
+  MergeCriteria, RecorderSetupProgress, RecorderSetupStatus,
+  RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
 } from '@shared/types';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
 import { calKey } from '../store';
@@ -1643,67 +1644,260 @@ function PrefsRecording({
   autoRecord: boolean;
   setAutoRecord: (v: boolean) => void;
 }) {
+  const [status, setStatus] = useState<RecorderSetupStatus | null>(null);
+  const [installing, setInstalling] = useState<boolean>(false);
+  const [log, setLog] = useState<string[]>([]);
+  const [phase, setPhase] = useState<RecorderSetupProgress['phase']>('done');
+  const [modelPct, setModelPct] = useState<number | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+  const logRef = useRef<HTMLPreElement | null>(null);
+
+  // Initial probe + listener for live progress.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const s = await window.ycal.recorderGetSetupStatus();
+      if (!cancelled) setStatus(s);
+    })();
+    const off = window.ycal.onRecorderSetupProgress((p) => {
+      if (p.line) {
+        setLog((prev) => {
+          // Tail-cap so we don't accumulate megabytes of brew output.
+          const next = [...prev, p.line!];
+          return next.length > 400 ? next.slice(-400) : next;
+        });
+      }
+      setPhase(p.phase);
+      if (typeof p.modelPercent === 'number') setModelPct(p.modelPercent);
+      if (p.phase === 'error') {
+        setError(p.error ?? 'unknown error');
+        setInstalling(false);
+      }
+      if (p.phase === 'done') {
+        setInstalling(false);
+        setError(null);
+        // Re-probe so the status grid reflects what we just installed.
+        void window.ycal.recorderGetSetupStatus().then((s) => setStatus(s));
+      }
+    });
+    return () => { cancelled = true; off(); };
+  }, []);
+
+  // Auto-scroll the log to the bottom on new lines.
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [log]);
+
+  async function handleInstall(): Promise<void> {
+    setLog([]); setError(null); setModelPct(undefined);
+    setInstalling(true);
+    setPhase('starting');
+    await window.ycal.recorderRunSetup();
+  }
+
+  const rows: Array<{
+    label: string;
+    ok: boolean;
+    detail: string;
+    note?: string;
+  }> = status
+    ? [
+      {
+        label: 'Homebrew',
+        ok: status.brew.installed,
+        detail: status.brew.path ?? 'not found',
+        note: status.brew.installed
+          ? undefined
+          : 'Install Homebrew first; yCal won\'t do it for you.',
+      },
+      {
+        label: 'ffmpeg',
+        ok: status.ffmpeg.installed,
+        detail: status.ffmpeg.path ?? 'not installed',
+      },
+      {
+        label: 'whisper-cli',
+        ok: status.whisperCli.installed,
+        detail: status.whisperCli.path ?? 'not installed',
+      },
+      {
+        label: 'whisper model',
+        ok: status.whisperModel.installed,
+        detail: status.whisperModel.installed
+          ? `${(status.whisperModel.sizeBytes / 1024 / 1024 / 1024).toFixed(2)} GB at ${status.whisperModel.path}`
+          : '1.5 GB download required',
+      },
+      {
+        label: 'coreaudio-tap',
+        ok: status.coreaudioTap.installed,
+        detail: status.coreaudioTap.installed
+          ? status.coreaudioTap.path
+          : 'auto-synced from app bundle on next launch',
+      },
+      {
+        label: 'helper scripts',
+        ok: status.scripts.installed,
+        detail: status.scripts.installed
+          ? '~/.ycal/record-meet.sh + post-meet.sh'
+          : 'auto-synced on next launch',
+      },
+      {
+        label: 'claude CLI',
+        ok: status.claude.installed,
+        detail: status.claude.path ?? 'not on PATH — ships with Claude Code',
+        note: status.claude.installed
+          ? undefined
+          : 'Optional, but post-meet summaries skip if missing.',
+      },
+    ]
+    : [];
+
+  const ready = status?.ready ?? false;
+  const canInstall = status?.brew.installed
+    && (!status.ffmpeg.installed || !status.whisperCli.installed || !status.whisperModel.installed)
+    && !installing;
+  const installLabel = (() => {
+    if (installing) {
+      if (phase === 'brew') return 'Installing brew formulae…';
+      if (phase === 'model') {
+        return modelPct != null
+          ? `Downloading model · ${modelPct.toFixed(0)}%`
+          : 'Downloading model…';
+      }
+      return 'Installing…';
+    }
+    return 'Install missing dependencies';
+  })();
+
   return (
     <div className="pref-section">
       <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
-        When auto-record is on, yCal spawns a helper script
-        (<code>~/.ycal/record-meet.sh</code>) at the start of every calendar
-        event that has a video link and you haven’t declined. The script
-        captures system audio via Apple’s ScreenCaptureKit, mixes it with
-        your mic, then <code>~/.ycal/post-meet.sh</code> runs whisper.cpp +{' '}
-        <code>claude -p</code> to drop a transcript + summary alongside the m4a.
+        Auto-records video meetings via ScreenCaptureKit (no BlackHole),
+        transcribes locally with whisper.cpp, then runs <code>claude -p</code> to
+        produce a meeting note. Audio + transcripts live in{' '}
+        <code>~/Recordings/yCal/</code> and never leave your machine —
+        only the finished transcript is sent to the Claude API for summarisation.
       </p>
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Auto-record</h3>
       <PrefRow
         label="Auto-record meetings with a video link"
         hint={
-          autoRecord
-            ? 'yCal will record every event with a meetUrl while it’s in progress, then summarise.'
-            : 'Off. Run the setup steps below before enabling.'
+          ready
+            ? (autoRecord
+              ? 'yCal will record every event with a meetUrl while it’s in progress, then summarise.'
+              : 'All deps in place — flip this to start recording matching events.')
+            : 'Some dependencies are missing — see Setup below.'
         }
       >
         <PrefSwitch value={autoRecord} onChange={setAutoRecord} />
       </PrefRow>
 
-      <h3 className="pref-h" style={{ marginTop: 18 }}>Setup (one time)</h3>
-      <ol className="pref-row-hint" style={{ maxWidth: '70ch', lineHeight: 1.6, paddingLeft: 20 }}>
-        <li>
-          Install transcription deps (no virtual audio driver needed — macOS 13+ ships ScreenCaptureKit):
-          <pre style={{ marginTop: 4 }}>{`brew install whisper-cpp ffmpeg`}</pre>
-        </li>
-        <li>
-          Download a whisper model (~1.5 GB, multilingual):
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Setup</h3>
+      {status ? (
+        <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+          {rows.map((r) => (
+            <div
+              key={r.label}
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: 10,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              <span style={{ width: 18, color: r.ok ? 'var(--accent-ok, #2a9461)' : 'var(--accent-warn, #c4451a)' }}>
+                {r.ok ? '✓' : '✗'}
+              </span>
+              <span style={{ minWidth: 140, fontWeight: 600 }}>{r.label}</span>
+              <span className="pref-row-hint" style={{ flex: 1, marginTop: 0 }}>
+                {r.detail}{r.note ? ` — ${r.note}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="pref-row-hint">Probing…</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 6 }}>
+        <button
+          type="button"
+          className="pref-button"
+          disabled={!canInstall}
+          onClick={() => void handleInstall()}
+          style={{
+            padding: '6px 14px',
+            borderRadius: 6,
+            border: '1px solid var(--accent, #c4451a)',
+            background: canInstall ? 'var(--accent, #c4451a)' : 'transparent',
+            color: canInstall ? '#fff' : 'inherit',
+            cursor: canInstall ? 'pointer' : 'default',
+            fontWeight: 600,
+          }}
+        >
+          {installLabel}
+        </button>
+        {ready && (
+          <span className="pref-row-hint" style={{ marginTop: 0 }}>
+            All dependencies installed.
+          </span>
+        )}
+        {!ready && !status?.brew.installed && (
+          <span className="pref-row-hint" style={{ marginTop: 0 }}>
+            Install Homebrew first; the button activates after.
+          </span>
+        )}
+      </div>
+
+      {!status?.brew.installed && status !== null && (
+        <p className="pref-row-hint" style={{ maxWidth: '70ch' }}>
+          Run this in Terminal to install Homebrew, then come back to this tab:
           <pre style={{ marginTop: 4 }}>
-{`curl -L --fail \\
-  -o ~/.ycal/models/ggml-large-v3-turbo.bin \\
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin`}
+{`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`}
           </pre>
-        </li>
-        <li>
-          Install scripts + the bundled <code>coreaudio-tap</code> helper:
-          <pre style={{ marginTop: 4 }}>{`tools/recording/install.sh`}</pre>
-        </li>
-        <li>
-          First recording prompts for <em>Screen Recording</em> + <em>Microphone</em> permission.
-          Grant both in System Settings → Privacy &amp; Security, then fully
-          quit + relaunch yCal (macOS only surfaces newly-granted permission
-          to fresh processes).
-        </li>
-        <li>
-          Smoke test:
-          <pre style={{ marginTop: 4 }}>
-{`~/.ycal/record-meet.sh start test "smoke" 60
-sleep 10
-~/.ycal/record-meet.sh stop test
-~/.ycal/post-meet.sh ~/Recordings/yCal/<file>.m4a "smoke"`}
+        </p>
+      )}
+
+      {error && (
+        <p className="pref-row-hint" style={{ color: 'var(--accent-warn, #c4451a)' }}>
+          {error}
+        </p>
+      )}
+
+      {log.length > 0 && (
+        <details style={{ marginTop: 12 }}>
+          <summary className="pref-row-hint" style={{ cursor: 'pointer', marginTop: 0 }}>
+            Install log ({log.length} lines)
+          </summary>
+          <pre
+            ref={logRef}
+            style={{
+              marginTop: 6,
+              maxHeight: 240,
+              overflow: 'auto',
+              padding: 8,
+              background: 'rgba(0,0,0,0.04)',
+              borderRadius: 4,
+              fontSize: 11,
+              lineHeight: 1.4,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {log.join('\n')}
           </pre>
-        </li>
-      </ol>
+        </details>
+      )}
+
+      <h3 className="pref-h" style={{ marginTop: 22 }}>First-run permissions</h3>
       <p className="pref-row-hint" style={{ maxWidth: '60ch' }}>
-        Full reference: <code>tools/recording/README.md</code> in the yCal repo.
-        Audio + transcripts live in <code>~/Recordings/yCal/</code> and never
-        leave your machine except the brief Claude API call for summarisation.
+        The first time a recording starts, macOS will prompt for{' '}
+        <em>Screen Recording</em> (ScreenCaptureKit) and{' '}
+        <em>Microphone</em> permission. Grant both in <em>System Settings →
+        Privacy &amp; Security</em>, then fully Cmd-Q + relaunch yCal — macOS
+        only surfaces newly-granted permission to fresh processes.
       </p>
     </div>
   );

@@ -10,6 +10,8 @@ import type {
   DriveSyncStatus,
   GoogleColors,
   ListEventsRequest,
+  RecorderSetupProgress,
+  RecorderSetupStatus,
   RecordingStatus,
   RhythmData,
   SettingsPushPayload,
@@ -166,6 +168,19 @@ const api = {
       handler(payload);
     ipcRenderer.on(IPC.RecorderStatusChanged, listener);
     return () => ipcRenderer.removeListener(IPC.RecorderStatusChanged, listener);
+  },
+
+  // Recording auto-setup: probe + one-click install of ffmpeg, whisper-cpp,
+  // and the whisper model. Progress streams over RecorderSetupProgress.
+  recorderGetSetupStatus: (): Promise<RecorderSetupStatus> =>
+    ipcRenderer.invoke(IPC.RecorderGetSetupStatus),
+  recorderRunSetup: (): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderRunSetup),
+  onRecorderSetupProgress: (handler: (p: RecorderSetupProgress) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: RecorderSetupProgress): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.RecorderSetupProgress, listener);
+    return () => ipcRenderer.removeListener(IPC.RecorderSetupProgress, listener);
   },
 };
 

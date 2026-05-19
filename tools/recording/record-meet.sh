@@ -111,11 +111,20 @@ start() {
   # Recreate fresh in case a previous run left a stale node.
   rm -f "$fifo"; mkfifo "$fifo"
 
-  # Start coreaudio-tap first, writing to the FIFO. nohup detaches from
-  # any controlling terminal; ffmpeg reads the other end. We close
-  # coreaudio-tap's stdin (</dev/null) so its stdin-close watcher
-  # doesn't see a noisy parent fd and panic.
-  nohup "$TAP_BIN" </dev/null > "$fifo" 2> "${STATE_DIR}/${event_id}.tap.log" &
+  # coreaudio-tap watches its stdin for EOF as a "parent died" signal.
+  # /dev/null fires that watcher immediately (read returns 0), so the
+  # binary exits cleanly before recording even starts — with no stderr
+  # output, which makes it look like a permission failure. Instead we
+  # back stdin with a FIFO and keep the write-end pinned open by a
+  # silent `sleep` running under nohup. Sleep never writes, so the
+  # dispatch read source on the tap side has no data + no EOF and
+  # stays dormant until we SIGTERM either process on stop.
+  local stdin_fifo="${STATE_DIR}/${event_id}.stdin"
+  rm -f "$stdin_fifo"; mkfifo "$stdin_fifo"
+  nohup bash -c "exec sleep 86400 > '$stdin_fifo'" >/dev/null 2>&1 &
+  local keep_pid=$!
+
+  nohup "$TAP_BIN" < "$stdin_fifo" > "$fifo" 2> "${STATE_DIR}/${event_id}.tap.log" &
   local tap_pid=$!
 
   # -t <max_seconds> self-terminates ffmpeg in case yCal stops polling.
@@ -125,38 +134,57 @@ start() {
   # NOTE: do NOT pass -nostdin here. We feed nothing to ffmpeg's stdin —
   # the FIFO is opened as an explicit input file, so ffmpeg's default
   # stdin behaviour is fine and won't fight the pipe ordering.
+  #
+  # We DON'T pass -ar / -ac before the avfoundation input. The
+  # avfoundation indev only accepts a small set of input options
+  # (audio_device_index, pixel_format, framerate, …) — passing -ar
+  # there fails with "Option sample_rate not found" before the mic
+  # even opens.
+  #
+  # Filter chain: the tap stream is 16 kHz mono and the mic is whatever
+  # native rate / channel count the device serves (USB mics often go
+  # 48 kHz stereo). If we let amix pick a common rate it follows the
+  # FIRST input, so the mic ends up downsampled to 16 kHz mono and the
+  # encoded m4a sounds crackly and band-limited. Resample BOTH to
+  # 48 kHz mono explicitly before mixing, then pin the output to 48 kHz
+  # mono so the AAC encoder doesn't have to clamp bitrate either.
+  # dropout_transition=0 disables amix's automatic volume rebalancing
+  # when one stream goes quiet (would otherwise duck the other side).
   nohup ffmpeg -hide_banner -y \
     -f f32le -ar 16000 -ac 1 -i "$fifo" \
-    -f avfoundation -ar 48000 -ac 1 -i ":${mic}" \
-    -filter_complex "[0:a]aresample=async=1[a0];[1:a]aresample=async=1[a1];[a0][a1]amix=inputs=2:duration=longest:normalize=0[a]" \
-    -map "[a]" -c:a aac -b:a 128k -movflags +faststart \
+    -f avfoundation -i ":${mic}" \
+    -filter_complex "[0:a]aresample=48000[a0];[1:a]aresample=48000,aformat=channel_layouts=mono[a1];[a0][a1]amix=inputs=2:duration=longest:normalize=0:dropout_transition=0[a]" \
+    -map "[a]" -ar 48000 -ac 1 -c:a aac -b:a 128k -movflags +faststart \
     "${ts_arg[@]}" \
     "$file" \
     > "${STATE_DIR}/${event_id}.ffmpeg.log" 2>&1 &
   local pid=$!
 
   # ffmpeg fails fast if mic permission isn't granted, or if the FIFO
-  # producer never opens. Give the pair a short grace period; if either
+  # producer never opens. Give the trio a short grace period; if any
   # dies during boot, surface it now instead of producing an empty m4a.
   sleep 0.8
   if ! kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$tap_pid" 2>/dev/null || true
-    rm -f "$fifo"
+    kill -TERM "$tap_pid"  2>/dev/null || true
+    kill -TERM "$keep_pid" 2>/dev/null || true
+    rm -f "$fifo" "$stdin_fifo"
     echo "[record-meet] ffmpeg died on startup — see ${STATE_DIR}/${event_id}.ffmpeg.log" >&2
     return 3
   fi
   if ! kill -0 "$tap_pid" 2>/dev/null; then
-    kill -INT "$pid" 2>/dev/null || true
-    rm -f "$fifo"
+    kill -INT  "$pid"      2>/dev/null || true
+    kill -TERM "$keep_pid" 2>/dev/null || true
+    rm -f "$fifo" "$stdin_fifo"
     echo "[record-meet] coreaudio-tap died on startup — see ${STATE_DIR}/${event_id}.tap.log" >&2
     echo "                Likely: Screen Recording permission not granted." >&2
     return 3
   fi
 
-  echo "$pid"     > "$pid_file"
-  echo "$tap_pid" > "$tap_pid_file"
-  echo "$file"    > "$audio_marker"
-  echo "[record-meet] started ffmpeg=$pid tap=$tap_pid → $file" >&2
+  echo "$pid"      > "$pid_file"
+  echo "$tap_pid"  > "$tap_pid_file"
+  echo "$keep_pid" > "${STATE_DIR}/${event_id}.keep.pid"
+  echo "$file"     > "$audio_marker"
+  echo "[record-meet] started ffmpeg=$pid tap=$tap_pid keep=$keep_pid → $file" >&2
   printf '%s\n' "$file"
 }
 
@@ -164,8 +192,10 @@ stop() {
   local event_id="${1:?event_id required}"
   local pid_file="${STATE_DIR}/${event_id}.pid"
   local tap_pid_file="${STATE_DIR}/${event_id}.tap.pid"
+  local keep_pid_file="${STATE_DIR}/${event_id}.keep.pid"
   local audio_marker="${STATE_DIR}/${event_id}.file"
   local fifo="${STATE_DIR}/${event_id}.fifo"
+  local stdin_fifo="${STATE_DIR}/${event_id}.stdin"
   local file=""
   [[ -f "$audio_marker" ]] && file="$(cat "$audio_marker")"
 
@@ -200,7 +230,15 @@ stop() {
       kill -KILL "$tap_pid" 2>/dev/null || true
     fi
   fi
-  rm -f "$pid_file" "$tap_pid_file" "$audio_marker" "$fifo"
+  # Finally the stdin keeper (the silent `sleep` that held the FIFO
+  # write-end open). Untouched by either SIGINT or SIGTERM up to this
+  # point — if we orphaned it on a crash it would idle for 24h until
+  # the script's exec'd sleep timed out, which is annoying but bounded.
+  if [[ -f "$keep_pid_file" ]]; then
+    local keep_pid; keep_pid="$(cat "$keep_pid_file")"
+    kill -TERM "$keep_pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file" "$tap_pid_file" "$keep_pid_file" "$audio_marker" "$fifo" "$stdin_fifo"
   echo "[record-meet] stopped $event_id" >&2
   [[ -n "$file" ]] && printf '%s\n' "$file"
 }
