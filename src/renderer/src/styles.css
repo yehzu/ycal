@@ -3617,7 +3617,11 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: var(--paper);
   border-color: var(--ink);
 }
-.pref-btn-primary:hover { background: #000; border-color: #000; }
+.pref-btn-primary:hover {
+  background: var(--ink-soft);
+  border-color: var(--ink-soft);
+  color: var(--paper);
+}
 .pref-btn-danger {
   color: #c0392b;
 }

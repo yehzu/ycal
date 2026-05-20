@@ -31,7 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { BrowserWindow, Notification, shell } from 'electron';
+import { BrowserWindow, Notification, powerMonitor, shell } from 'electron';
 import { IPC, DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import type { CalendarEvent, RecentRecording, RecordingStatus, UiSettings } from '@shared/types';
 import { dedupEvents } from '@shared/dedup';
@@ -55,10 +55,22 @@ const LOOK_BEHIND_MS = 5 * 60_000;
 const LOOK_AHEAD_MS = 4 * 60 * 60_000;
 const STOP_SLACK_MS = 10 * 60_000;   // safety net beyond event.end
 const DONE_RETAIN_MS = 30 * 60_000;  // keep finished statuses visible this long
+// Minimum bytes a finished .m4a must have to be worth keeping. A 16-kbps
+// AAC-LC moov-only header is ~600 bytes, a 1-second valid clip lands
+// around 4-6 KB, and below ~30 KB the recording is empty mic + empty
+// system audio (about 3 seconds of silence). Delete sub-threshold files
+// on stop instead of running them through whisper.
+const MIN_AUDIO_BYTES = 30 * 1024;
+// Cooldown in activeMeet mode: don't auto-start a new recording within
+// this window of a previous stop. Prevents a flickering Meet detection
+// (stale browser tab, brief tab switch, sleep/wake bounce) from
+// churning out dozens of short empty files.
+const ACTIVE_MEET_COOLDOWN_MS = 3 * 60_000;
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
 const SCRIPT_DIR = path.join(os.homedir(), '.ycal');
+const STATE_DIR = path.join(SCRIPT_DIR, 'recordings');
 const RECORD_SH = path.join(SCRIPT_DIR, 'record-meet.sh');
 const POST_SH = path.join(SCRIPT_DIR, 'post-meet.sh');
 const TAP_BIN = path.join(SCRIPT_DIR, 'bin', 'coreaudio-tap');
@@ -154,6 +166,11 @@ const pendingConfirm = new Map<string, { event: CalendarEvent; notifiedAt: numbe
 let pollTimer: NodeJS.Timeout | null = null;
 let mainWindowRef: BrowserWindow | null = null;
 let detectorUnsub: (() => void) | null = null;
+// When the activeMeet detector last stopped a recording. Used to skip
+// auto-restart inside ACTIVE_MEET_COOLDOWN_MS. Cleared on manual start.
+let lastActiveMeetStopAt = 0;
+// Set in startMeetRecorder so we unhook on stopMeetRecorder.
+let powerHandlersBound = false;
 
 export function startMeetRecorder(mainWindow: BrowserWindow): void {
   // The whole pipeline assumes macOS — ScreenCaptureKit, avfoundation,
@@ -162,6 +179,7 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
   if (pollTimer) return;
   mainWindowRef = mainWindow;
   ensureHelpersInstalled();
+  recoverInFlightRecordings();
   pollTimer = setInterval(() => { void tick(); }, POLL_MS);
   // First tick after 2s — gives the window time to paint and the user
   // time to grant mic permission if this is the very first launch.
@@ -183,6 +201,8 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
       try { win.webContents.send(IPC.RecorderMeetSignalChanged, s); } catch { /* */ }
     }
   });
+
+  bindPowerHandlers();
 }
 
 export function stopMeetRecorder(): void {
@@ -192,6 +212,46 @@ export function stopMeetRecorder(): void {
   mainWindowRef = null;
   if (detectorUnsub) { detectorUnsub(); detectorUnsub = null; }
   stopMeetDetector();
+  if (powerHandlersBound) {
+    powerMonitor.removeListener('suspend', onSystemSuspend);
+    powerMonitor.removeListener('resume', onSystemResume);
+    powerHandlersBound = false;
+  }
+}
+
+// ── Sleep handling ─────────────────────────────────────────────────────
+// When the Mac suspends, our setInterval stops firing but the
+// activeMeet detector's lastSeen state and any browser-side stale Meet
+// tabs persist. On wake, the detector wakes too and may instantly fire
+// inMeet=true against a tab the user isn't actually using — leading
+// to "ghost" recordings of empty desktops. Stop everything in flight
+// on suspend; the detector's own setInterval pauses with the kernel
+// freeze, so we just have to re-arm after resume.
+
+function onSystemSuspend(): void {
+  console.log('[yCal recorder] system suspending — stopping in-flight recordings');
+  for (const [id, s] of recordings) {
+    if (s.state === 'recording') void stopRecording(id);
+  }
+  // Cancel any pending "start" confirmations the user wasn't around to
+  // answer; we'd just re-notify them on wake otherwise.
+  pendingConfirm.clear();
+}
+
+function onSystemResume(): void {
+  console.log('[yCal recorder] system resumed — recorder back online');
+  // Give the OS + browser a few seconds to settle before the next
+  // probe so we don't read a half-restored window list. The existing
+  // poll interval will handle the rest.
+  lastActiveMeetStopAt = Date.now();
+  setTimeout(() => { void tick(); }, 5_000);
+}
+
+function bindPowerHandlers(): void {
+  if (powerHandlersBound) return;
+  powerMonitor.on('suspend', onSystemSuspend);
+  powerMonitor.on('resume', onSystemResume);
+  powerHandlersBound = true;
 }
 
 export function listRecordings(): RecordingStatus[] {
@@ -324,6 +384,75 @@ export async function reprocessRecording(
   await postProcess(eventId, safe, title);
 }
 
+// ── Recovery ────────────────────────────────────────────────────────────
+// On startup, scan ~/.ycal/recordings for live ffmpeg processes the
+// previous yCal instance launched. The helper script uses nohup so
+// ffmpeg gets re-parented to init when yCal quits; the audio file
+// keeps growing. We adopt those back so the user can stop them from
+// the tray / popover and so postProcess runs when the user explicitly
+// stops or the script's -t boundary fires (which we miss because we
+// don't have a pid handle anymore — but the file lands on disk and
+// the next "Re-process" picks it up).
+
+function recoverInFlightRecordings(): void {
+  let entries: string[];
+  try { entries = fs.readdirSync(STATE_DIR); } catch { return; }
+  for (const name of entries) {
+    const m = /^(.+)\.pid$/.exec(name);
+    if (!m) continue;
+    const eventId = m[1];
+    const pidPath = path.join(STATE_DIR, name);
+    let pid: number;
+    try {
+      const raw = fs.readFileSync(pidPath, 'utf8').trim();
+      pid = parseInt(raw, 10);
+    } catch { continue; }
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
+    if (!alive) {
+      // Stale pid file. Clean up so the next start for the same id
+      // isn't confused by it.
+      for (const ext of ['pid', 'tap.pid', 'keep.pid', 'file', 'fifo', 'stdin', 'meta.json']) {
+        try { fs.unlinkSync(path.join(STATE_DIR, `${eventId}.${ext}`)); } catch { /* */ }
+      }
+      continue;
+    }
+    let audioFile: string | undefined;
+    try {
+      audioFile = fs.readFileSync(path.join(STATE_DIR, `${eventId}.file`), 'utf8').trim();
+    } catch { /* */ }
+    let title = 'Recovered recording';
+    let startedAt = Date.now();
+    let endsAt: number | undefined;
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(STATE_DIR, `${eventId}.meta.json`), 'utf8'));
+      if (typeof meta.title === 'string' && meta.title.trim()) title = meta.title;
+      if (typeof meta.startedAt === 'number') startedAt = meta.startedAt;
+      if (typeof meta.endsAt === 'number') endsAt = meta.endsAt;
+    } catch { /* meta missing on pre-recovery builds — keep defaults */ }
+    if (!endsAt && audioFile) {
+      try {
+        const st = fs.statSync(audioFile);
+        // No event end recorded → assume a 2h ceiling from the file's
+        // mtime so the watcher still has a stop boundary.
+        startedAt = st.birthtimeMs || st.mtimeMs || startedAt;
+      } catch { /* */ }
+    }
+    const status: RecordingStatus = {
+      eventId,
+      title,
+      state: 'recording',
+      startedAt,
+      endsAt,
+      audioFile,
+    };
+    recordings.set(eventId, status);
+    console.log(`[yCal recorder] adopted in-flight recording ${eventId} (pid ${pid})`);
+  }
+  if (recordings.size > 0) pushStatus();
+}
+
 // ── Polling loop ────────────────────────────────────────────────────────
 
 async function tick(): Promise<void> {
@@ -424,12 +553,24 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     for (const s of recordings.values()) {
       if (s.state === 'recording' || s.state === 'processing') return;
     }
+    // Cooldown after a stop. A stale Meet tab (or a sleep/wake bounce)
+    // can re-trigger the detector seconds after a previous recording
+    // ends. Without this gate, we churn out short empty files in a
+    // loop. The user can still kick off a recording manually from the
+    // popover during the cooldown.
+    const sinceStop = Date.now() - lastActiveMeetStopAt;
+    if (lastActiveMeetStopAt > 0 && sinceStop < ACTIVE_MEET_COOLDOWN_MS) {
+      console.log(`[yCal recorder] in-Meet signal ignored — cooldown ${Math.round(sinceStop / 1000)}s/${ACTIVE_MEET_COOLDOWN_MS / 1000}s`);
+      return;
+    }
     const event = await pickEventForActiveMeet(ui, signal);
     void startRecording(event);
   } else {
+    let stoppedAny = false;
     for (const [id, s] of recordings) {
-      if (s.state === 'recording') void stopRecording(id);
+      if (s.state === 'recording') { void stopRecording(id); stoppedAny = true; }
     }
+    if (stoppedAny) lastActiveMeetStopAt = Date.now();
   }
 }
 
@@ -592,7 +733,24 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     endsAt,
   };
   recordings.set(ev.id, status);
+  // Clear cooldown — explicit start (manual or automatic) means this
+  // is the recording we want, not a stale-tab echo.
+  lastActiveMeetStopAt = 0;
   pushStatus();
+
+  // Persist enough metadata next to the pid files so recoverInFlightRecordings()
+  // can rebuild a useful status row after a yCal crash / update / restart.
+  try {
+    const metaPath = path.join(STATE_DIR, `${ev.id}.meta.json`);
+    fs.mkdirSync(path.dirname(metaPath), { recursive: true });
+    fs.writeFileSync(metaPath, JSON.stringify({
+      title: ev.title,
+      startedAt: status.startedAt,
+      endsAt,
+    }));
+  } catch (e) {
+    console.error('[yCal recorder] failed to write meta sidecar', e);
+  }
 
   try {
     const stdout = await execScript([RECORD_SH, 'start', ev.id, ev.title, String(maxSecs)]);
@@ -632,6 +790,10 @@ async function stopRecording(eventId: string): Promise<void> {
     // continue with post-processing if we have a file path.
   }
 
+  // Clear meta sidecar — recovery doesn't need it once the script's
+  // stop has unwound the pid files.
+  try { fs.unlinkSync(path.join(STATE_DIR, `${eventId}.meta.json`)); } catch { /* */ }
+
   if (!audioFile || !fs.existsSync(audioFile)) {
     status.state = 'failed';
     status.error = 'recording file missing';
@@ -639,6 +801,23 @@ async function stopRecording(eventId: string): Promise<void> {
     notify('yCal · recording missing', status.title);
     return;
   }
+
+  // Reject obviously-empty recordings before running them through
+  // whisper. This protects against the "stale Meet tab kicked the
+  // detector while I was at lunch" pattern: the file is ~10KB of
+  // silence, transcription would produce empty text and a hallucinated
+  // summary. Delete instead of keeping noise around.
+  try {
+    const st = fs.statSync(audioFile);
+    if (st.size < MIN_AUDIO_BYTES) {
+      console.log(`[yCal recorder] discarding empty recording (${st.size}B) ${audioFile}`);
+      try { fs.unlinkSync(audioFile); } catch { /* */ }
+      recordings.delete(eventId);
+      pushStatus();
+      return;
+    }
+  } catch { /* stat failed — fall through and let postProcess decide */ }
+
   void postProcess(eventId, audioFile, status.title);
 }
 

@@ -271,16 +271,13 @@ async function refresh(): Promise<void> {
   const activeRec = recordings.find((r) => r.state === 'recording');
 
   if (activeRec) {
-    // Recording state. Anchor with the idle icon so the menubar item
-    // stays visible even when the OS is hiding pure-text status items
-    // because of a crowded notched menubar — the icon gives macOS a
-    // non-zero footprint to reserve space for. Title carries the red
-    // dot + meeting name, and we fall back to "Recording" if the
-    // synthetic-event title resolution somehow produced an empty
-    // string (defensive — empty titles render as a near-invisible
-    // strip of dots).
-    if (idleIcon) tray.setImage(idleIcon);
-    else tray.setImage(emptyIcon);
+    // Recording state. Show only the title text; macOS's own screen-
+    // recording indicator already eats space on the right side of the
+    // menubar, so doubling up with our orbit icon makes yCal more
+    // likely to fall off the right edge on a 14" notched display.
+    // The leading "●" gives the menubar item enough visual weight to
+    // keep its slot.
+    tray.setImage(emptyIcon);
     const title = activeRec.title?.trim() || 'Recording';
     tray.setTitle(` ● ${truncate(title, TITLE_MAX)}`);
   } else {
