@@ -39,6 +39,7 @@ import { getUiSettings } from './settings';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
+import { getActiveModelPath } from './recorderSetup';
 import {
   type MeetSignal, diagnoseDetection, getMeetSignal, onMeetChange,
   startMeetDetector, stopMeetDetector,
@@ -622,9 +623,19 @@ async function postProcess(eventId: string, audioFile: string, title: string): P
         promptFile = undefined;
       }
     }
+    // Resolve the user's currently-selected whisper model (defaults to
+    // large-v3-turbo) and hand it to post-meet.sh via env. The script's
+    // YCAL_WHISPER_MODEL fallback to the legacy hard-coded path still
+    // works for users mid-upgrade who haven't downloaded the new model
+    // yet — they just keep transcribing with whatever's at the old
+    // path.
+    const modelPath = getActiveModelPath();
+    const envExtras: NodeJS.ProcessEnv = {};
+    if (promptFile) envExtras.YCAL_SUMMARY_PROMPT = promptFile;
+    if (fs.existsSync(modelPath)) envExtras.YCAL_WHISPER_MODEL = modelPath;
     const stdout = await execScript([POST_SH, audioFile, title], {
       timeoutMs: 30 * 60_000,
-      envExtras: promptFile ? { YCAL_SUMMARY_PROMPT: promptFile } : undefined,
+      envExtras: Object.keys(envExtras).length > 0 ? envExtras : undefined,
     });
     const summary = stdout.trim() || audioFile.replace(/\.m4a$/, '.summary.md');
     const status = recordings.get(eventId);

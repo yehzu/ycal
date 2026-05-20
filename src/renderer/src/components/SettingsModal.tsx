@@ -6,6 +6,7 @@ import type {
   RecordingStatus, RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
 } from '@shared/types';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
+import { WHISPER_MODELS } from '@shared/whisperModels';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
 import { calKey } from '../store';
 import { type CalRole, type CalRoles, ROLE_OPTIONS } from '../calRoles';
@@ -59,6 +60,8 @@ interface Props {
   setRecordingConfirmBeforeStart: (v: boolean) => void;
   recordingTrigger: 'calendar' | 'activeMeet';
   setRecordingTrigger: (v: 'calendar' | 'activeMeet') => void;
+  recordingWhisperModel: string;
+  setRecordingWhisperModel: (v: string) => void;
   recordingSummaryPrompt: string;
   setRecordingSummaryPrompt: (v: string) => void;
   // Day-load gauge window
@@ -239,6 +242,8 @@ export function SettingsModal(props: Props) {
                 setConfirmBeforeStart={props.setRecordingConfirmBeforeStart}
                 trigger={props.recordingTrigger}
                 setTrigger={props.setRecordingTrigger}
+                whisperModel={props.recordingWhisperModel}
+                setWhisperModel={props.setRecordingWhisperModel}
                 summaryPrompt={props.recordingSummaryPrompt}
                 setSummaryPrompt={props.setRecordingSummaryPrompt}
               />
@@ -1655,6 +1660,7 @@ function PrefsRecording({
   autoRecord, setAutoRecord,
   confirmBeforeStart, setConfirmBeforeStart,
   trigger, setTrigger,
+  whisperModel, setWhisperModel,
   summaryPrompt, setSummaryPrompt,
 }: {
   autoRecord: boolean;
@@ -1663,6 +1669,8 @@ function PrefsRecording({
   setConfirmBeforeStart: (v: boolean) => void;
   trigger: 'calendar' | 'activeMeet';
   setTrigger: (v: 'calendar' | 'activeMeet') => void;
+  whisperModel: string;
+  setWhisperModel: (v: string) => void;
   summaryPrompt: string;
   setSummaryPrompt: (v: string) => void;
 }) {
@@ -1848,6 +1856,61 @@ function PrefsRecording({
         </PrefRow>
       )}
       {trigger === 'activeMeet' && <ActiveMeetDiagnostics />}
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Transcription model</h3>
+      <p className="pref-row-hint" style={{ maxWidth: '60ch', marginTop: 0 }}>
+        whisper.cpp ggml model used to transcribe meeting audio.
+        Switching here changes what the next setup run downloads and
+        what post-meet.sh feeds whisper-cli at transcription time.
+      </p>
+      <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+        {WHISPER_MODELS.map((m) => {
+          const sizeGb = (m.sizeBytes / 1024 / 1024 / 1024).toFixed(2);
+          return (
+            <label
+              key={m.id}
+              style={{
+                display: 'flex', gap: 10, alignItems: 'flex-start',
+                padding: '8px 10px', borderRadius: 6,
+                border: '1px solid var(--rule)',
+                background: whisperModel === m.id ? 'rgba(127,127,127,0.08)' : 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              <input
+                type="radio"
+                name="whisper-model"
+                checked={whisperModel === m.id}
+                onChange={() => setWhisperModel(m.id)}
+                style={{ marginTop: 3 }}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <strong>{m.displayName}</strong>
+                  {m.recommended && (
+                    <span
+                      style={{
+                        fontSize: 10, fontWeight: 600,
+                        padding: '1px 6px', borderRadius: 3,
+                        background: 'var(--accent, #c4451a)',
+                        color: '#fff', letterSpacing: 0.4,
+                      }}
+                    >
+                      RECOMMENDED
+                    </span>
+                  )}
+                  <span className="pref-row-hint" style={{ marginTop: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {sizeGb} GB
+                  </span>
+                </div>
+                <div className="pref-row-hint" style={{ marginTop: 2 }}>
+                  {m.description}
+                </div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Setup</h3>
       {status ? (

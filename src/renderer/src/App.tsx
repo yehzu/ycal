@@ -129,6 +129,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [recordingTrigger, setRecordingTrigger] = useState<'calendar' | 'activeMeet'>(
     () => initialUi.recordingTrigger ?? 'calendar',
   );
+  const [recordingWhisperModel, setRecordingWhisperModel] = useState<string>(
+    () => initialUi.recordingWhisperModel ?? 'large-v3-turbo',
+  );
   const [recordingSummaryPrompt, setRecordingSummaryPrompt] = useState<string>(
     () => initialUi.recordingSummaryPrompt ?? '',
   );
@@ -235,6 +238,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setAutoRecordMeetings(ui.autoRecordMeetings ?? false);
       setRecordingConfirmBeforeStart(ui.recordingConfirmBeforeStart ?? false);
       setRecordingTrigger(ui.recordingTrigger ?? 'calendar');
+      setRecordingWhisperModel(ui.recordingWhisperModel ?? 'large-v3-turbo');
       setRecordingSummaryPrompt(ui.recordingSummaryPrompt ?? '');
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
@@ -340,6 +344,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       autoRecordMeetings,
       recordingConfirmBeforeStart,
       recordingTrigger,
+      recordingWhisperModel,
       recordingSummaryPrompt: recordingSummaryPrompt || undefined,
       loadWindow,
       loadBands,
@@ -350,7 +355,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
     autoRolloverPastTasks, autoRecordMeetings, recordingConfirmBeforeStart,
-    recordingTrigger, recordingSummaryPrompt,
+    recordingTrigger, recordingWhisperModel, recordingSummaryPrompt,
     loadWindow, loadBands, customTagSuggestions, theme,
   ]);
 
@@ -938,6 +943,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setRecordingConfirmBeforeStart={setRecordingConfirmBeforeStart}
           recordingTrigger={recordingTrigger}
           setRecordingTrigger={setRecordingTrigger}
+          recordingWhisperModel={recordingWhisperModel}
+          setRecordingWhisperModel={setRecordingWhisperModel}
           recordingSummaryPrompt={recordingSummaryPrompt}
           setRecordingSummaryPrompt={setRecordingSummaryPrompt}
           loadWindow={loadWindow}

@@ -26,15 +26,35 @@ import os from 'node:os';
 import { BrowserWindow } from 'electron';
 import { IPC } from '@shared/types';
 import type { RecorderSetupProgress, RecorderSetupStatus } from '@shared/types';
+import { getModelById } from '@shared/whisperModels';
 import { getUserShellPath } from './userShellPath';
+import { getUiSettings } from './settings';
 
-const WHISPER_MODEL_PATH = path.join(os.homedir(), '.ycal', 'models', 'ggml-large-v3-turbo.bin');
-const WHISPER_MODEL_URL =
-  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin';
-const WHISPER_MODEL_BYTES = 1_624_555_275;   // approx size; informational only
+const MODELS_DIR = path.join(os.homedir(), '.ycal', 'models');
 const TAP_BIN = path.join(os.homedir(), '.ycal', 'bin', 'coreaudio-tap');
 const RECORD_SH = path.join(os.homedir(), '.ycal', 'record-meet.sh');
 const POST_SH = path.join(os.homedir(), '.ycal', 'post-meet.sh');
+
+// Resolve the user's chosen whisper model into a concrete path + URL.
+// Reads the live settings each call so a model swap from Settings →
+// Recording takes effect on the very next setup probe / install run.
+function activeModel(): { path: string; url: string; sizeBytes: number; id: string } {
+  const m = getModelById(getUiSettings().recordingWhisperModel);
+  return {
+    id: m.id,
+    path: path.join(MODELS_DIR, m.filename),
+    url: m.url,
+    sizeBytes: m.sizeBytes,
+  };
+}
+
+// Exposed for meetRecorder.postProcess so it can pass YCAL_WHISPER_MODEL
+// to post-meet.sh — the script reads the env, falls back to the legacy
+// hard-coded path otherwise. Keeps the model selection a one-place
+// concern.
+export function getActiveModelPath(): string {
+  return activeModel().path;
+}
 
 // Search prefixes for binaries. Order matters — we prefer brew prefixes
 // over /usr/bin because that's where the up-to-date versions live.
@@ -86,9 +106,13 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
   const ffmpeg = whichOf('ffmpeg');
   const whisperCli = whichOf('whisper-cli');
   const claude = whichOf('claude');
-  const modelSize = fileSize(WHISPER_MODEL_PATH);
-  // A truncated download is worse than nothing — treat <100 MB as broken.
-  const modelOk = modelSize > 100 * 1024 * 1024;
+  const model = activeModel();
+  const modelSize = fileSize(model.path);
+  // A truncated download is worse than nothing — accept only when the
+  // file is within 5% of the expected size. Catches abandoned partials
+  // that the user's filesystem might have kept around after a network
+  // hiccup or yCal crash.
+  const modelOk = modelSize > model.sizeBytes * 0.95;
   const tapOk = (() => {
     try {
       const st = fs.statSync(TAP_BIN);
@@ -102,7 +126,7 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
     ffmpeg: { installed: ffmpeg !== null, path: ffmpeg },
     whisperCli: { installed: whisperCli !== null, path: whisperCli },
     claude: { installed: claude !== null, path: claude },
-    whisperModel: { installed: modelOk, path: WHISPER_MODEL_PATH, sizeBytes: modelSize },
+    whisperModel: { installed: modelOk, path: model.path, sizeBytes: modelSize },
     scripts: { installed: scriptsOk },
     coreaudioTap: { installed: tapOk, path: TAP_BIN },
     ready: ffmpeg !== null && whisperCli !== null && modelOk && tapOk && scriptsOk,
@@ -168,20 +192,18 @@ function runStreaming(
 // Download to a temp file then rename — so a half-completed download
 // isn't picked up as "model installed" on the next probe. Reports a
 // rough 0..100 percentage based on Content-Length when curl supplies it
-// (we count `%` glyphs from --progress-bar output).
+// (we count `%` glyphs from --progress-bar output). Uses whichever
+// model the user has selected in UiSettings, falling back to the
+// large-v3-turbo default.
 async function downloadModel(): Promise<{ ok: boolean; error?: string }> {
-  fs.mkdirSync(path.dirname(WHISPER_MODEL_PATH), { recursive: true });
-  const tmp = `${WHISPER_MODEL_PATH}.partial`;
-  // curl writes the progress bar to stderr. `-#` would draw a single
-  // bar; `--progress-bar` is the modern equivalent and gives us a
-  // percent we can parse.
+  const model = activeModel();
+  fs.mkdirSync(path.dirname(model.path), { recursive: true });
+  const tmp = `${model.path}.partial`;
   const result = await runStreaming(
     '/usr/bin/curl',
     ['-L', '--fail', '--retry', '3', '--retry-delay', '2',
-     '--progress-bar', '-o', tmp, WHISPER_MODEL_URL],
+     '--progress-bar', '-o', tmp, model.url],
     (line) => {
-      // curl --progress-bar prints lines like:
-      //   ##############                       45.2%
       const m = /(\d+(?:\.\d+)?)\s*%/.exec(line);
       const pct = m ? Math.min(100, Math.max(0, parseFloat(m[1]))) : undefined;
       pushProgress({ phase: 'model', line, modelPercent: pct });
@@ -192,7 +214,7 @@ async function downloadModel(): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: `curl exited with code ${result.code}` };
   }
   try {
-    fs.renameSync(tmp, WHISPER_MODEL_PATH);
+    fs.renameSync(tmp, model.path);
   } catch (e) {
     return { ok: false, error: `rename failed: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -242,7 +264,7 @@ export async function runRecorderSetup(): Promise<void> {
 
     // Step 2: download whisper model if absent or truncated.
     if (!status.whisperModel.installed) {
-      pushProgress({ phase: 'model', line: `Downloading model → ${WHISPER_MODEL_PATH}` });
+      pushProgress({ phase: 'model', line: `Downloading model → ${activeModel().path}` });
       const dl = await downloadModel();
       if (!dl.ok) {
         pushProgress({ phase: 'error', error: dl.error ?? 'model download failed' });

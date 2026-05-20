@@ -221,6 +221,14 @@ export interface UiSettings {
   //                  follows the Meet's presence so late starts and
   //                  overruns are captured fully.
   recordingTrigger?: 'calendar' | 'activeMeet';
+  // Which whisper.cpp ggml model post-meet.sh feeds to whisper-cli for
+  // transcription. Value is a stable id from `@shared/whisperModels`'s
+  // WHISPER_MODELS registry. Unset means the default
+  // (DEFAULT_WHISPER_MODEL_ID) — backwards compat for installs that
+  // predate the model picker. Switching this triggers a model download
+  // through the regular recorder-setup runner; the .bin lives at
+  // ~/.ycal/models/<filename>.
+  recordingWhisperModel?: string;
 }
 
 // Recording-pipeline dependency status. Surfaced to the Settings →
