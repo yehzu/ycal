@@ -1,18 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -1.4 22 22" width="22" height="22">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
   <!--
     Menu-bar template image. Pure-black artwork on transparent bg;
     macOS auto-inverts it for dark mode when setTemplateImage(true).
-    Simplified vs the app icon: outer ring + the 7 o'clock dot only —
-    inner ring and center pin are noise at 16px.
-    7 o'clock = 120° from east → (11 + 8·cos120°, 11 + 8·sin120°) ≈ (7, 17.93)
 
-    viewBox y origin is shifted -1.4 (≈1px in the 16-px rendered PNG)
-    so the artwork lands lower against the menubar baseline. Without
-    this nudge the orbit sits 1px above the optical center of the
-    menubar slot on a 14" notched display.
+    Sized down vs the original (r=7 instead of r=8) so the orbit fits
+    inside the ~14px effective content area macOS expects for a
+    16-px menubar icon, leaving 1-pixel padding all around. The
+    earlier r=8 version went edge-to-edge and dragged its 7 o'clock
+    dot below the menubar baseline.
+
+    7 o'clock dot: (11 + 7·cos120°, 11 + 7·sin120°) ≈ (7.5, 17.06).
+    Bbox y ∈ [4, 18.5], geometric center y ≈ 11.25 — within 0.25
+    viewBox units of viewBox center, so we don't need an offset.
   -->
   <g fill="#000">
-    <circle cx="11" cy="11" r="8" fill="none" stroke="#000" stroke-width="1.6"/>
-    <circle cx="7" cy="17.93" r="1.9"/>
+    <circle cx="11" cy="11" r="7" fill="none" stroke="#000" stroke-width="1.5"/>
+    <circle cx="7.5" cy="17.06" r="1.7"/>
   </g>
 </svg>
