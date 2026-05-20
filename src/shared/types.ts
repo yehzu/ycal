@@ -260,6 +260,22 @@ export interface RecorderSetupProgress {
   modelPercent?: number;
 }
 
+// Live "are we in a Meet right now" signal from meetDetector. Surfaced
+// to Settings → Recording when trigger='activeMeet' so the user can see
+// whether the AppleScript probe is firing as expected.
+export interface RecorderMeetSignal {
+  inMeet: boolean;
+  // Window title or URL that the probe matched on. Null when inMeet
+  // is false.
+  title: string | null;
+  // 'proc' | 'bundle' | 'title' | 'url' | 'chrome' | 'arc' — surfaced
+  // in the diagnostic UI so the user can see which path caught their
+  // Meet (or that nothing's firing).
+  source: string | null;
+  // Epoch ms of the most recent probe (whether positive or negative).
+  lastProbedAt: number;
+}
+
 // A finished recording sitting on disk under ~/Recordings/yCal/. The
 // Settings → Recording "Recent recordings" list reads this and surfaces
 // the .m4a / .transcript.txt / .summary.md trio so the user can find
@@ -661,4 +677,10 @@ export const IPC = {
   // ask main to open arbitrary files.
   RecorderOpenFile: 'ycal:recorderOpenFile',
   RecorderRevealFolder: 'ycal:recorderRevealFolder',
+  // Active-Meet detection diagnostics. The renderer reads the current
+  // signal (and subscribes to changes) so Settings → Recording can show
+  // "live status" + dump visible processes for debugging.
+  RecorderMeetSignal: 'ycal:recorderMeetSignal',
+  RecorderMeetSignalChanged: 'ycal:recorderMeetSignalChanged',   // main → renderer push
+  RecorderDiagnoseDetection: 'ycal:recorderDiagnoseDetection',
 } as const;

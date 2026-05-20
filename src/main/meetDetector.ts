@@ -22,41 +22,162 @@
 // 90s sustained "no Meet" tips us into the stopped state.
 
 import { execFile } from 'node:child_process';
+import type { RecorderMeetSignal } from '@shared/types';
 
 const POLL_MS_IDLE = 20_000;
 const POLL_MS_ACTIVE = 10_000;
 const OFF_DEBOUNCE_MS = 90_000;
 
+// Multi-source Meet detection AppleScript.
+//
+//   1. Visible process named "Meet" / "Google Meet" — Chrome / Arc PWA
+//      windows that the user has installed Meet as. The user's screenshot
+//      showed windows with the Meet icon and titles like "123" / "EPD
+//      monthly afternoon tea" (just the meeting name); the only
+//      reliable signal there is the owning process.
+//   2. Bundle identifier containing "google.meet" — covers any PWA
+//      built off Meet whose process name differs.
+//   3. Window title starting "Meet - " — older Chrome tab format.
+//   4. Window title containing "meet.google.com" — some browsers
+//      surface the URL in the title.
+//   5. Active tab URLs of Google Chrome (if running).
+//   6. Active tab URLs of Arc (if running, Chrome-compatible scripting).
+//
+// Returns "yes:<source>:<detail>" on match, "no" otherwise. Source tag
+// surfaces in the diagnostic UI so the user can see WHICH signal fired.
 const APPLESCRIPT = `tell application "System Events"
-  repeat with p in (processes whose visible is true)
+  set procs to (processes whose visible is true)
+  repeat with p in procs
+    try
+      set pname to (name of p) as string
+      if pname is "Meet" or pname is "Google Meet" or pname is "Meet — Google Workspace" then
+        return "yes:proc:" & pname
+      end if
+    end try
+    try
+      set bid to (bundle identifier of p) as string
+      if bid contains "google.meet" then return "yes:bundle:" & bid
+    end try
     try
       repeat with w in (every window of p)
-        set wname to name of w
-        if wname contains "Meet - " then return "yes:" & wname
-        if wname contains "meet.google.com" then return "yes:" & wname
+        set wname to (name of w) as string
+        if wname starts with "Meet - " then return "yes:title:" & wname
+        if wname contains "meet.google.com" then return "yes:url:" & wname
       end repeat
     end try
   end repeat
-  return "no"
+end tell
+try
+  if application "Google Chrome" is running then
+    tell application "Google Chrome"
+      repeat with w in windows
+        try
+          set u to URL of active tab of w as string
+          if u contains "meet.google.com/" then return "yes:chrome:" & u
+        end try
+      end repeat
+    end tell
+  end if
+end try
+try
+  if application "Arc" is running then
+    tell application "Arc"
+      repeat with w in windows
+        try
+          set u to URL of active tab of w as string
+          if u contains "meet.google.com/" then return "yes:arc:" & u
+        end try
+      end repeat
+    end tell
+  end if
+end try
+return "no"`;
+
+// Diagnostic probe — surfaces the top visible processes + their bundle
+// IDs so the user can paste it back when detection fails. Used by the
+// "Diagnose detection" button in Settings → Recording so we don't have
+// to ship a new release every time someone has a browser yCal hasn't
+// learned about yet.
+const DIAGNOSE_APPLESCRIPT = `tell application "System Events"
+  set lines to {}
+  set procs to (processes whose visible is true)
+  repeat with p in procs
+    try
+      set pname to (name of p) as string
+      set bid to ""
+      try
+        set bid to (bundle identifier of p) as string
+      end try
+      set wins to {}
+      try
+        set wins to name of every window of p
+      end try
+      set winSummary to ""
+      repeat with wn in wins
+        if winSummary is not "" then set winSummary to winSummary & " | "
+        set winSummary to winSummary & (wn as string)
+      end repeat
+      set end of lines to pname & "  [" & bid & "]  -- " & winSummary
+    end try
+  end repeat
+  set out to ""
+  repeat with l in lines
+    set out to out & (l as string) & linefeed
+  end repeat
+  return out
 end tell`;
 
-export interface MeetSignal {
-  inMeet: boolean;
-  title: string | null;
-}
+// Re-export so the recorder module can still import MeetSignal from
+// the same place. The structural type is owned by @shared/types so the
+// renderer can show the same field-by-field detail in Settings.
+export type MeetSignal = RecorderMeetSignal;
 
 let pollTimer: NodeJS.Timeout | null = null;
-let state: MeetSignal = { inMeet: false, title: null };
+let state: MeetSignal = { inMeet: false, title: null, source: null, lastProbedAt: 0 };
 let outSince = 0;
 const listeners = new Set<(s: MeetSignal) => void>();
 
 function probe(): Promise<MeetSignal> {
   return new Promise((resolve) => {
     execFile('/usr/bin/osascript', ['-e', APPLESCRIPT], { timeout: 5_000 }, (err, stdout) => {
-      if (err) { resolve({ inMeet: false, title: null }); return; }
+      const now = Date.now();
+      if (err) {
+        resolve({ inMeet: false, title: null, source: null, lastProbedAt: now });
+        return;
+      }
       const out = String(stdout).trim();
-      if (out.startsWith('yes:')) resolve({ inMeet: true, title: out.slice(4).trim() });
-      else resolve({ inMeet: false, title: null });
+      // Format: "yes:<source>:<detail>" — parse the two colons-separated
+      // segments after the "yes" tag. Source is one of proc/bundle/title/
+      // url/chrome/arc; detail is the matched string.
+      if (out.startsWith('yes:')) {
+        const rest = out.slice(4);
+        const colonIdx = rest.indexOf(':');
+        if (colonIdx > 0) {
+          resolve({
+            inMeet: true,
+            source: rest.slice(0, colonIdx),
+            title: rest.slice(colonIdx + 1).trim(),
+            lastProbedAt: now,
+          });
+        } else {
+          resolve({ inMeet: true, source: 'unknown', title: rest, lastProbedAt: now });
+        }
+      } else {
+        resolve({ inMeet: false, title: null, source: null, lastProbedAt: now });
+      }
+    });
+  });
+}
+
+// Called by the "Diagnose detection" button in Settings → Recording.
+// Returns a free-text dump of visible processes + their bundle IDs +
+// window titles so the user can paste it back if detection fails to
+// fire and we need to learn a new app's signature.
+export function diagnoseDetection(): Promise<string> {
+  return new Promise((resolve) => {
+    execFile('/usr/bin/osascript', ['-e', DIAGNOSE_APPLESCRIPT], { timeout: 10_000 }, (err, stdout) => {
+      if (err) { resolve(`error: ${err.message}`); return; }
+      resolve(String(stdout));
     });
   });
 }
@@ -74,17 +195,28 @@ async function tick(): Promise<void> {
     outSince = 0;
     const changed = !state.inMeet || state.title !== next.title;
     state = next;
-    if (changed) {
-      reschedule();   // switch to active cadence
-      for (const fn of listeners) fn(state);
-    }
+    // Always notify listeners (Settings UI wants the lastProbedAt
+    // timestamp to refresh even when nothing changed). Recorder
+    // wiring is idempotent on repeated "still in Meet" signals.
+    for (const fn of listeners) fn(state);
+    if (changed) reschedule();
   } else {
-    if (!state.inMeet) return;
+    if (!state.inMeet) {
+      // Idle → idle: just update the timestamp so the UI sees we
+      // probed recently.
+      state = { ...state, lastProbedAt: now };
+      for (const fn of listeners) fn(state);
+      return;
+    }
     if (outSince === 0) outSince = now;
     if (now - outSince >= OFF_DEBOUNCE_MS) {
-      state = { inMeet: false, title: null };
+      state = { inMeet: false, title: null, source: null, lastProbedAt: now };
       outSince = 0;
-      reschedule();   // back to idle cadence
+      reschedule();
+      for (const fn of listeners) fn(state);
+    } else {
+      // Pending off-transition: surface so UI can show "wrapping up".
+      state = { ...state, lastProbedAt: now };
       for (const fn of listeners) fn(state);
     }
   }
@@ -99,7 +231,7 @@ export function startMeetDetector(): void {
 
 export function stopMeetDetector(): void {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  state = { inMeet: false, title: null };
+  state = { inMeet: false, title: null, source: null, lastProbedAt: 0 };
   outSince = 0;
 }
 

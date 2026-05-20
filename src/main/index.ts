@@ -46,8 +46,9 @@ import {
 } from './taskProviders';
 import { getTasksLocal, setTasksLocal } from './tasksStore';
 import {
-  listRecentRecordings, listRecordings, recordingsDir, safeRecordingPath,
-  startMeetRecorder, startRecordingManual, stopMeetRecorder, stopRecordingManual,
+  diagnoseDetection, getMeetSignal, listRecentRecordings, listRecordings,
+  recordingsDir, safeRecordingPath, startMeetRecorder, startRecordingManual,
+  stopMeetRecorder, stopRecordingManual,
 } from './meetRecorder';
 import {
   bindRecorderSetup, getRecorderSetupStatus, runRecorderSetup,
@@ -570,6 +571,15 @@ function registerIpc() {
   ipcMain.handle(IPC.RecorderRevealFolder, () => {
     void shell.openPath(recordingsDir());
     return { ok: true as const };
+  });
+  ipcMain.handle(IPC.RecorderMeetSignal, () => getMeetSignal());
+  ipcMain.handle(IPC.RecorderDiagnoseDetection, async () => {
+    try {
+      const dump = await diagnoseDetection();
+      return { ok: true as const, dump };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
   });
 }
 

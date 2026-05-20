@@ -1847,6 +1847,7 @@ function PrefsRecording({
           />
         </PrefRow>
       )}
+      {trigger === 'activeMeet' && <ActiveMeetDiagnostics />}
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Setup</h3>
       {status ? (
@@ -2023,6 +2024,105 @@ function PrefsRecording({
         Privacy &amp; Security</em>, then fully Cmd-Q + relaunch yCal — macOS
         only surfaces newly-granted permission to fresh processes.
       </p>
+    </div>
+  );
+}
+
+function ActiveMeetDiagnostics() {
+  // Live signal from the meetDetector + on-demand diagnostic dump. When
+  // active-Meet detection isn't firing for the user, this panel shows
+  // (a) what the probe last saw + when, and (b) a "Diagnose" button
+  // that prints every visible process + bundle id + window title so we
+  // can teach the detector new patterns without shipping a release.
+  const [signal, setSignal] = useState<{ inMeet: boolean; title: string | null; source: string | null; lastProbedAt: number } | null>(null);
+  const [diag, setDiag] = useState<string>('');
+  const [diagBusy, setDiagBusy] = useState(false);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.ycal.recorderMeetSignal().then((s) => { if (!cancelled) setSignal(s); });
+    const off = window.ycal.onRecorderMeetSignalChanged((s) => setSignal(s));
+    const tick = setInterval(() => setNow(Date.now()), 1_000);
+    return () => { cancelled = true; off(); clearInterval(tick); };
+  }, []);
+
+  async function runDiagnose(): Promise<void> {
+    setDiagBusy(true);
+    const r = await window.ycal.recorderDiagnoseDetection();
+    setDiagBusy(false);
+    if (r.ok) setDiag(r.dump);
+    else setDiag(`Error: ${r.error}`);
+  }
+
+  const stale = signal ? Math.round((now - signal.lastProbedAt) / 1000) : null;
+
+  return (
+    <div className="pref-section" style={{ marginTop: 14 }}>
+      <h4 className="pref-h" style={{ marginTop: 0 }}>Live detection</h4>
+      {signal ? (
+        <div style={{
+          display: 'grid', gap: 4, fontSize: 12,
+          padding: '8px 10px',
+          background: 'rgba(127,127,127,0.08)',
+          borderRadius: 4,
+        }}>
+          <div>
+            <span style={{ display: 'inline-block', width: 14,
+              color: signal.inMeet ? 'var(--accent-ok, #2a9461)' : 'var(--ink-soft, #888)' }}>
+              {signal.inMeet ? '●' : '○'}
+            </span>
+            <strong>{signal.inMeet ? 'In a Meet' : 'Not in a Meet'}</strong>
+            {stale != null && (
+              <span className="pref-row-hint" style={{ marginTop: 0, marginLeft: 8 }}>
+                {stale === 0 ? 'just probed' : `last probed ${stale}s ago`}
+              </span>
+            )}
+          </div>
+          {signal.inMeet && (
+            <div className="pref-row-hint" style={{ marginTop: 0, paddingLeft: 18 }}>
+              source: <code>{signal.source}</code> · matched: <code>{signal.title}</code>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="pref-row-hint">Loading…</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+        <button
+          type="button"
+          className="pref-button"
+          disabled={diagBusy}
+          onClick={() => { void runDiagnose(); }}
+          style={{
+            padding: '4px 12px', borderRadius: 6,
+            border: '1px solid var(--input-border, rgba(0,0,0,0.15))',
+            background: 'transparent', cursor: diagBusy ? 'default' : 'pointer',
+            fontSize: 12,
+          }}
+        >
+          {diagBusy ? 'Probing…' : 'Diagnose detection'}
+        </button>
+        <span className="pref-row-hint" style={{ marginTop: 0 }}>
+          Lists every visible window so we can teach the detector new Meet apps.
+        </span>
+      </div>
+
+      {diag && (
+        <details open style={{ marginTop: 10 }}>
+          <summary className="pref-row-hint" style={{ cursor: 'pointer', marginTop: 0 }}>
+            Visible windows ({diag.split('\n').filter(Boolean).length} processes)
+          </summary>
+          <pre style={{
+            marginTop: 6, maxHeight: 220, overflow: 'auto',
+            padding: 8, background: 'rgba(0,0,0,0.04)', borderRadius: 4,
+            fontSize: 11, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>
+            {diag}
+          </pre>
+        </details>
+      )}
     </div>
   );
 }

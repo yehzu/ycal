@@ -40,8 +40,14 @@ import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
 import {
-  type MeetSignal, getMeetSignal, onMeetChange, startMeetDetector, stopMeetDetector,
+  type MeetSignal, diagnoseDetection, getMeetSignal, onMeetChange,
+  startMeetDetector, stopMeetDetector,
 } from './meetDetector';
+
+// Re-export for index.ts → IPC plumbing. Keeps meetRecorder.ts as the
+// single entry point for "everything recorder" without index needing to
+// pull from two separate modules.
+export { diagnoseDetection, getMeetSignal } from './meetDetector';
 
 const POLL_MS = 30_000;
 const LOOK_BEHIND_MS = 5 * 60_000;
@@ -146,7 +152,15 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
   // its signal are gated on getUiSettings().recordingTrigger in the
   // handler.
   startMeetDetector();
-  detectorUnsub = onMeetChange((s) => { void handleMeetSignal(s); });
+  detectorUnsub = onMeetChange((s) => {
+    void handleMeetSignal(s);
+    // Push the latest probe to the renderer so Settings → Recording's
+    // "Live detection" widget reflects reality without polling.
+    const win = mainWindowRef;
+    if (win && !win.isDestroyed()) {
+      try { win.webContents.send(IPC.RecorderMeetSignalChanged, s); } catch { /* */ }
+    }
+  });
 }
 
 export function stopMeetRecorder(): void {

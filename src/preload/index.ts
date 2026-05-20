@@ -11,6 +11,7 @@ import type {
   GoogleColors,
   ListEventsRequest,
   RecentRecording,
+  RecorderMeetSignal,
   RecorderSetupProgress,
   RecorderSetupStatus,
   RecordingStatus,
@@ -191,6 +192,19 @@ const api = {
     ipcRenderer.invoke(IPC.RecorderOpenFile, path),
   recorderRevealFolder: (): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderRevealFolder),
+
+  // Active Meet detection — read the live signal, subscribe to changes,
+  // and run a diagnostic dump for debugging when detection misfires.
+  recorderMeetSignal: (): Promise<RecorderMeetSignal> =>
+    ipcRenderer.invoke(IPC.RecorderMeetSignal),
+  onRecorderMeetSignalChanged: (handler: (s: RecorderMeetSignal) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: RecorderMeetSignal): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.RecorderMeetSignalChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.RecorderMeetSignalChanged, listener);
+  },
+  recorderDiagnoseDetection: (): Promise<Result<{ dump: string }>> =>
+    ipcRenderer.invoke(IPC.RecorderDiagnoseDetection),
 };
 
 contextBridge.exposeInMainWorld('ycal', api);
