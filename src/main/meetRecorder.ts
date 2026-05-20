@@ -216,11 +216,13 @@ export function listRecentRecordings(limit = 50): RecentRecording[] {
       const base = audioFile.replace(/\.m4a$/, '');
       const baseName = path.basename(audioFile, '.m4a');
       // Filename shape: <stamp>__<safe-title>__<event_id>. Eventid is
-      // the trailing `__<id>` chunk; we tease it out for popover-side
-      // correlation. If the format ever drifts, eventId is null and
-      // callers just lose the event match (UI still works).
-      const m = /__([^_]+)$/.exec(baseName);
-      const eventId = m ? m[1] : null;
+      // everything after the FINAL `__` — and crucially we can't use a
+      // [^_]+ regex because recurring-event ids include the instance
+      // timestamp suffix (e.g. `abc123_20260520T023000Z`), which has
+      // its own underscore. Slicing from the last `__` is unambiguous
+      // since titles get tr'd to [A-Za-z0-9-] before going in.
+      const sep = baseName.lastIndexOf('__');
+      const eventId = sep >= 0 ? baseName.slice(sep + 2) : null;
       const transcriptFile = `${base}.transcript.txt`;
       const summaryFile = `${base}.summary.md`;
       results.push({

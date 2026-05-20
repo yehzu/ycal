@@ -219,41 +219,82 @@ function runScript(script: string, timeout = 5_000): Promise<string> {
   });
 }
 
-function parseYes(raw: string, lastProbedAt: number): MeetSignal {
+// Meeting-room URLs follow the shape meet.google.com/<aaa-bbbb-ccc>
+// (three lowercase-letter groups, 3-4 chars each, separated by dashes).
+// Non-meeting paths like /landing, /new, /lookup, /about don't match,
+// and the bare https://meet.google.com homepage has no path at all.
+// Returning false for those keeps the recorder from spinning up while
+// the user is just idling on the Meet home page.
+function looksLikeMeetingUrl(text: string): boolean {
+  const m = /meet\.google\.com\/([^\s?#]+)/i.exec(text);
+  if (!m) return false;
+  const first = m[1].toLowerCase().replace(/^\/+/, '').split('/')[0];
+  if (!first) return false;
+  return /^[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}$/.test(first);
+}
+
+// "Meet - <something>" tab title — real meetings render the meeting
+// subject or code here, while the PWA on its landing page shows
+// "Meet - Google Workspace". Filter that one explicitly.
+function isMeetingTitle(title: string): boolean {
+  const m = /^Meet\s*-\s*(.+?)\s*$/.exec(title);
+  if (!m) return false;
+  const subject = m[1].trim();
+  return !/^google workspace$/i.test(subject);
+}
+
+function parseYes(raw: string, lastProbedAt: number): MeetSignal | null {
   // Format: "yes:<source>:<detail>" — parse the two colon-separated
   // segments. Source is one of proc/bundle/title/url/chrome/arc.
   const rest = raw.slice(4);
   const colonIdx = rest.indexOf(':');
-  if (colonIdx > 0) {
-    return {
-      inMeet: true,
-      source: rest.slice(0, colonIdx),
-      title: rest.slice(colonIdx + 1).trim(),
-      lastProbedAt,
-    };
+  const source = colonIdx > 0 ? rest.slice(0, colonIdx) : 'unknown';
+  const title = colonIdx > 0 ? rest.slice(colonIdx + 1).trim() : rest;
+
+  // URL-based sources: must look like a real meeting room. Without
+  // this check, every visit to meet.google.com (landing, new, lookup,
+  // homepage) flips the detector to "in meet" and the recorder spins
+  // up against the user's intent. Returning null lets probe() fall
+  // through to the next pass.
+  if (source === 'chrome' || source === 'arc' || source === 'url') {
+    if (!looksLikeMeetingUrl(title)) return null;
   }
-  return { inMeet: true, source: 'unknown', title: rest, lastProbedAt };
+  // Browser tab-title source: same idea, reject "Meet - Google
+  // Workspace" (PWA landing page chrome).
+  if (source === 'title') {
+    if (!isMeetingTitle(title)) return null;
+  }
+
+  return { inMeet: true, source, title, lastProbedAt };
 }
 
 async function probe(): Promise<MeetSignal> {
   const now = Date.now();
-  // Pass 1: System Events. Always loads (terminology is built-in).
+  // Each pass may return a "yes" that parseYes vetoes (e.g. user is on
+  // the Meet landing page) — we fall through to the next pass in that
+  // case so a real meeting open in another browser still gets caught.
   try {
     const out = await runScript(SYSTEM_EVENTS_PROBE);
-    if (out.startsWith('yes:')) return parseYes(out, now);
+    if (out.startsWith('yes:')) {
+      const sig = parseYes(out, now);
+      if (sig) return sig;
+    }
   } catch (e) {
     console.error('[meetDetector] System Events probe failed:', (e as Error).message);
   }
-  // Pass 2: Chrome's active tab. Compile fails if Chrome isn't
-  // installed — caught and treated as "no Chrome data".
   try {
     const out = await runScript(CHROME_PROBE);
-    if (out.startsWith('yes:')) return parseYes(out, now);
+    if (out.startsWith('yes:')) {
+      const sig = parseYes(out, now);
+      if (sig) return sig;
+    }
   } catch { /* Chrome not available */ }
-  // Pass 3: Arc.
   try {
     const out = await runScript(ARC_PROBE);
-    if (out.startsWith('yes:')) return parseYes(out, now);
+    if (out.startsWith('yes:')) {
+      const sig = parseYes(out, now);
+      if (sig) return sig;
+    }
   } catch { /* Arc not available */ }
   return { inMeet: false, title: null, source: null, lastProbedAt: now };
 }
