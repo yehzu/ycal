@@ -93,14 +93,16 @@ try
 end try
 return "no"`;
 
-// Diagnostic probe — surfaces the top visible processes + their bundle
-// IDs so the user can paste it back when detection fails. Used by the
-// "Diagnose detection" button in Settings → Recording so we don't have
-// to ship a new release every time someone has a browser yCal hasn't
-// learned about yet.
-const DIAGNOSE_APPLESCRIPT = `tell application "System Events"
-  set lines to {}
+// Diagnostic probe — three sections: visible processes (name + bundle
+// id + window titles), Chrome's open tab URLs, and Arc's open tab URLs.
+// Catches the case where the user's Meet window is owned by Chrome
+// (not a separate "Meet" process) AND their browser permission isn't
+// granted yet — the Chrome/Arc sections fail loudly with an error
+// message the user can act on instead of silently returning "no".
+const DIAGNOSE_APPLESCRIPT = `set output to ""
+tell application "System Events"
   set procs to (processes whose visible is true)
+  set output to output & "=== VISIBLE PROCESSES (" & (count of procs) & ") ===" & linefeed
   repeat with p in procs
     try
       set pname to (name of p) as string
@@ -117,15 +119,59 @@ const DIAGNOSE_APPLESCRIPT = `tell application "System Events"
         if winSummary is not "" then set winSummary to winSummary & " | "
         set winSummary to winSummary & (wn as string)
       end repeat
-      set end of lines to pname & "  [" & bid & "]  -- " & winSummary
+      set output to output & pname & "  [" & bid & "]  -- " & winSummary & linefeed
     end try
   end repeat
-  set out to ""
-  repeat with l in lines
-    set out to out & (l as string) & linefeed
-  end repeat
-  return out
-end tell`;
+end tell
+set output to output & linefeed & "=== GOOGLE CHROME ===" & linefeed
+try
+  if application "Google Chrome" is running then
+    tell application "Google Chrome"
+      set tabCount to 0
+      repeat with w in windows
+        try
+          set u to URL of active tab of w as string
+          set output to output & "  active: " & u & linefeed
+          set tabCount to tabCount + 1
+        end try
+        try
+          repeat with t in tabs of w
+            set tu to URL of t as string
+            if tu contains "meet.google.com" then
+              set output to output & "  tab: " & tu & linefeed
+            end if
+          end repeat
+        end try
+      end repeat
+      if tabCount = 0 then set output to output & "  (no windows)" & linefeed
+    end tell
+  else
+    set output to output & "  (not running)" & linefeed
+  end if
+on error errMsg
+  set output to output & "  ERROR (likely needs Automation permission): " & errMsg & linefeed
+end try
+set output to output & linefeed & "=== ARC ===" & linefeed
+try
+  if application "Arc" is running then
+    tell application "Arc"
+      set tabCount to 0
+      repeat with w in windows
+        try
+          set u to URL of active tab of w as string
+          set output to output & "  active: " & u & linefeed
+          set tabCount to tabCount + 1
+        end try
+      end repeat
+      if tabCount = 0 then set output to output & "  (no windows)" & linefeed
+    end tell
+  else
+    set output to output & "  (not running)" & linefeed
+  end if
+on error errMsg
+  set output to output & "  ERROR (likely needs Automation permission): " & errMsg & linefeed
+end try
+return output`;
 
 // Re-export so the recorder module can still import MeetSignal from
 // the same place. The structural type is owned by @shared/types so the
