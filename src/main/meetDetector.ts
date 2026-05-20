@@ -66,32 +66,49 @@ const SYSTEM_EVENTS_PROBE = `tell application "System Events"
   return "no"
 end tell`;
 
-// Pass 2: Google Chrome's active tab. Compiles only when Chrome is
-// installed; we wrap the invocation in a try/catch on the Node side.
+// Pass 2: Google Chrome. Iterate every tab of every window — the
+// active-tab-only version misses Meet sessions that the user has open
+// in a background tab or a non-focused Arc/Chrome split-view pane.
+// Active tab gets checked first so "I'm in the Meet right now" wins
+// over "I left a Meet tab open in another window".
 const CHROME_PROBE = `tell application "Google Chrome"
   if not running then return "no"
-  set winCount to count of windows
-  repeat with winIdx from 1 to winCount
+  repeat with winIdx from 1 to count of windows
     try
-      set theTab to active tab of window winIdx
-      set urlText to (URL of theTab) as text
+      set urlText to (URL of active tab of window winIdx) as text
       if urlText contains "meet.google.com" then return "yes:chrome:" & urlText
+    end try
+    try
+      repeat with tabRef in tabs of window winIdx
+        try
+          set urlText to (URL of tabRef) as text
+          if urlText contains "meet.google.com" then return "yes:chrome:" & urlText
+        end try
+      end repeat
     end try
   end repeat
   return "no"
 end tell`;
 
-// Pass 3: Arc. Same shape — Arc implements the Chrome-compatible
-// scripting interface, but its app must be installed for the
-// terminology to resolve at compile time.
+// Pass 3: Arc. Same shape, with the same active-tab-first + all-tabs
+// fallback. The user's Arc setup uses split-view (two tabs side-by-
+// side per window); active-tab only returns the focused one, but the
+// Meet tab can be the OTHER half of the split — so we have to walk
+// the full tab list to catch it.
 const ARC_PROBE = `tell application "Arc"
   if not running then return "no"
-  set winCount to count of windows
-  repeat with winIdx from 1 to winCount
+  repeat with winIdx from 1 to count of windows
     try
-      set theTab to active tab of window winIdx
-      set urlText to (URL of theTab) as text
+      set urlText to (URL of active tab of window winIdx) as text
       if urlText contains "meet.google.com" then return "yes:arc:" & urlText
+    end try
+    try
+      repeat with tabRef in tabs of window winIdx
+        try
+          set urlText to (URL of tabRef) as text
+          if urlText contains "meet.google.com" then return "yes:arc:" & urlText
+        end try
+      end repeat
     end try
   end repeat
   return "no"
@@ -125,16 +142,29 @@ tell application "System Events"
 end tell
 return output`;
 
+// Dump ALL tab URLs per window, not just the active one. That way the
+// "google meet test" tab the user has open behind their split-view
+// foreground will actually show up in the diagnostic and we can see
+// whether the URL really is meet.google.com (vs. a Google search
+// result for the string "google meet test").
 const DIAGNOSE_CHROME = `tell application "Google Chrome"
   if not running then return "(not running)"
   set output to ""
   set winCount to count of windows
   if winCount is 0 then return "(no windows)"
   repeat with winIdx from 1 to winCount
+    set output to output & "  window " & winIdx & ":" & linefeed
     try
-      set theTab to active tab of window winIdx
-      set urlText to (URL of theTab) as text
-      set output to output & "  active: " & urlText & linefeed
+      set urlText to (URL of active tab of window winIdx) as text
+      set output to output & "    [active] " & urlText & linefeed
+    end try
+    try
+      repeat with tabRef in tabs of window winIdx
+        try
+          set tabUrl to (URL of tabRef) as text
+          set output to output & "    " & tabUrl & linefeed
+        end try
+      end repeat
     end try
   end repeat
   return output
@@ -146,10 +176,18 @@ const DIAGNOSE_ARC = `tell application "Arc"
   set winCount to count of windows
   if winCount is 0 then return "(no windows)"
   repeat with winIdx from 1 to winCount
+    set output to output & "  window " & winIdx & ":" & linefeed
     try
-      set theTab to active tab of window winIdx
-      set urlText to (URL of theTab) as text
-      set output to output & "  active: " & urlText & linefeed
+      set urlText to (URL of active tab of window winIdx) as text
+      set output to output & "    [active] " & urlText & linefeed
+    end try
+    try
+      repeat with tabRef in tabs of window winIdx
+        try
+          set tabUrl to (URL of tabRef) as text
+          set output to output & "    " & tabUrl & linefeed
+        end try
+      end repeat
     end try
   end repeat
   return output
