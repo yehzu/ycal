@@ -279,15 +279,25 @@ function RecordingRow({
       return (
         <div className="pp-row">
           <span className="k">Recording</span>
-          <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span>✓ Notes ready</span>
+          <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>✓ Done</span>
             {recording.summaryFile && (
               <button
                 className="pp-btn"
                 onClick={() => { void window.ycal.recorderOpenFile(recording.summaryFile!); }}
                 style={{ padding: '2px 10px', fontSize: 12 }}
               >
-                Open notes
+                Notes
+              </button>
+            )}
+            {recording.audioFile && (
+              <button
+                className="pp-btn"
+                onClick={() => { void window.ycal.recorderOpenFile(recording.audioFile!); }}
+                style={{ padding: '2px 10px', fontSize: 12 }}
+                title="Open the m4a recording"
+              >
+                Audio
               </button>
             )}
           </span>
@@ -295,11 +305,40 @@ function RecordingRow({
       );
     }
     if (recording.state === 'failed') {
+      // Show the error briefly + an unconditional "Try again" path so a
+      // botched recording doesn't park itself on the popover for the
+      // full 30 min in-memory retention. Also surface the m4a if
+      // ffmpeg got far enough to write one before failing — at minimum
+      // the audio is salvageable even when transcription died.
       return (
         <div className="pp-row">
           <span className="k">Recording</span>
-          <span className="v" style={{ color: '#c4451a' }}>
-            ✗ {recording.error ? recording.error.slice(0, 80) : 'failed'}
+          <span
+            className="v"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+              color: '#c4451a',
+            }}
+          >
+            <span title={recording.error ?? 'failed'}>
+              ✗ {recording.error ? recording.error.slice(0, 60) : 'failed'}
+            </span>
+            <button
+              className="pp-btn"
+              onClick={() => { void window.ycal.recorderStart(event); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+            >
+              Try again
+            </button>
+            {recording.audioFile && (
+              <button
+                className="pp-btn"
+                onClick={() => { void window.ycal.recorderOpenFile(recording.audioFile!); }}
+                style={{ padding: '2px 10px', fontSize: 12 }}
+              >
+                Audio
+              </button>
+            )}
           </span>
         </div>
       );

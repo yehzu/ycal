@@ -26,6 +26,7 @@ import os from 'node:os';
 import { BrowserWindow } from 'electron';
 import { IPC } from '@shared/types';
 import type { RecorderSetupProgress, RecorderSetupStatus } from '@shared/types';
+import { getUserShellPath } from './userShellPath';
 
 const WHISPER_MODEL_PATH = path.join(os.homedir(), '.ycal', 'models', 'ggml-large-v3-turbo.bin');
 const WHISPER_MODEL_URL =
@@ -49,21 +50,29 @@ const SEARCH_DIRS = [
 ];
 
 function whichOf(name: string): string | null {
-  for (const dir of SEARCH_DIRS) {
+  const seen = new Set<string>();
+  // We walk three PATH sources in priority order: our brew-prefix
+  // hardcoded list, process.env.PATH (whatever launchd handed us — often
+  // stripped), and the user's actual shell PATH discovered via
+  // `zsh -ilc 'echo $PATH'` at boot. The third source is the only one
+  // that finds tools installed in places like
+  // /Applications/cmux.app/Contents/Resources/bin (claude) or
+  // ~/.local/bin (user-scoped pipx installs) — anywhere the user's
+  // .zshrc / .zprofile reaches.
+  const userPath = getUserShellPath();
+  const allDirs = [
+    ...SEARCH_DIRS,
+    ...(process.env.PATH ?? '').split(':'),
+    ...(userPath ?? '').split(':'),
+  ];
+  for (const dir of allDirs) {
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
     const p = path.join(dir, name);
     try {
       const st = fs.statSync(p);
       if (st.isFile() && (st.mode & 0o111)) return p;
     } catch { /* not present, try next */ }
-  }
-  // Fall back to PATH probing in case the user has something exotic.
-  for (const dir of (process.env.PATH ?? '').split(':')) {
-    if (!dir) continue;
-    const p = path.join(dir, name);
-    try {
-      const st = fs.statSync(p);
-      if (st.isFile() && (st.mode & 0o111)) return p;
-    } catch { /* not present */ }
   }
   return null;
 }

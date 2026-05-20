@@ -212,7 +212,15 @@ export interface UiSettings {
   // popover's Start now button) to actually begin capture. Useful for
   // meetings that frequently delay so yCal doesn't record empty intro
   // time. Stops still happen automatically at event.end.
+  // Ignored when recordingTrigger === 'activeMeet' (Meet presence IS
+  // the explicit start signal).
   recordingConfirmBeforeStart?: boolean;
+  // Which signal drives auto-record start/stop:
+  //   'calendar'   — event.start / event.end (default; backwards compat)
+  //   'activeMeet' — poll OS for an open Google Meet window; recording
+  //                  follows the Meet's presence so late starts and
+  //                  overruns are captured fully.
+  recordingTrigger?: 'calendar' | 'activeMeet';
 }
 
 // Recording-pipeline dependency status. Surfaced to the Settings →

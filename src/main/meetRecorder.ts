@@ -38,6 +38,10 @@ import { dedupEvents } from '@shared/dedup';
 import { getUiSettings } from './settings';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
+import { getUserShellPath } from './userShellPath';
+import {
+  type MeetSignal, getMeetSignal, onMeetChange, startMeetDetector, stopMeetDetector,
+} from './meetDetector';
 
 const POLL_MS = 30_000;
 const LOOK_BEHIND_MS = 5 * 60_000;
@@ -121,6 +125,7 @@ const skipped = new Set<string>();
 const pendingConfirm = new Map<string, { event: CalendarEvent; notifiedAt: number }>();
 let pollTimer: NodeJS.Timeout | null = null;
 let mainWindowRef: BrowserWindow | null = null;
+let detectorUnsub: (() => void) | null = null;
 
 export function startMeetRecorder(mainWindow: BrowserWindow): void {
   // The whole pipeline assumes macOS — ScreenCaptureKit, avfoundation,
@@ -133,6 +138,15 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
   // First tick after 2s — gives the window time to paint and the user
   // time to grant mic permission if this is the very first launch.
   setTimeout(() => { void tick(); }, 2_000);
+
+  // Start the window-title detector regardless of the user's current
+  // trigger mode. It's cheap when no Meet is open (one osascript call
+  // every 20s) and starting it eagerly means switching modes in
+  // Settings doesn't require a yCal restart. Recorder reactions to
+  // its signal are gated on getUiSettings().recordingTrigger in the
+  // handler.
+  startMeetDetector();
+  detectorUnsub = onMeetChange((s) => { void handleMeetSignal(s); });
 }
 
 export function stopMeetRecorder(): void {
@@ -140,6 +154,8 @@ export function stopMeetRecorder(): void {
   // We deliberately leave in-flight ffmpeg processes alone — the user
   // may be mid-meeting. They'll self-terminate at their `-t` boundary.
   mainWindowRef = null;
+  if (detectorUnsub) { detectorUnsub(); detectorUnsub = null; }
+  stopMeetDetector();
 }
 
 export function listRecordings(): RecordingStatus[] {
@@ -207,7 +223,23 @@ export function safeRecordingPath(input: string): string | null {
 }
 
 export async function startRecordingManual(event: CalendarEvent): Promise<void> {
-  if (recordings.has(event.id)) return;
+  // Allow a manual start to replace a previously-failed entry. Without
+  // this, a botched first attempt would block the popover's "Try again"
+  // button (and every subsequent manual start) for the next 30 minutes
+  // because `recordings.has(event.id)` already returns true for the
+  // failed status. The other in-flight states ('recording', 'processing',
+  // 'done') are still respected so concurrent starts don't stomp on a
+  // healthy recording in progress.
+  const existing = recordings.get(event.id);
+  if (existing && existing.state !== 'failed') return;
+  if (existing && existing.state === 'failed') {
+    // Drop the stale failed status BEFORE startRecording inserts a new
+    // one — otherwise the renderer would see one tick of "failed" status
+    // racing against the new 'recording' status.
+    recordings.delete(event.id);
+    skipped.delete(event.id);
+    pushStatus();
+  }
   await startRecording(event);
 }
 
@@ -236,6 +268,14 @@ async function tick(): Promise<void> {
     return;
   }
   if (!scriptsInstalled()) return;
+
+  // 'activeMeet' mode: the meetDetector callback is the start/stop
+  // signal. The calendar-time logic below would race with it (e.g.
+  // start recording at event.start even though the user isn't in Meet
+  // yet), so short-circuit and rely on handleMeetSignal exclusively.
+  // We still call pruneFinished and update recordings (above) so the
+  // UI list ages out cleanly.
+  if (ui.recordingTrigger === 'activeMeet') return;
 
   const now = Date.now();
 
@@ -283,6 +323,100 @@ async function tick(): Promise<void> {
       void startRecording(ev);
     }
   }
+}
+
+// ── Active Meet trigger ────────────────────────────────────────────────
+// Subscribed to meetDetector.onMeetChange. Each transition either starts
+// a recording (matching the closest calendar event, or a synthetic one
+// when no calendar match exists) or stops the active recording.
+//
+// Why find a calendar match: lets the recording inherit the meeting
+// title for the filename + the eventId for the popover's "Recording"
+// row to surface. When the user joins a Meet that isn't on the
+// calendar (e.g. someone DMs them a link), we still record but under
+// a synthetic event so they aren't surprised by yCal silently doing
+// nothing.
+
+async function handleMeetSignal(signal: MeetSignal): Promise<void> {
+  const ui = getUiSettings();
+  if (!ui.autoRecordMeetings) return;
+  if (ui.recordingTrigger !== 'activeMeet') return;
+  if (!scriptsInstalled()) return;
+
+  if (signal.inMeet) {
+    // Don't start if anything is already actively recording — the
+    // detector might fire spuriously when the user toggles tabs.
+    for (const s of recordings.values()) {
+      if (s.state === 'recording' || s.state === 'processing') return;
+    }
+    const event = await pickEventForActiveMeet(ui, signal);
+    void startRecording(event);
+  } else {
+    for (const [id, s] of recordings) {
+      if (s.state === 'recording') void stopRecording(id);
+    }
+  }
+}
+
+async function pickEventForActiveMeet(
+  ui: UiSettings,
+  signal: MeetSignal,
+): Promise<CalendarEvent> {
+  // Find a calendar event we can attribute this Meet to. We only count
+  // events with meetUrl, RSVP-not-declined, and a [start-15min,
+  // end+60min] window containing now. Picks the event with the
+  // closest absolute distance from now to ev.start — typically the
+  // one the user is "in", even if it's delayed by 10 min or running
+  // 20 min over.
+  try {
+    const candidates = await fetchCandidates(ui);
+    const now = Date.now();
+    let best: CalendarEvent | null = null;
+    let bestDist = Infinity;
+    for (const ev of candidates) {
+      if (!ev.meetUrl) continue;
+      if (ev.rsvp === 'declined') continue;
+      if (ev.allDay) continue;
+      const start = Date.parse(ev.start);
+      const end = Date.parse(ev.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      if (now < start - 15 * 60_000) continue;
+      if (now > end + 60 * 60_000) continue;
+      const dist = Math.abs(start - now);
+      if (dist < bestDist) { best = ev; bestDist = dist; }
+    }
+    if (best) return best;
+  } catch (e) {
+    console.error('[yCal recorder] candidate fetch for active Meet failed', e);
+  }
+  return synthesizeMeetEvent(signal);
+}
+
+function synthesizeMeetEvent(signal: MeetSignal): CalendarEvent {
+  // Title heuristic: Google Meet uses "Meet - <code>" or "Meet -
+  // <topic>" in the tab title. Strip the prefix when present.
+  const title = (signal.title ?? '').replace(/^.*Meet\s*-\s*/, '').trim()
+    || 'Untitled meeting';
+  const now = new Date();
+  const end = new Date(now.getTime() + 60 * 60_000);  // 1h cap; safety net catches overruns at +30m
+  return {
+    id: `meet-${now.toISOString().replace(/[:.]/g, '-')}`,
+    accountId: '',
+    calendarId: '',
+    start: now.toISOString(),
+    end: end.toISOString(),
+    allDay: false,
+    title,
+    location: null,
+    description: null,
+    color: '#888888',
+    colorId: null,
+    htmlLink: null,
+    status: 'confirmed',
+    eventType: 'default',
+    rsvp: 'accepted',
+    meetUrl: '',
+  };
 }
 
 // "Ask before starting" path: fire an actionable notification at
@@ -553,7 +687,15 @@ function execScript(
       ...process.env,
       ...(bundledTap ? { YCAL_COREAUDIO_TAP: bundledTap } : {}),
       ...(opts.envExtras ?? {}),
-      PATH: [...HOMEBREW_BIN_DIRS, process.env.PATH ?? ''].filter(Boolean).join(':'),
+      PATH: [
+        ...HOMEBREW_BIN_DIRS,
+        process.env.PATH ?? '',
+        // User's actual shell PATH (discovered via `zsh -ilc echo $PATH`
+        // at startup). Lets the script find `claude` and friends when
+        // they're installed somewhere weird like
+        // /Applications/cmux.app/Contents/Resources/bin.
+        getUserShellPath() ?? '',
+      ].filter(Boolean).join(':'),
     };
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     let stdout = '';

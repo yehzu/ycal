@@ -57,6 +57,8 @@ interface Props {
   setAutoRecordMeetings: (v: boolean) => void;
   recordingConfirmBeforeStart: boolean;
   setRecordingConfirmBeforeStart: (v: boolean) => void;
+  recordingTrigger: 'calendar' | 'activeMeet';
+  setRecordingTrigger: (v: 'calendar' | 'activeMeet') => void;
   recordingSummaryPrompt: string;
   setRecordingSummaryPrompt: (v: string) => void;
   // Day-load gauge window
@@ -235,6 +237,8 @@ export function SettingsModal(props: Props) {
                 setAutoRecord={props.setAutoRecordMeetings}
                 confirmBeforeStart={props.recordingConfirmBeforeStart}
                 setConfirmBeforeStart={props.setRecordingConfirmBeforeStart}
+                trigger={props.recordingTrigger}
+                setTrigger={props.setRecordingTrigger}
                 summaryPrompt={props.recordingSummaryPrompt}
                 setSummaryPrompt={props.setRecordingSummaryPrompt}
               />
@@ -1650,12 +1654,15 @@ function hhmmToMin(s: string): number | null {
 function PrefsRecording({
   autoRecord, setAutoRecord,
   confirmBeforeStart, setConfirmBeforeStart,
+  trigger, setTrigger,
   summaryPrompt, setSummaryPrompt,
 }: {
   autoRecord: boolean;
   setAutoRecord: (v: boolean) => void;
   confirmBeforeStart: boolean;
   setConfirmBeforeStart: (v: boolean) => void;
+  trigger: 'calendar' | 'activeMeet';
+  setTrigger: (v: 'calendar' | 'activeMeet') => void;
   summaryPrompt: string;
   setSummaryPrompt: (v: string) => void;
 }) {
@@ -1809,18 +1816,37 @@ function PrefsRecording({
         <PrefSwitch value={autoRecord} onChange={setAutoRecord} />
       </PrefRow>
       <PrefRow
-        label="Ask before starting"
+        label="Trigger"
         hint={
-          confirmBeforeStart
-            ? 'At event start, yCal pops an actionable notification — recording only begins when you click Start (or Start now in the popover). Stops still happen automatically at event end. Good for meetings that delay.'
-            : 'Recording starts immediately at event start. Switch on if your meetings frequently begin late and you don\'t want yCal capturing empty intro time.'
+          trigger === 'activeMeet'
+            ? 'Recording follows your actual Google Meet tab: starts when you join, stops ~90s after you leave. Meetings that delay or overrun are captured fully. Needs Automation permission for System Events (macOS will prompt the first time).'
+            : 'Recording uses calendar event times (start/end). Predictable but doesn\'t adapt to delays or overruns.'
         }
       >
-        <PrefSwitch
-          value={confirmBeforeStart}
-          onChange={setConfirmBeforeStart}
+        <PrefSegmented<'calendar' | 'activeMeet'>
+          value={trigger}
+          onChange={setTrigger}
+          options={[
+            { value: 'calendar', label: 'Calendar' },
+            { value: 'activeMeet', label: 'Active Meet' },
+          ]}
         />
       </PrefRow>
+      {trigger === 'calendar' && (
+        <PrefRow
+          label="Ask before starting"
+          hint={
+            confirmBeforeStart
+              ? 'At event start, yCal pops an actionable notification — recording only begins when you click Start (or Start now in the popover). Stops still happen automatically at event end. Good for meetings that delay.'
+              : 'Recording starts immediately at event start. Switch on if your meetings frequently begin late and you don\'t want yCal capturing empty intro time.'
+          }
+        >
+          <PrefSwitch
+            value={confirmBeforeStart}
+            onChange={setConfirmBeforeStart}
+          />
+        </PrefRow>
+      )}
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Setup</h3>
       {status ? (

@@ -126,6 +126,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [recordingConfirmBeforeStart, setRecordingConfirmBeforeStart] = useState<boolean>(
     () => initialUi.recordingConfirmBeforeStart ?? false,
   );
+  const [recordingTrigger, setRecordingTrigger] = useState<'calendar' | 'activeMeet'>(
+    () => initialUi.recordingTrigger ?? 'calendar',
+  );
   const [recordingSummaryPrompt, setRecordingSummaryPrompt] = useState<string>(
     () => initialUi.recordingSummaryPrompt ?? '',
   );
@@ -231,6 +234,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setAutoRolloverPastTasks(ui.autoRolloverPastTasks ?? true);
       setAutoRecordMeetings(ui.autoRecordMeetings ?? false);
       setRecordingConfirmBeforeStart(ui.recordingConfirmBeforeStart ?? false);
+      setRecordingTrigger(ui.recordingTrigger ?? 'calendar');
       setRecordingSummaryPrompt(ui.recordingSummaryPrompt ?? '');
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
@@ -335,6 +339,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       autoRolloverPastTasks,
       autoRecordMeetings,
       recordingConfirmBeforeStart,
+      recordingTrigger,
       recordingSummaryPrompt: recordingSummaryPrompt || undefined,
       loadWindow,
       loadBands,
@@ -345,7 +350,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
     autoRolloverPastTasks, autoRecordMeetings, recordingConfirmBeforeStart,
-    recordingSummaryPrompt, loadWindow, loadBands, customTagSuggestions, theme,
+    recordingTrigger, recordingSummaryPrompt,
+    loadWindow, loadBands, customTagSuggestions, theme,
   ]);
 
   const goToDayView = useCallback((d: Date) => {
@@ -930,6 +936,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setAutoRecordMeetings={setAutoRecordMeetings}
           recordingConfirmBeforeStart={recordingConfirmBeforeStart}
           setRecordingConfirmBeforeStart={setRecordingConfirmBeforeStart}
+          recordingTrigger={recordingTrigger}
+          setRecordingTrigger={setRecordingTrigger}
           recordingSummaryPrompt={recordingSummaryPrompt}
           setRecordingSummaryPrompt={setRecordingSummaryPrompt}
           loadWindow={loadWindow}
