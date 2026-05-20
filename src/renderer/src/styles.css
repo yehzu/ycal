@@ -3242,15 +3242,29 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 
 /* Switch */
 .pref-switch {
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
+  /* Strip native UA button styling — without this Safari/Chrome inject
+     intrinsic min-height + line-height + font that subtly distorts the
+     fixed dimensions (manifested as the thumb rendering as a vertically
+     stretched oval instead of a circle). */
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  font-size: 0;
+  line-height: 0;
+
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
   /* 1px border so the off-state silhouette is visible against the paper
      background even in dark mode (where the rgba(0,0,0,0.18) fill alone
      disappears into a near-black panel). */
   border: 1px solid var(--rule);
   background: rgba(0,0,0,0.12);
   padding: 0;
+  margin: 0;
   position: relative;
   cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease;
@@ -3264,6 +3278,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   border-color: var(--ink);
 }
 .pref-switch-thumb {
+  display: block;
+  box-sizing: border-box;
   position: absolute;
   top: 2px; left: 2px;
   width: 16px; height: 16px;
@@ -3284,7 +3300,10 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
      thumb reads as a knob against the cream track. */
   background: var(--paper);
 }
-.pref-switch.on .pref-switch-thumb { transform: translateX(16px); }
+/* On track inner width = 36 (38 outer − 2px border). Thumb is 16, sits
+   at left:2 with a 2px right gap when off, translateX(18) for a
+   symmetric 2px left gap when on. */
+.pref-switch.on .pref-switch-thumb { transform: translateX(18px); }
 
 .pref-note {
   font-family: var(--serif-body);

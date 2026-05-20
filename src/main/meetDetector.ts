@@ -28,150 +28,132 @@ const POLL_MS_IDLE = 20_000;
 const POLL_MS_ACTIVE = 10_000;
 const OFF_DEBOUNCE_MS = 90_000;
 
-// Multi-source Meet detection AppleScript.
+// Detection runs as THREE separate osascript invocations rather than
+// one stitched-together script. Each per-browser block references
+// terminology (like `active tab`) that only resolves when the matching
+// app is installed; if Chrome isn't on the machine, AppleScript fails
+// at COMPILE time with "Expected end of line but found property",
+// killing the entire stitched script before any conditional runs.
+// Splitting lets us catch the compile error per-browser and move on.
 //
-//   1. Visible process named "Meet" / "Google Meet" — Chrome / Arc PWA
-//      windows that the user has installed Meet as. The user's screenshot
-//      showed windows with the Meet icon and titles like "123" / "EPD
-//      monthly afternoon tea" (just the meeting name); the only
-//      reliable signal there is the owning process.
-//   2. Bundle identifier containing "google.meet" — covers any PWA
-//      built off Meet whose process name differs.
-//   3. Window title starting "Meet - " — older Chrome tab format.
-//   4. Window title containing "meet.google.com" — some browsers
-//      surface the URL in the title.
-//   5. Active tab URLs of Google Chrome (if running).
-//   6. Active tab URLs of Arc (if running, Chrome-compatible scripting).
-//
-// Returns "yes:<source>:<detail>" on match, "no" otherwise. Source tag
-// surfaces in the diagnostic UI so the user can see WHICH signal fired.
-const APPLESCRIPT = `tell application "System Events"
+// Order: System Events first (always succeeds, catches the common
+// cases — bundle id, process name, title patterns), then per-browser
+// URL probes for cases where the Meet PWA window is owned by the
+// browser itself.
+
+// Pass 1: System Events. No browser terminology, always loads.
+const SYSTEM_EVENTS_PROBE = `tell application "System Events"
   set procs to (processes whose visible is true)
-  repeat with p in procs
+  repeat with proc in procs
     try
-      set pname to (name of p) as string
+      set pname to (name of proc) as text
       if pname is "Meet" or pname is "Google Meet" or pname is "Meet — Google Workspace" then
         return "yes:proc:" & pname
       end if
     end try
     try
-      set bid to (bundle identifier of p) as string
+      set bid to (bundle identifier of proc) as text
       if bid contains "google.meet" then return "yes:bundle:" & bid
     end try
     try
-      repeat with w in (every window of p)
-        set wname to (name of w) as string
+      repeat with winRef in (every window of proc)
+        set wname to (name of winRef) as text
         if wname starts with "Meet - " then return "yes:title:" & wname
         if wname contains "meet.google.com" then return "yes:url:" & wname
       end repeat
     end try
   end repeat
-end tell
-try
-  if application "Google Chrome" is running then
-    tell application "Google Chrome"
-      repeat with w in windows
-        try
-          set u to URL of active tab of w as string
-          if u contains "meet.google.com/" then return "yes:chrome:" & u
-        end try
-      end repeat
-    end tell
-  end if
-end try
-try
-  if application "Arc" is running then
-    tell application "Arc"
-      repeat with w in windows
-        try
-          set u to URL of active tab of w as string
-          if u contains "meet.google.com/" then return "yes:arc:" & u
-        end try
-      end repeat
-    end tell
-  end if
-end try
-return "no"`;
+  return "no"
+end tell`;
 
-// Diagnostic probe — three sections: visible processes (name + bundle
-// id + window titles), Chrome's open tab URLs, and Arc's open tab URLs.
-// Catches the case where the user's Meet window is owned by Chrome
-// (not a separate "Meet" process) AND their browser permission isn't
-// granted yet — the Chrome/Arc sections fail loudly with an error
-// message the user can act on instead of silently returning "no".
-const DIAGNOSE_APPLESCRIPT = `set output to ""
+// Pass 2: Google Chrome's active tab. Compiles only when Chrome is
+// installed; we wrap the invocation in a try/catch on the Node side.
+const CHROME_PROBE = `tell application "Google Chrome"
+  if not running then return "no"
+  set winCount to count of windows
+  repeat with winIdx from 1 to winCount
+    try
+      set theTab to active tab of window winIdx
+      set urlText to (URL of theTab) as text
+      if urlText contains "meet.google.com" then return "yes:chrome:" & urlText
+    end try
+  end repeat
+  return "no"
+end tell`;
+
+// Pass 3: Arc. Same shape — Arc implements the Chrome-compatible
+// scripting interface, but its app must be installed for the
+// terminology to resolve at compile time.
+const ARC_PROBE = `tell application "Arc"
+  if not running then return "no"
+  set winCount to count of windows
+  repeat with winIdx from 1 to winCount
+    try
+      set theTab to active tab of window winIdx
+      set urlText to (URL of theTab) as text
+      if urlText contains "meet.google.com" then return "yes:arc:" & urlText
+    end try
+  end repeat
+  return "no"
+end tell`;
+
+// Diagnostic dumps. Three independent osascript invocations — each
+// section is reported separately so a compile failure in one (browser
+// not installed) doesn't void the others.
+const DIAGNOSE_SYSTEM_EVENTS = `set output to ""
 tell application "System Events"
   set procs to (processes whose visible is true)
   set output to output & "=== VISIBLE PROCESSES (" & (count of procs) & ") ===" & linefeed
-  repeat with p in procs
+  repeat with proc in procs
     try
-      set pname to (name of p) as string
+      set pname to (name of proc) as text
       set bid to ""
       try
-        set bid to (bundle identifier of p) as string
-      end try
-      set wins to {}
-      try
-        set wins to name of every window of p
+        set bid to (bundle identifier of proc) as text
       end try
       set winSummary to ""
-      repeat with wn in wins
-        if winSummary is not "" then set winSummary to winSummary & " | "
-        set winSummary to winSummary & (wn as string)
-      end repeat
+      try
+        set winNames to name of every window of proc
+        repeat with winName in winNames
+          if winSummary is not "" then set winSummary to winSummary & " | "
+          set winSummary to winSummary & (winName as text)
+        end repeat
+      end try
       set output to output & pname & "  [" & bid & "]  -- " & winSummary & linefeed
     end try
   end repeat
 end tell
-set output to output & linefeed & "=== GOOGLE CHROME ===" & linefeed
-try
-  if application "Google Chrome" is running then
-    tell application "Google Chrome"
-      set tabCount to 0
-      repeat with w in windows
-        try
-          set u to URL of active tab of w as string
-          set output to output & "  active: " & u & linefeed
-          set tabCount to tabCount + 1
-        end try
-        try
-          repeat with t in tabs of w
-            set tu to URL of t as string
-            if tu contains "meet.google.com" then
-              set output to output & "  tab: " & tu & linefeed
-            end if
-          end repeat
-        end try
-      end repeat
-      if tabCount = 0 then set output to output & "  (no windows)" & linefeed
-    end tell
-  else
-    set output to output & "  (not running)" & linefeed
-  end if
-on error errMsg
-  set output to output & "  ERROR (likely needs Automation permission): " & errMsg & linefeed
-end try
-set output to output & linefeed & "=== ARC ===" & linefeed
-try
-  if application "Arc" is running then
-    tell application "Arc"
-      set tabCount to 0
-      repeat with w in windows
-        try
-          set u to URL of active tab of w as string
-          set output to output & "  active: " & u & linefeed
-          set tabCount to tabCount + 1
-        end try
-      end repeat
-      if tabCount = 0 then set output to output & "  (no windows)" & linefeed
-    end tell
-  else
-    set output to output & "  (not running)" & linefeed
-  end if
-on error errMsg
-  set output to output & "  ERROR (likely needs Automation permission): " & errMsg & linefeed
-end try
 return output`;
+
+const DIAGNOSE_CHROME = `tell application "Google Chrome"
+  if not running then return "(not running)"
+  set output to ""
+  set winCount to count of windows
+  if winCount is 0 then return "(no windows)"
+  repeat with winIdx from 1 to winCount
+    try
+      set theTab to active tab of window winIdx
+      set urlText to (URL of theTab) as text
+      set output to output & "  active: " & urlText & linefeed
+    end try
+  end repeat
+  return output
+end tell`;
+
+const DIAGNOSE_ARC = `tell application "Arc"
+  if not running then return "(not running)"
+  set output to ""
+  set winCount to count of windows
+  if winCount is 0 then return "(no windows)"
+  repeat with winIdx from 1 to winCount
+    try
+      set theTab to active tab of window winIdx
+      set urlText to (URL of theTab) as text
+      set output to output & "  active: " & urlText & linefeed
+    end try
+  end repeat
+  return output
+end tell`;
 
 // Re-export so the recorder module can still import MeetSignal from
 // the same place. The structural type is owned by @shared/types so the
@@ -183,49 +165,97 @@ let state: MeetSignal = { inMeet: false, title: null, source: null, lastProbedAt
 let outSince = 0;
 const listeners = new Set<(s: MeetSignal) => void>();
 
-function probe(): Promise<MeetSignal> {
-  return new Promise((resolve) => {
-    execFile('/usr/bin/osascript', ['-e', APPLESCRIPT], { timeout: 5_000 }, (err, stdout) => {
-      const now = Date.now();
+function runScript(script: string, timeout = 5_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('/usr/bin/osascript', ['-e', script], { timeout }, (err, stdout, stderr) => {
       if (err) {
-        resolve({ inMeet: false, title: null, source: null, lastProbedAt: now });
+        // Surface the AppleScript compile error so callers can decide
+        // whether to swallow it (per-browser probe failing because the
+        // app isn't installed) or surface it (real bug).
+        const detail = String(stderr || err.message || '').trim();
+        reject(new Error(detail));
         return;
       }
-      const out = String(stdout).trim();
-      // Format: "yes:<source>:<detail>" — parse the two colons-separated
-      // segments after the "yes" tag. Source is one of proc/bundle/title/
-      // url/chrome/arc; detail is the matched string.
-      if (out.startsWith('yes:')) {
-        const rest = out.slice(4);
-        const colonIdx = rest.indexOf(':');
-        if (colonIdx > 0) {
-          resolve({
-            inMeet: true,
-            source: rest.slice(0, colonIdx),
-            title: rest.slice(colonIdx + 1).trim(),
-            lastProbedAt: now,
-          });
-        } else {
-          resolve({ inMeet: true, source: 'unknown', title: rest, lastProbedAt: now });
-        }
-      } else {
-        resolve({ inMeet: false, title: null, source: null, lastProbedAt: now });
-      }
+      resolve(String(stdout).trim());
     });
   });
 }
 
+function parseYes(raw: string, lastProbedAt: number): MeetSignal {
+  // Format: "yes:<source>:<detail>" — parse the two colon-separated
+  // segments. Source is one of proc/bundle/title/url/chrome/arc.
+  const rest = raw.slice(4);
+  const colonIdx = rest.indexOf(':');
+  if (colonIdx > 0) {
+    return {
+      inMeet: true,
+      source: rest.slice(0, colonIdx),
+      title: rest.slice(colonIdx + 1).trim(),
+      lastProbedAt,
+    };
+  }
+  return { inMeet: true, source: 'unknown', title: rest, lastProbedAt };
+}
+
+async function probe(): Promise<MeetSignal> {
+  const now = Date.now();
+  // Pass 1: System Events. Always loads (terminology is built-in).
+  try {
+    const out = await runScript(SYSTEM_EVENTS_PROBE);
+    if (out.startsWith('yes:')) return parseYes(out, now);
+  } catch (e) {
+    console.error('[meetDetector] System Events probe failed:', (e as Error).message);
+  }
+  // Pass 2: Chrome's active tab. Compile fails if Chrome isn't
+  // installed — caught and treated as "no Chrome data".
+  try {
+    const out = await runScript(CHROME_PROBE);
+    if (out.startsWith('yes:')) return parseYes(out, now);
+  } catch { /* Chrome not available */ }
+  // Pass 3: Arc.
+  try {
+    const out = await runScript(ARC_PROBE);
+    if (out.startsWith('yes:')) return parseYes(out, now);
+  } catch { /* Arc not available */ }
+  return { inMeet: false, title: null, source: null, lastProbedAt: now };
+}
+
 // Called by the "Diagnose detection" button in Settings → Recording.
-// Returns a free-text dump of visible processes + their bundle IDs +
-// window titles so the user can paste it back if detection fails to
-// fire and we need to learn a new app's signature.
-export function diagnoseDetection(): Promise<string> {
-  return new Promise((resolve) => {
-    execFile('/usr/bin/osascript', ['-e', DIAGNOSE_APPLESCRIPT], { timeout: 10_000 }, (err, stdout) => {
-      if (err) { resolve(`error: ${err.message}`); return; }
-      resolve(String(stdout));
-    });
-  });
+// Three independent osascript invocations: System Events (always),
+// Chrome (catch + report compile errors), Arc (same). The dump labels
+// each section so the user can see immediately which probe(s) worked.
+export async function diagnoseDetection(): Promise<string> {
+  let output = '';
+  try {
+    output += (await runScript(DIAGNOSE_SYSTEM_EVENTS, 10_000)) + '\n';
+  } catch (e) {
+    output += `=== SYSTEM EVENTS — ERROR ===\n  ${(e as Error).message}\n\n`;
+  }
+  output += '=== GOOGLE CHROME ===\n';
+  try {
+    const r = await runScript(DIAGNOSE_CHROME, 8_000);
+    output += r ? `${r}\n` : '(empty)\n';
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (/can.?t get/i.test(msg) || /found property/i.test(msg) || /Application is.?n.?t running/i.test(msg)) {
+      output += '(not installed or terminology unavailable)\n';
+    } else {
+      output += `ERROR: ${msg}\n`;
+    }
+  }
+  output += '\n=== ARC ===\n';
+  try {
+    const r = await runScript(DIAGNOSE_ARC, 8_000);
+    output += r ? `${r}\n` : '(empty)\n';
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (/can.?t get/i.test(msg) || /found property/i.test(msg) || /Application is.?n.?t running/i.test(msg)) {
+      output += '(not installed or terminology unavailable)\n';
+    } else {
+      output += `ERROR: ${msg}\n`;
+    }
+  }
+  return output;
 }
 
 function reschedule(): void {
