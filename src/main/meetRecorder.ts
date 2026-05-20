@@ -76,6 +76,23 @@ function resolveBundled(...parts: string[]): string | null {
   return null;
 }
 
+// Resolve a helper-script source path. Production builds ship the
+// shell scripts via extraResources at Resources/scripts/<name>. Dev
+// runs (`npm run dev`) read them straight from the repo tree at
+// tools/recording/<name>. Returns null when neither location has the
+// file — that's the only case where ensureHelpersInstalled can't do
+// anything for the user.
+function scriptSource(name: string): string | null {
+  const candidates = [
+    path.join(process.resourcesPath ?? '', 'scripts', name),
+    path.join(__dirname_, '..', '..', 'tools', 'recording', name),
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 // Mirror the helper scripts + coreaudio-tap into ~/.ycal/ at app launch
 // so the recorder, the standalone CLI smoke test, and a fresh
 // auto-update all see consistent files. We only copy when the source
@@ -86,19 +103,26 @@ function ensureHelpersInstalled(): void {
   try {
     fs.mkdirSync(path.join(SCRIPT_DIR, 'bin'), { recursive: true });
     fs.mkdirSync(path.join(SCRIPT_DIR, 'recordings'), { recursive: true });
-  } catch { /* mkdir is best-effort */ }
+  } catch (e) {
+    console.error('[yCal recorder] mkdir failed', e);
+  }
 
-  const pairs: Array<[string | null, string]> = [
-    [resolveBundled('native', 'coreaudio-tap'), TAP_BIN],
-    // Repo scripts only exist in dev layout (extraResources doesn't bundle
-    // tools/recording). That's fine — `install.sh` is the user-facing
-    // installer; meetRecorder.ts only auto-syncs the binary that we DO
-    // ship inside the app bundle.
-    [pathIfExists(path.join(__dirname_, '..', '..', 'tools', 'recording', 'record-meet.sh')), RECORD_SH],
-    [pathIfExists(path.join(__dirname_, '..', '..', 'tools', 'recording', 'post-meet.sh')), POST_SH],
+  const pairs: Array<[string | null, string, string]> = [
+    [resolveBundled('native', 'coreaudio-tap'), TAP_BIN, 'coreaudio-tap'],
+    [scriptSource('record-meet.sh'), RECORD_SH, 'record-meet.sh'],
+    [scriptSource('post-meet.sh'), POST_SH, 'post-meet.sh'],
   ];
-  for (const [src, dst] of pairs) {
-    if (!src) continue;
+  for (const [src, dst, label] of pairs) {
+    if (!src) {
+      // The source disappeared somewhere between build and runtime.
+      // Most likely cause is a stale install where the user upgraded
+      // from a pre-0.6.48 release; their app bundle never had
+      // Resources/scripts/. Logging the miss makes that obvious in
+      // ~/Library/Logs/yCal/ instead of just leaving the status row
+      // ✗ with a misleading "auto-sync on next launch" hint.
+      console.error(`[yCal recorder] no source for ${label}; check Resources/ + dev tree`);
+      continue;
+    }
     try {
       const srcStat = fs.statSync(src);
       let copy = true;
@@ -111,15 +135,12 @@ function ensureHelpersInstalled(): void {
       if (copy) {
         fs.copyFileSync(src, dst);
         fs.chmodSync(dst, 0o755);
+        console.log(`[yCal recorder] synced ${label}: ${src} → ${dst}`);
       }
     } catch (e) {
-      console.error('[yCal recorder] failed to sync', dst, e);
+      console.error(`[yCal recorder] failed to sync ${label}`, e);
     }
   }
-}
-
-function pathIfExists(p: string): string | null {
-  return fs.existsSync(p) ? p : null;
 }
 
 const recordings = new Map<string, RecordingStatus>();
