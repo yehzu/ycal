@@ -27,13 +27,18 @@ import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { listAccounts } from './tokenStore';
 import { fetchWeather } from './weather';
 import { getUiSettings } from './settings';
+import {
+  fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
+} from './meetingArchive';
 import { dedupEvents } from '@shared/dedup';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
+import fs from 'node:fs';
 import type {
   AccountSummary,
   CalendarSummary,
   CalendarEvent,
   CalRolePersisted,
+  MeetingArtifactKind,
   UiSettings,
 } from '@shared/types';
 
@@ -819,6 +824,191 @@ async function cmdWeather(args: ParsedArgs, io: CliIo): Promise<number> {
   return 0;
 }
 
+// ---------- Meeting archive commands ----------
+// Read recordings stored on each event's Google account's Drive
+// `appdata` folder (the same hidden bucket yCal uses for cross-device
+// sync). Filenames embed the calendar event id, so a transcript or
+// summary is reachable from any Mac signed in to the same Google
+// account that owns the event.
+
+async function cmdRecordings(args: ParsedArgs, io: CliIo): Promise<number> {
+  ensureConfigured();
+  ensureAccounts();
+  const limit = typeof args.flags.limit === 'string' ? parseInt(args.flags.limit, 10) : 50;
+  if (Number.isNaN(limit) || limit < 1) {
+    throw new CliError(`--limit must be a positive integer, got ${args.flags.limit}`);
+  }
+  const archives = (await listAllMeetingArchives()).slice(0, limit);
+  const format = getFormat(args);
+  const accounts = new Map(listAccountSummaries().map((a) => [a.id, a]));
+  const shaped = archives.map((a) => ({
+    eventId: a.eventId,
+    title: a.meta?.title ?? null,
+    startedAt: a.meta?.startedAt ?? null,
+    endsAt: a.meta?.endsAt ?? null,
+    account: accounts.get(a.accountId)?.email ?? a.accountId,
+    accountId: a.accountId,
+    hasAudio: a.has.audio,
+    hasTranscript: a.has.transcript,
+    hasSummary: a.has.summary,
+    modifiedAt: a.modifiedAt,
+  }));
+  emit(
+    { command: 'recordings', count: shaped.length, recordings: shaped },
+    format,
+    () => {
+      if (shaped.length === 0) return '(no recordings on Drive)';
+      if (format === 'markdown') {
+        return [
+          '## Recordings',
+          ...shaped.map((r) => {
+            const date = r.startedAt
+              ? new Date(r.startedAt).toLocaleString(undefined, {
+                year: 'numeric', month: 'short', day: '2-digit',
+                hour: '2-digit', minute: '2-digit',
+              })
+              : '(date?)';
+            const tags = [
+              r.hasTranscript ? 'T' : '·',
+              r.hasSummary ? 'S' : '·',
+              r.hasAudio ? 'A' : '·',
+            ].join('');
+            return `- \`[${tags}]\` **${r.title ?? '(untitled)'}** — ${date} · ${r.account} · \`${r.eventId}\``;
+          }),
+        ].join('\n');
+      }
+      return shaped
+        .map((r) => {
+          const date = r.startedAt
+            ? new Date(r.startedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+            : '?';
+          const tags = [
+            r.hasTranscript ? 'T' : '·',
+            r.hasSummary ? 'S' : '·',
+            r.hasAudio ? 'A' : '·',
+          ].join('');
+          return `[${tags}]  ${date.padEnd(18)}  ${(r.title ?? '(untitled)').slice(0, 40).padEnd(40)}  ${r.account}  ${r.eventId}`;
+        })
+        .join('\n');
+    },
+    io,
+  );
+  return 0;
+}
+
+// Resolve the (eventId, accountId) pair for a recording the user asked
+// for. Two modes:
+//   • positional id matches an archive eventId exactly → use that
+//   • --query <substring> matches against archive titles (case-insens)
+// Returns null when nothing matches. Multiple matches without a way to
+// disambiguate is an error — surface the candidates so the user can
+// pick.
+async function resolveArchiveTarget(
+  idArg: string | undefined,
+  query: string | undefined,
+): Promise<{ eventId: string; accountId: string; title: string | null; startedAt: number | null }> {
+  const archives = await listAllMeetingArchives();
+  let matches = archives;
+  if (idArg) {
+    matches = archives.filter((a) => a.eventId === idArg);
+    if (matches.length === 0) {
+      // Fall back to a prefix match — useful when the user pastes only
+      // the first few chars from `ycal recordings`. Reject if the
+      // prefix is ambiguous.
+      matches = archives.filter((a) => a.eventId.startsWith(idArg));
+    }
+  } else if (query) {
+    const q = query.toLowerCase();
+    matches = archives.filter((a) => (a.meta?.title ?? '').toLowerCase().includes(q));
+  } else {
+    throw new CliError('usage: ycal transcript|summary <event-id> | --query <title-substring>');
+  }
+  if (matches.length === 0) {
+    throw new CliError(
+      `no recording matched ${idArg ? `id ${idArg}` : `query "${query}"`} — try \`ycal recordings\` to list available archives.`,
+    );
+  }
+  if (matches.length > 1) {
+    const lines = matches
+      .slice(0, 10)
+      .map((m) => `  ${m.eventId}  ${m.meta?.title ?? '(untitled)'}`)
+      .join('\n');
+    throw new CliError(
+      `${matches.length} recordings matched — disambiguate by full event id:\n${lines}`,
+    );
+  }
+  const m = matches[0];
+  return {
+    eventId: m.eventId,
+    accountId: m.accountId,
+    title: m.meta?.title ?? null,
+    startedAt: m.meta?.startedAt ?? null,
+  };
+}
+
+async function cmdMeetingArtifact(
+  args: ParsedArgs,
+  kind: MeetingArtifactKind,
+  io: CliIo,
+): Promise<number> {
+  ensureConfigured();
+  ensureAccounts();
+  const idArg = args.positional[0];
+  const query = typeof args.flags.query === 'string' ? args.flags.query : undefined;
+  // First, see if the eventId is reachable directly without listing
+  // every archive. If the caller knows the exact id, we can skip the
+  // (potentially N-account-deep) full enumeration.
+  let eventId: string;
+  let accountId: string;
+  let title: string | null = null;
+  let startedAt: number | null = null;
+  if (idArg && !query) {
+    const acct = await findAccountForArchive(idArg);
+    if (acct) {
+      eventId = idArg;
+      accountId = acct;
+    } else {
+      const resolved = await resolveArchiveTarget(idArg, query);
+      eventId = resolved.eventId;
+      accountId = resolved.accountId;
+      title = resolved.title;
+      startedAt = resolved.startedAt;
+    }
+  } else {
+    const resolved = await resolveArchiveTarget(idArg, query);
+    eventId = resolved.eventId;
+    accountId = resolved.accountId;
+    title = resolved.title;
+    startedAt = resolved.startedAt;
+  }
+  const localPath = await fetchMeetingArtifact(eventId, accountId, kind);
+  const format = getFormat(args);
+  if (format === 'json') {
+    // For JSON we include the body — that's what an LLM wants. For
+    // audio (.m4a) we never inline the body; emit just the cached path.
+    const body = kind === 'audio' ? null : fs.readFileSync(localPath, 'utf-8');
+    io.out.write(JSON.stringify({
+      command: kind,
+      eventId,
+      accountId,
+      title,
+      startedAt,
+      path: localPath,
+      ...(body !== null ? { body } : {}),
+    }, null, 2) + '\n');
+  } else {
+    if (kind === 'audio') {
+      io.out.write(`${localPath}\n`);
+    } else {
+      io.out.write(fs.readFileSync(localPath, 'utf-8'));
+      // Ensure a trailing newline so the next prompt isn't glued to
+      // the last line of the artifact.
+      if (!io.out.writableEnded) io.out.write('\n');
+    }
+  }
+  return 0;
+}
+
 function helpText(version: string): string {
   return `yCal CLI ${version} — read your Google Calendar from the terminal.
 
@@ -846,6 +1036,15 @@ COMMANDS
   next [N]                  Next N (default 5) upcoming events.
   find <query>              Search events (default: -7d to +90d).
   weather                   Forecast from the configured weather iCal feed.
+  recordings                List meeting recordings archived on Google Drive
+                            (per-event-account appdata folder).
+                            Flags: --limit <n>
+  transcript <event-id>     Print the transcript for one recording.
+                            Or: --query "<title-substring>"  (must be unique)
+  summary    <event-id>     Print the summary (Markdown meeting note).
+                            Or: --query "<title-substring>"
+  audio      <event-id>     Print the local cache path to the .m4a (does
+                            NOT inline binary content). Or --query "...".
 
 CALENDAR FILTERING
   By default, events commands mirror the GUI agenda:
@@ -879,6 +1078,9 @@ EXAMPLES
   ycal calendars --account 1042... --format text
   ycal events --calendar primary@gmail.com --include-declined
   ycal week --include-read-only          # planning: see read-only calendars too
+  ycal recordings --limit 10             # archived meeting notes on Drive
+  ycal summary --query "weekly sync"     # latest matching meeting note
+  ycal transcript abcd1234_20260520T...  # exact event id from recordings list
 
 JSON OUTPUT
   Every JSON document has at minimum: { "command", "count" } plus a payload
@@ -946,6 +1148,14 @@ export async function runCli(
         return await cmdFind(args, io);
       case 'weather':
         return await cmdWeather(args, io);
+      case 'recordings':
+        return await cmdRecordings(args, io);
+      case 'transcript':
+        return await cmdMeetingArtifact(args, 'transcript', io);
+      case 'summary':
+        return await cmdMeetingArtifact(args, 'summary', io);
+      case 'audio':
+        return await cmdMeetingArtifact(args, 'audio', io);
       default:
         io.err.write(`ycal: unknown command "${args.command}"\n\n`);
         io.err.write(helpText(version));

@@ -64,6 +64,8 @@ interface Props {
   setRecordingWhisperModel: (v: string) => void;
   recordingSummaryPrompt: string;
   setRecordingSummaryPrompt: (v: string) => void;
+  recordingUploadAudio: boolean;
+  setRecordingUploadAudio: (v: boolean) => void;
   // Day-load gauge window
   loadWindow: LoadWindowSettings;
   setLoadWindow: (next: LoadWindowSettings) => void;
@@ -246,6 +248,8 @@ export function SettingsModal(props: Props) {
                 setWhisperModel={props.setRecordingWhisperModel}
                 summaryPrompt={props.recordingSummaryPrompt}
                 setSummaryPrompt={props.setRecordingSummaryPrompt}
+                uploadAudio={props.recordingUploadAudio}
+                setUploadAudio={props.setRecordingUploadAudio}
               />
             )}
             {tab === 'shortcuts' && <PrefsShortcuts />}
@@ -1662,6 +1666,7 @@ function PrefsRecording({
   trigger, setTrigger,
   whisperModel, setWhisperModel,
   summaryPrompt, setSummaryPrompt,
+  uploadAudio, setUploadAudio,
 }: {
   autoRecord: boolean;
   setAutoRecord: (v: boolean) => void;
@@ -1673,6 +1678,8 @@ function PrefsRecording({
   setWhisperModel: (v: string) => void;
   summaryPrompt: string;
   setSummaryPrompt: (v: string) => void;
+  uploadAudio: boolean;
+  setUploadAudio: (v: boolean) => void;
 }) {
   const [status, setStatus] = useState<RecorderSetupStatus | null>(null);
   const [installing, setInstalling] = useState<boolean>(false);
@@ -1856,6 +1863,26 @@ function PrefsRecording({
         </PrefRow>
       )}
       {trigger === 'activeMeet' && <ActiveMeetDiagnostics />}
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Cross-device storage</h3>
+      <p className="pref-row-hint" style={{ maxWidth: '60ch', marginTop: 0 }}>
+        Finished recordings push their transcript + summary to the
+        event-owning Google account’s hidden Drive <code>appdata</code> folder
+        (the same scope yCal already uses for sync). That lets you read past
+        meeting notes from any Mac signed in to that account — and through{' '}
+        <code>ycal transcript &lt;event-id&gt;</code> /{' '}
+        <code>ycal summary &lt;event-id&gt;</code> on the command line.
+      </p>
+      <PrefRow
+        label="Also upload the .m4a recording"
+        hint={
+          uploadAudio
+            ? 'Audio uploads after each meeting (≈30–60 MB per hour). Lets a future Mac re-transcribe with a different model or prompt.'
+            : 'Only transcript + summary are uploaded. Saves bandwidth/storage; re-processing requires the audio to still be on this Mac.'
+        }
+      >
+        <PrefSwitch value={uploadAudio} onChange={setUploadAudio} />
+      </PrefRow>
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Transcription model</h3>
       <p className="pref-row-hint" style={{ maxWidth: '60ch', marginTop: 0 }}>

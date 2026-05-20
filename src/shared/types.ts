@@ -229,6 +229,13 @@ export interface UiSettings {
   // through the regular recorder-setup runner; the .bin lives at
   // ~/.ycal/models/<filename>.
   recordingWhisperModel?: string;
+  // When true (default), finished recordings push their .m4a to the
+  // event-owning account's Drive `appdata` alongside the transcript +
+  // summary so a future Mac can re-process (different whisper model or
+  // prompt) without the audio. When false, only the transcript +
+  // summary are uploaded — saves ~30–60 MB per hour-long meeting at the
+  // cost of one-machine-only re-process.
+  recordingUploadAudio?: boolean;
 }
 
 // Recording-pipeline dependency status. Surfaced to the Settings →
@@ -313,15 +320,29 @@ export interface RecordingStatus {
   title: string;
   // 'recording' — ffmpeg is actively writing the m4a.
   // 'processing' — recording is done, whisper + claude pipeline running.
-  // 'done' — summary written, recording finished cleanly.
+  // 'uploading' — transcript + summary written, pushing them to the
+  //               event-owning account's Drive appdata.
+  // 'done' — recording finished cleanly. summaryFile + uploadedKinds set.
   // 'failed' — see `error`.
-  state: 'recording' | 'processing' | 'done' | 'failed';
+  state: 'recording' | 'processing' | 'uploading' | 'done' | 'failed';
   startedAt: number;       // epoch ms
   // When in 'recording' state, the wall-clock at which the recorder will
   // auto-stop (event.end). Renderer can use this for a countdown.
   endsAt?: number;
   audioFile?: string;
+  // Local copy of the transcript next to the m4a (post-meet.sh writes
+  // `<base>.transcript.txt`). Used by the popover's Transcript button
+  // before/instead of pulling from Drive.
+  transcriptFile?: string;
   summaryFile?: string;
+  // Which kinds we successfully uploaded to Drive — read by the
+  // popover's "Drive ✓" indicator. Empty/undefined = upload skipped or
+  // failed.
+  uploadedKinds?: Array<'audio' | 'transcript' | 'summary'>;
+  // The Google account whose appdata holds (or will hold) the
+  // archive. Surfaced so callers can pass it back to
+  // fetchMeetingArtifact without re-discovering it.
+  accountId?: string;
   error?: string;
 }
 
@@ -695,4 +716,27 @@ export const IPC = {
   RecorderMeetSignal: 'ycal:recorderMeetSignal',
   RecorderMeetSignalChanged: 'ycal:recorderMeetSignalChanged',   // main → renderer push
   RecorderDiagnoseDetection: 'ycal:recorderDiagnoseDetection',
+  // Per-event meeting archive on the event-owning account's Drive
+  // appdata. Used by the popover + CLI to read transcripts/summaries
+  // from any Mac signed in to that same Google account.
+  MeetingArchiveFetch: 'ycal:meetingArchiveFetch',
+  MeetingArchiveList: 'ycal:meetingArchiveList',
 } as const;
+
+// Lightweight wire shape for the renderer / CLI to know which artifacts
+// exist for an event without forcing it to download them first.
+export interface MeetingArchiveSummary {
+  eventId: string;
+  accountId: string;
+  title: string | null;
+  startedAt: number | null;
+  endsAt: number | null;
+  // Whether each artifact kind is present on Drive right now.
+  hasAudio: boolean;
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  // ISO of the most recent file in the trio (used for ordering).
+  modifiedAt: string | null;
+}
+
+export type MeetingArtifactKind = 'audio' | 'transcript' | 'summary';

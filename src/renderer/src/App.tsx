@@ -135,6 +135,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [recordingSummaryPrompt, setRecordingSummaryPrompt] = useState<string>(
     () => initialUi.recordingSummaryPrompt ?? '',
   );
+  const [recordingUploadAudio, setRecordingUploadAudio] = useState<boolean>(
+    () => initialUi.recordingUploadAudio ?? true,
+  );
   const [loadWindow, setLoadWindow] = useState<LoadWindowSettings>(
     () => ({ ...DEFAULT_LOAD_WINDOW, ...(initialUi.loadWindow ?? {}) }),
   );
@@ -240,6 +243,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setRecordingTrigger(ui.recordingTrigger ?? 'calendar');
       setRecordingWhisperModel(ui.recordingWhisperModel ?? 'large-v3-turbo');
       setRecordingSummaryPrompt(ui.recordingSummaryPrompt ?? '');
+      setRecordingUploadAudio(ui.recordingUploadAudio ?? true);
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
       setCustomTagSuggestions(ui.customTagSuggestions ?? []);
@@ -346,6 +350,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       recordingTrigger,
       recordingWhisperModel,
       recordingSummaryPrompt: recordingSummaryPrompt || undefined,
+      recordingUploadAudio,
       loadWindow,
       loadBands,
       customTagSuggestions,
@@ -356,6 +361,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
     autoRolloverPastTasks, autoRecordMeetings, recordingConfirmBeforeStart,
     recordingTrigger, recordingWhisperModel, recordingSummaryPrompt,
+    recordingUploadAudio,
     loadWindow, loadBands, customTagSuggestions, theme,
   ]);
 
@@ -947,6 +953,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setRecordingWhisperModel={setRecordingWhisperModel}
           recordingSummaryPrompt={recordingSummaryPrompt}
           setRecordingSummaryPrompt={setRecordingSummaryPrompt}
+          recordingUploadAudio={recordingUploadAudio}
+          setRecordingUploadAudio={setRecordingUploadAudio}
           loadWindow={loadWindow}
           setLoadWindow={setLoadWindow}
           loadBands={loadBands}

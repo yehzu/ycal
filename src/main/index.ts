@@ -53,6 +53,11 @@ import {
 import {
   bindRecorderSetup, getRecorderSetupStatus, runRecorderSetup,
 } from './recorderSetup';
+import {
+  fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
+  listMeetingArchive,
+} from './meetingArchive';
+import type { MeetingArchiveSummary, MeetingArtifactKind } from '@shared/types';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -572,10 +577,50 @@ function registerIpc() {
     void shell.openPath(recordingsDir());
     return { ok: true as const };
   });
-  ipcMain.handle(IPC.RecorderReprocess, async (_e, payload: { eventId: string; audioFile: string; title: string }) => {
+  ipcMain.handle(IPC.RecorderReprocess, async (_e, payload: { eventId: string; audioFile: string; title: string; accountId?: string }) => {
     try {
-      await reprocessRecording(payload.eventId, payload.audioFile, payload.title);
+      await reprocessRecording(payload.eventId, payload.audioFile, payload.title, payload.accountId);
       return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Meeting archive (per-event Drive appdata) ─────────────────────
+  ipcMain.handle(IPC.MeetingArchiveFetch, async (
+    _e,
+    payload: { eventId: string; accountId?: string | null; kind: MeetingArtifactKind },
+  ) => {
+    try {
+      let accountId = payload.accountId ?? null;
+      if (!accountId) accountId = await findAccountForArchive(payload.eventId);
+      if (!accountId) {
+        return { ok: false as const, error: 'no Drive archive found for this event' };
+      }
+      const localPath = await fetchMeetingArtifact(payload.eventId, accountId, payload.kind);
+      return { ok: true as const, path: localPath };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle(IPC.MeetingArchiveList, async (
+    _e,
+    payload?: { eventId?: string; accountId?: string | null },
+  ) => {
+    try {
+      if (payload?.eventId) {
+        let accountId = payload.accountId ?? null;
+        if (!accountId) accountId = await findAccountForArchive(payload.eventId);
+        if (!accountId) return { ok: true as const, archives: [] as MeetingArchiveSummary[] };
+        const found = await listMeetingArchive(payload.eventId, accountId);
+        return {
+          ok: true as const,
+          archives: found ? [shapeArchive(found)] : [],
+        };
+      }
+      const all = await listAllMeetingArchives();
+      return { ok: true as const, archives: all.map(shapeArchive) };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
@@ -738,6 +783,24 @@ function startCloudSync(win: BrowserWindow): void {
       console.error('[yCal] cloud-sync push failed for', filename, e);
     }
   });
+}
+
+// Coerce the archive module's internal shape (with full ArchiveMeta) into
+// the lighter MeetingArchiveSummary the renderer + CLI work with.
+function shapeArchive(
+  a: NonNullable<Awaited<ReturnType<typeof listMeetingArchive>>>,
+): MeetingArchiveSummary {
+  return {
+    eventId: a.eventId,
+    accountId: a.accountId,
+    title: a.meta?.title ?? null,
+    startedAt: a.meta?.startedAt ?? null,
+    endsAt: a.meta?.endsAt ?? null,
+    hasAudio: a.has.audio,
+    hasTranscript: a.has.transcript,
+    hasSummary: a.has.summary,
+    modifiedAt: a.modifiedAt,
+  };
 }
 
 function isParseableJsonObject(body: string): boolean {

@@ -31,7 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { BrowserWindow, Notification, powerMonitor, shell } from 'electron';
+import { app, BrowserWindow, Notification, powerMonitor, shell } from 'electron';
 import { IPC, DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import type { CalendarEvent, RecentRecording, RecordingStatus, UiSettings } from '@shared/types';
 import { dedupEvents } from '@shared/dedup';
@@ -40,6 +40,8 @@ import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
 import { getActiveModelPath } from './recorderSetup';
+import { uploadMeetingArtifacts } from './meetingArchive';
+import { listAccounts } from './tokenStore';
 import {
   type MeetSignal, diagnoseDetection, getMeetSignal, onMeetChange,
   startMeetDetector, stopMeetDetector,
@@ -312,12 +314,20 @@ export function recordingsDir(): string {
 // opening /etc/passwd or similar. Returns the absolute path on success
 // or null when the requested path is unsafe.
 export function safeRecordingPath(input: string): string | null {
-  const dir = recordingsDir();
   const abs = path.resolve(input);
-  const dirAbs = path.resolve(dir);
-  if (!abs.startsWith(dirAbs + path.sep) && abs !== dirAbs) return null;
   if (!fs.existsSync(abs)) return null;
-  return abs;
+  // Local recordings live in ~/Recordings/yCal. Drive-fetched
+  // artifacts live in <userData>/meeting-cache. Allow both so the
+  // popover can `recorderOpenFile` either one through the same IPC.
+  const allowed = [
+    path.resolve(recordingsDir()),
+    path.resolve(app.getPath('userData'), 'meeting-cache'),
+  ];
+  for (const dir of allowed) {
+    if (abs === dir) return abs;
+    if (abs.startsWith(dir + path.sep)) return abs;
+  }
+  return null;
 }
 
 export async function startRecordingManual(event: CalendarEvent): Promise<void> {
@@ -359,6 +369,7 @@ export async function reprocessRecording(
   eventId: string,
   audioFile: string,
   title: string,
+  accountId?: string,
 ): Promise<void> {
   if (!fs.existsSync(audioFile)) {
     throw new Error(`audio file missing: ${audioFile}`);
@@ -378,10 +389,11 @@ export async function reprocessRecording(
     state: 'processing',
     startedAt: Date.now(),
     audioFile: safe,
+    accountId,
   };
   recordings.set(eventId, status);
   pushStatus();
-  await postProcess(eventId, safe, title);
+  await postProcess(eventId, safe, title, accountId);
 }
 
 // ── Recovery ────────────────────────────────────────────────────────────
@@ -425,11 +437,15 @@ function recoverInFlightRecordings(): void {
     let title = 'Recovered recording';
     let startedAt = Date.now();
     let endsAt: number | undefined;
+    let accountId: string | undefined;
     try {
       const meta = JSON.parse(fs.readFileSync(path.join(STATE_DIR, `${eventId}.meta.json`), 'utf8'));
       if (typeof meta.title === 'string' && meta.title.trim()) title = meta.title;
       if (typeof meta.startedAt === 'number') startedAt = meta.startedAt;
       if (typeof meta.endsAt === 'number') endsAt = meta.endsAt;
+      if (typeof meta.accountId === 'string' && meta.accountId.trim()) {
+        accountId = meta.accountId;
+      }
     } catch { /* meta missing on pre-recovery builds — keep defaults */ }
     if (!endsAt && audioFile) {
       try {
@@ -446,6 +462,7 @@ function recoverInFlightRecordings(): void {
       startedAt,
       endsAt,
       audioFile,
+      accountId,
     };
     recordings.set(eventId, status);
     console.log(`[yCal recorder] adopted in-flight recording ${eventId} (pid ${pid})`);
@@ -731,6 +748,7 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     state: 'recording',
     startedAt: Date.now(),
     endsAt,
+    accountId: ev.accountId || undefined,
   };
   recordings.set(ev.id, status);
   // Clear cooldown — explicit start (manual or automatic) means this
@@ -747,6 +765,7 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
       title: ev.title,
       startedAt: status.startedAt,
       endsAt,
+      accountId: ev.accountId || null,
     }));
   } catch (e) {
     console.error('[yCal recorder] failed to write meta sidecar', e);
@@ -818,10 +837,15 @@ async function stopRecording(eventId: string): Promise<void> {
     }
   } catch { /* stat failed — fall through and let postProcess decide */ }
 
-  void postProcess(eventId, audioFile, status.title);
+  void postProcess(eventId, audioFile, status.title, status.accountId);
 }
 
-async function postProcess(eventId: string, audioFile: string, title: string): Promise<void> {
+async function postProcess(
+  eventId: string,
+  audioFile: string,
+  title: string,
+  accountId: string | undefined,
+): Promise<void> {
   notify('yCal · transcribing', title);
   try {
     // If the user has a custom summary prompt in Settings → Recording,
@@ -856,10 +880,30 @@ async function postProcess(eventId: string, audioFile: string, title: string): P
       envExtras: Object.keys(envExtras).length > 0 ? envExtras : undefined,
     });
     const summary = stdout.trim() || audioFile.replace(/\.m4a$/, '.summary.md');
+    const transcript = audioFile.replace(/\.m4a$/, '.transcript.txt');
     const status = recordings.get(eventId);
     if (status) {
-      status.state = 'done';
+      status.state = 'uploading';
       status.summaryFile = summary;
+      if (fs.existsSync(transcript)) status.transcriptFile = transcript;
+      pushStatus();
+    }
+
+    const uploadedKinds = await uploadArtifacts({
+      eventId,
+      title,
+      accountId,
+      audioFile,
+      transcriptFile: fs.existsSync(transcript) ? transcript : null,
+      summaryFile: fs.existsSync(summary) ? summary : null,
+      startedAt: status?.startedAt ?? Date.now(),
+      endsAt: status?.endsAt,
+    });
+
+    const finalStatus = recordings.get(eventId);
+    if (finalStatus) {
+      finalStatus.state = 'done';
+      finalStatus.uploadedKinds = uploadedKinds;
       pushStatus();
     }
     const n = new Notification({
@@ -981,4 +1025,66 @@ function execScript(
       reject(new Error(stderr.trim() || `exit ${code}`));
     });
   });
+}
+
+// Best-effort push of the {audio, transcript, summary} trio to the
+// event-owning account's Drive appdata. Errors are logged but never
+// rethrown — a finished recording with local files is still useful to
+// the user even if Drive is down. Returns which kinds landed
+// successfully so the status row in the popover can flag "✓ on Drive".
+async function uploadArtifacts(input: {
+  eventId: string;
+  title: string;
+  accountId: string | undefined;
+  audioFile: string;
+  transcriptFile: string | null;
+  summaryFile: string | null;
+  startedAt: number;
+  endsAt: number | undefined;
+}): Promise<Array<'audio' | 'transcript' | 'summary'>> {
+  // Resolve which account's appdata to push to. Prefer the event's own
+  // account when available; otherwise fall back to the first signed-in
+  // account (typical: single-user → there's only one). When NO account
+  // is signed in at all, skip the upload silently.
+  let accountId = input.accountId;
+  if (!accountId) {
+    const accounts = listAccounts();
+    if (accounts.length === 0) {
+      console.log('[yCal recorder] no accounts signed in — skipping Drive upload');
+      return [];
+    }
+    accountId = accounts[0].id;
+    console.log(
+      `[yCal recorder] event ${input.eventId} has no accountId — uploading to first account ${accounts[0].email}`,
+    );
+  }
+
+  const ui = getUiSettings();
+  const uploadAudio = ui.recordingUploadAudio ?? true;
+
+  try {
+    const res = await uploadMeetingArtifacts({
+      eventId: input.eventId,
+      title: input.title,
+      accountId,
+      startedAt: input.startedAt,
+      endsAt: input.endsAt,
+      audioFile: input.audioFile,
+      transcriptFile: input.transcriptFile,
+      summaryFile: input.summaryFile,
+      uploadAudio,
+    });
+    const uploaded = Object.keys(res.uploaded) as Array<'audio' | 'transcript' | 'summary'>;
+    if (Object.keys(res.errors).length > 0) {
+      console.error('[yCal recorder] Drive upload partial failure', res.errors);
+    } else {
+      console.log(
+        `[yCal recorder] Drive upload ok (${uploaded.join(', ') || 'nothing'}) → ${accountId}`,
+      );
+    }
+    return uploaded;
+  } catch (e) {
+    console.error('[yCal recorder] Drive upload failed', e);
+    return [];
+  }
 }

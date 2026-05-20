@@ -10,6 +10,8 @@ import type {
   DriveSyncStatus,
   GoogleColors,
   ListEventsRequest,
+  MeetingArchiveSummary,
+  MeetingArtifactKind,
   RecentRecording,
   RecorderMeetSignal,
   RecorderSetupProgress,
@@ -193,9 +195,20 @@ const api = {
   recorderRevealFolder: (): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderRevealFolder),
   recorderReprocess: (
-    payload: { eventId: string; audioFile: string; title: string },
+    payload: { eventId: string; audioFile: string; title: string; accountId?: string },
   ): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderReprocess, payload),
+
+  // Per-event meeting archive on the event-owning Google account's Drive
+  // appdata. Returns local cached path; downloads if needed.
+  meetingArchiveFetch: (
+    payload: { eventId: string; accountId?: string | null; kind: MeetingArtifactKind },
+  ): Promise<Result<{ path: string }>> =>
+    ipcRenderer.invoke(IPC.MeetingArchiveFetch, payload),
+  meetingArchiveList: (
+    payload?: { eventId?: string; accountId?: string | null },
+  ): Promise<Result<{ archives: MeetingArchiveSummary[] }>> =>
+    ipcRenderer.invoke(IPC.MeetingArchiveList, payload),
 
   // Active Meet detection — read the live signal, subscribe to changes,
   // and run a diagnostic dump for debugging when detection misfires.

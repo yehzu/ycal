@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
-  CalendarEvent, CalendarSummary, AccountSummary, RecentRecording, RecordingStatus,
+  CalendarEvent, CalendarSummary, AccountSummary, MeetingArchiveSummary,
+  MeetingArtifactKind, RecentRecording, RecordingStatus,
 } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTimeFull, ordinal } from '../dates';
 import { rsvpClass, rsvpLabel } from '../rsvp';
@@ -37,6 +38,7 @@ export function EventPopover({
   //      through (1) for live progress.
   const [recording, setRecording] = useState<RecordingStatus | null>(null);
   const [pastRec, setPastRec] = useState<RecentRecording | null>(null);
+  const [driveArchive, setDriveArchive] = useState<MeetingArchiveSummary | null>(null);
   const [, setNow] = useState<number>(Date.now());
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +62,28 @@ export function EventPopover({
     });
     return () => { cancelled = true; off(); };
   }, [event.id]);
+
+  // Probe Drive ONCE per event open for an existing archive. This is
+  // cheap (one Drive list per account) but not free — debounce by
+  // gating on the event id and only firing when the popover is
+  // actually visible. The archive is the source of truth for past
+  // recordings: it survives across Macs, while pastRec on disk only
+  // exists on the machine that did the recording.
+  useEffect(() => {
+    let cancelled = false;
+    void window.ycal.meetingArchiveList({
+      eventId: event.id,
+      accountId: event.accountId,
+    }).then((res) => {
+      if (cancelled) return;
+      if (res.ok && res.archives.length > 0) {
+        setDriveArchive(res.archives[0]);
+      } else {
+        setDriveArchive(null);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [event.id, event.accountId]);
   useEffect(() => {
     if (recording?.state !== 'recording') return undefined;
     const id = setInterval(() => setNow(Date.now()), 1_000);
@@ -187,6 +211,7 @@ export function EventPopover({
           event={event}
           recording={recording}
           pastRec={pastRec}
+          driveArchive={driveArchive}
           autoRecord={autoRecord}
         />
         {event.attendees && event.attendees.length > 0 && (
@@ -248,20 +273,45 @@ export function EventPopover({
   );
 }
 
+// Open a Drive-stored meeting artifact by id + kind. Downloads to the
+// local cache if needed, then routes through recorderOpenFile (which
+// safeRecordingPath has been widened to allow meeting-cache paths).
+// Fire-and-forget; errors surface as alerts so the user knows a Drive
+// failure (network / auth) is the reason nothing opened.
+async function openFromDrive(
+  eventId: string,
+  accountId: string | null,
+  kind: MeetingArtifactKind,
+): Promise<void> {
+  const res = await window.ycal.meetingArchiveFetch({
+    eventId,
+    accountId: accountId ?? null,
+    kind,
+  });
+  if (!res.ok) {
+    window.alert(`Couldn't open ${kind} from Drive: ${res.error}`);
+    return;
+  }
+  await window.ycal.recorderOpenFile(res.path);
+}
+
 // Renders a "Recording" row in the popover that adapts to four states:
 //   * recording  → red dot + MM:SS elapsed + Stop button
 //   * processing → "Transcribing…" hint
-//   * done       → "Notes ready · Open notes"
+//   * uploading  → "Uploading to Drive…" hint
+//   * done       → "Notes ready · Open notes" (local or Drive)
 //   * future + auto-record on + qualifies → "Will auto-record" hint
-// In all other cases (e.g. no meetUrl, declined, autoRecord off, no
-// matching recording in memory and event in the past), renders nothing
-// so the popover stays compact for events that aren't relevant.
+// When pastRec is absent but driveArchive is present (case: this Mac
+// didn't do the recording — another Mac did, and we pulled the archive
+// via Drive), we still surface Notes/Transcript/Audio buttons backed
+// by on-demand fetches.
 function RecordingRow({
-  event, recording, pastRec, autoRecord,
+  event, recording, pastRec, driveArchive, autoRecord,
 }: {
   event: CalendarEvent;
   recording: RecordingStatus | null;
   pastRec: RecentRecording | null;
+  driveArchive: MeetingArchiveSummary | null;
   autoRecord: boolean;
 }) {
   if (recording) {
@@ -295,12 +345,24 @@ function RecordingRow({
         </div>
       );
     }
+    if (recording.state === 'uploading') {
+      return (
+        <div className="pp-row">
+          <span className="k">Recording</span>
+          <span className="v" style={{ opacity: 0.75 }}>↑ Uploading to Drive…</span>
+        </div>
+      );
+    }
     if (recording.state === 'done') {
+      const uploaded = recording.uploadedKinds ?? [];
+      const onDrive = uploaded.length > 0;
       return (
         <div className="pp-row">
           <span className="k">Recording</span>
           <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span>✓ Done</span>
+            <span title={onDrive ? `On Drive: ${uploaded.join(', ')}` : 'Local only'}>
+              ✓ Done{onDrive ? ' · Drive ✓' : ''}
+            </span>
             {recording.summaryFile && (
               <button
                 className="pp-btn"
@@ -308,6 +370,15 @@ function RecordingRow({
                 style={{ padding: '2px 10px', fontSize: 12 }}
               >
                 Notes
+              </button>
+            )}
+            {recording.transcriptFile && (
+              <button
+                className="pp-btn"
+                onClick={() => { void window.ycal.recorderOpenFile(recording.transcriptFile!); }}
+                style={{ padding: '2px 10px', fontSize: 12 }}
+              >
+                Transcript
               </button>
             )}
             {recording.audioFile && (
@@ -328,6 +399,7 @@ function RecordingRow({
                     eventId: event.id,
                     audioFile: recording.audioFile!,
                     title: event.title,
+                    accountId: recording.accountId,
                   });
                 }}
                 style={{ padding: '2px 10px', fontSize: 12 }}
@@ -386,11 +458,14 @@ function RecordingRow({
   // for users who've changed model / prompt and want to regenerate
   // the transcript + note from the existing audio.
   if (pastRec) {
+    const driveAcct = driveArchive?.accountId ?? event.accountId ?? null;
     return (
       <div className="pp-row">
         <span className="k">Recording</span>
         <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span>✓ Recorded</span>
+          <span title={driveArchive ? 'Mirrored to Drive' : 'Local only'}>
+            ✓ Recorded{driveArchive ? ' · Drive ✓' : ''}
+          </span>
           {pastRec.summaryFile && (
             <button
               className="pp-btn"
@@ -398,6 +473,25 @@ function RecordingRow({
               style={{ padding: '2px 10px', fontSize: 12 }}
             >
               Notes
+            </button>
+          )}
+          {pastRec.transcriptFile && (
+            <button
+              className="pp-btn"
+              onClick={() => { void window.ycal.recorderOpenFile(pastRec.transcriptFile!); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+            >
+              Transcript
+            </button>
+          )}
+          {!pastRec.transcriptFile && driveArchive?.hasTranscript && (
+            <button
+              className="pp-btn"
+              onClick={() => { void openFromDrive(event.id, driveAcct, 'transcript'); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+              title="Fetch transcript from Drive cache"
+            >
+              Transcript
             </button>
           )}
           <button
@@ -414,6 +508,7 @@ function RecordingRow({
                 eventId: event.id,
                 audioFile: pastRec.audioFile,
                 title: event.title,
+                accountId: driveAcct ?? undefined,
               });
             }}
             style={{ padding: '2px 10px', fontSize: 12 }}
@@ -421,6 +516,50 @@ function RecordingRow({
           >
             Re-process
           </button>
+        </span>
+      </div>
+    );
+  }
+
+  // No local recording on this Mac, but the Drive archive has files —
+  // this is the "another Mac did the recording, I'm reading the notes
+  // here" case. Wire each button to fetch-then-open via the Drive
+  // cache so the user doesn't notice the difference.
+  if (driveArchive && (driveArchive.hasSummary || driveArchive.hasTranscript || driveArchive.hasAudio)) {
+    const acct = driveArchive.accountId;
+    return (
+      <div className="pp-row">
+        <span className="k">Recording</span>
+        <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span title="Pulled from another Mac via Drive">✓ Drive</span>
+          {driveArchive.hasSummary && (
+            <button
+              className="pp-btn"
+              onClick={() => { void openFromDrive(event.id, acct, 'summary'); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+            >
+              Notes
+            </button>
+          )}
+          {driveArchive.hasTranscript && (
+            <button
+              className="pp-btn"
+              onClick={() => { void openFromDrive(event.id, acct, 'transcript'); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+            >
+              Transcript
+            </button>
+          )}
+          {driveArchive.hasAudio && (
+            <button
+              className="pp-btn"
+              onClick={() => { void openFromDrive(event.id, acct, 'audio'); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+              title="Download the m4a from Drive and open it"
+            >
+              Audio
+            </button>
+          )}
         </span>
       </div>
     );

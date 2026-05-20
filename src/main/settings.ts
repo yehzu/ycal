@@ -175,6 +175,9 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   if (patch.recordingWhisperModel !== undefined) {
     next.recordingWhisperModel = patch.recordingWhisperModel;
   }
+  if (patch.recordingUploadAudio !== undefined) {
+    next.recordingUploadAudio = patch.recordingUploadAudio;
+  }
   s.ui = next;
   write(s);
 }
