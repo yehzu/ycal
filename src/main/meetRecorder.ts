@@ -285,6 +285,43 @@ export async function stopRecordingManual(eventId: string): Promise<void> {
   await stopRecording(eventId);
 }
 
+// Re-run post-meet.sh on an existing .m4a — used by the popover's
+// "Re-process" button when the user has changed the whisper model or
+// summary prompt and wants to regenerate the transcript + note
+// without re-recording. We insert a synthetic 'processing' status
+// into the recordings map so the popover row reflects progress, then
+// let postProcess do its normal work. The eventId comes from the
+// filename (popover supplies it) so the popover-side correlation
+// still works after the new note lands.
+export async function reprocessRecording(
+  eventId: string,
+  audioFile: string,
+  title: string,
+): Promise<void> {
+  if (!fs.existsSync(audioFile)) {
+    throw new Error(`audio file missing: ${audioFile}`);
+  }
+  const safe = safeRecordingPath(audioFile);
+  if (!safe) {
+    throw new Error('audio file is not under the recordings dir');
+  }
+  // Drop any stale status for this event so postProcess's final
+  // status.set isn't fighting an older 'done'/'failed' entry. Also
+  // clear `skipped` so a later auto-record on the same eventId can
+  // still fire — re-processing is an explicit do-over, not a skip.
+  skipped.delete(eventId);
+  const status: RecordingStatus = {
+    eventId,
+    title,
+    state: 'processing',
+    startedAt: Date.now(),
+    audioFile: safe,
+  };
+  recordings.set(eventId, status);
+  pushStatus();
+  await postProcess(eventId, safe, title);
+}
+
 // ── Polling loop ────────────────────────────────────────────────────────
 
 async function tick(): Promise<void> {

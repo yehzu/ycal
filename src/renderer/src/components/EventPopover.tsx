@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
-  CalendarEvent, CalendarSummary, AccountSummary, RecordingStatus,
+  CalendarEvent, CalendarSummary, AccountSummary, RecentRecording, RecordingStatus,
 } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTimeFull, ordinal } from '../dates';
 import { rsvpClass, rsvpLabel } from '../rsvp';
@@ -25,20 +25,38 @@ export function EventPopover({
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  // Recording state for this specific event. Seeded from a list fetch on
-  // mount, then live-updated from the RecorderStatusChanged push. We tick
-  // a 1s timer when actively recording so the "MM:SS" elapsed counter
-  // stays current without a roundtrip.
+  // Recording state for this specific event. Three sources:
+  //   1. In-memory recordings (recording/processing/done/failed within
+  //      the 30 min retention window) — primary, drives the elapsed-
+  //      time counter + Stop button.
+  //   2. On-disk recent recordings — surfaces past meeting notes that
+  //      have aged out of the in-memory map (older than 30 min).
+  //      Matching is by event id encoded in the filename.
+  //   3. Re-process button — re-runs post-meet.sh on an existing m4a
+  //      using the user's current model + prompt; status flows back
+  //      through (1) for live progress.
   const [recording, setRecording] = useState<RecordingStatus | null>(null);
+  const [pastRec, setPastRec] = useState<RecentRecording | null>(null);
   const [, setNow] = useState<number>(Date.now());
   useEffect(() => {
     let cancelled = false;
-    void window.ycal.recorderList().then((list) => {
+    const refresh = async (): Promise<void> => {
+      const [active, recent] = await Promise.all([
+        window.ycal.recorderList(),
+        window.ycal.recorderListRecent(50),
+      ]);
       if (cancelled) return;
-      setRecording(list.find((r) => r.eventId === event.id) ?? null);
-    });
+      setRecording(active.find((r) => r.eventId === event.id) ?? null);
+      setPastRec(recent.find((r) => r.eventId === event.id) ?? null);
+    };
+    void refresh();
     const off = window.ycal.onRecorderStatusChanged((list) => {
       setRecording(list.find((r) => r.eventId === event.id) ?? null);
+      // A status transition (typically done/failed) means a file may
+      // have just landed or been overwritten — re-scan disk too.
+      void window.ycal.recorderListRecent(50).then((recent) => {
+        if (!cancelled) setPastRec(recent.find((r) => r.eventId === event.id) ?? null);
+      });
     });
     return () => { cancelled = true; off(); };
   }, [event.id]);
@@ -168,6 +186,7 @@ export function EventPopover({
         <RecordingRow
           event={event}
           recording={recording}
+          pastRec={pastRec}
           autoRecord={autoRecord}
         />
         {event.attendees && event.attendees.length > 0 && (
@@ -238,10 +257,11 @@ export function EventPopover({
 // matching recording in memory and event in the past), renders nothing
 // so the popover stays compact for events that aren't relevant.
 function RecordingRow({
-  event, recording, autoRecord,
+  event, recording, pastRec, autoRecord,
 }: {
   event: CalendarEvent;
   recording: RecordingStatus | null;
+  pastRec: RecentRecording | null;
   autoRecord: boolean;
 }) {
   if (recording) {
@@ -300,6 +320,22 @@ function RecordingRow({
                 Audio
               </button>
             )}
+            {recording.audioFile && (
+              <button
+                className="pp-btn"
+                onClick={() => {
+                  void window.ycal.recorderReprocess({
+                    eventId: event.id,
+                    audioFile: recording.audioFile!,
+                    title: event.title,
+                  });
+                }}
+                style={{ padding: '2px 10px', fontSize: 12 }}
+                title="Re-run whisper + claude with the current model + prompt"
+              >
+                Re-process
+              </button>
+            )}
           </span>
         </div>
       );
@@ -345,14 +381,59 @@ function RecordingRow({
     }
   }
 
-  // No in-memory recording — offer a "Start now" button for any event
-  // that's recordable (has a video link, not declined, not all-day,
-  // still has time left). When the user is sitting in a meeting early
-  // and wants to capture it before its scheduled start, this is the
-  // entry point. Tag on a "Will auto-record at <time>" hint when the
-  // event is future AND the user has the auto-record toggle on, so
-  // they understand they don't HAVE to click — yCal would do it for
-  // them in N minutes anyway.
+  // Past recording on disk (in-memory status has aged out). Surface
+  // the same Open buttons as the done state PLUS a Re-process action
+  // for users who've changed model / prompt and want to regenerate
+  // the transcript + note from the existing audio.
+  if (pastRec) {
+    return (
+      <div className="pp-row">
+        <span className="k">Recording</span>
+        <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span>✓ Recorded</span>
+          {pastRec.summaryFile && (
+            <button
+              className="pp-btn"
+              onClick={() => { void window.ycal.recorderOpenFile(pastRec.summaryFile!); }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+            >
+              Notes
+            </button>
+          )}
+          <button
+            className="pp-btn"
+            onClick={() => { void window.ycal.recorderOpenFile(pastRec.audioFile); }}
+            style={{ padding: '2px 10px', fontSize: 12 }}
+          >
+            Audio
+          </button>
+          <button
+            className="pp-btn"
+            onClick={() => {
+              void window.ycal.recorderReprocess({
+                eventId: event.id,
+                audioFile: pastRec.audioFile,
+                title: event.title,
+              });
+            }}
+            style={{ padding: '2px 10px', fontSize: 12 }}
+            title="Re-run whisper + claude with the current model + prompt"
+          >
+            Re-process
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  // No in-memory recording AND nothing on disk yet — offer a "Start
+  // now" button for any event that's recordable (has a video link,
+  // not declined, not all-day, still has time left). When the user is
+  // sitting in a meeting early and wants to capture it before its
+  // scheduled start, this is the entry point. Tag on a "Will auto-
+  // record at <time>" hint when the event is future AND the user has
+  // the auto-record toggle on, so they understand they don't HAVE to
+  // click — yCal would do it for them in N minutes anyway.
   const canStart = !!event.meetUrl
     && event.rsvp !== 'declined'
     && !event.allDay

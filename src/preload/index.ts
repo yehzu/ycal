@@ -192,6 +192,10 @@ const api = {
     ipcRenderer.invoke(IPC.RecorderOpenFile, path),
   recorderRevealFolder: (): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderRevealFolder),
+  recorderReprocess: (
+    payload: { eventId: string; audioFile: string; title: string },
+  ): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderReprocess, payload),
 
   // Active Meet detection — read the live signal, subscribe to changes,
   // and run a diagnostic dump for debugging when detection misfires.

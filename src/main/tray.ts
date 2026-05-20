@@ -271,11 +271,18 @@ async function refresh(): Promise<void> {
   const activeRec = recordings.find((r) => r.state === 'recording');
 
   if (activeRec) {
-    // Recording overrides the agenda title: a glanceable "● Title" so
-    // the user always knows their mic is hot. Keep the image empty so
-    // the dot has room to render in the limited menubar width.
-    tray.setImage(emptyIcon);
-    tray.setTitle(` ● ${truncate(activeRec.title, TITLE_MAX)}`);
+    // Recording state. Anchor with the idle icon so the menubar item
+    // stays visible even when the OS is hiding pure-text status items
+    // because of a crowded notched menubar — the icon gives macOS a
+    // non-zero footprint to reserve space for. Title carries the red
+    // dot + meeting name, and we fall back to "Recording" if the
+    // synthetic-event title resolution somehow produced an empty
+    // string (defensive — empty titles render as a near-invisible
+    // strip of dots).
+    if (idleIcon) tray.setImage(idleIcon);
+    else tray.setImage(emptyIcon);
+    const title = activeRec.title?.trim() || 'Recording';
+    tray.setTitle(` ● ${truncate(title, TITLE_MAX)}`);
   } else {
     const next = findCurrentOrNext(events);
     if (next) {

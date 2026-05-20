@@ -680,6 +680,10 @@ export const IPC = {
   RecorderSetupProgress: 'ycal:recorderSetupProgress',  // main → renderer push
   // Browse finished recordings on disk.
   RecorderListRecent: 'ycal:recorderListRecent',
+  // Re-run transcription + summary on an existing .m4a. Triggered from
+  // the popover when the user has changed model / prompt and wants to
+  // regenerate the meeting note without re-recording.
+  RecorderReprocess: 'ycal:recorderReprocess',
   // Open a recording-related file (m4a / transcript / summary). Restricted
   // server-side to paths under ~/Recordings/yCal so the renderer can't
   // ask main to open arbitrary files.
