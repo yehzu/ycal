@@ -27,7 +27,10 @@ interface Props {
 }
 
 interface InlinePopover {
-  // Token the user clicked (the misrecognized text).
+  // The user-selected text (the misrecognized phrase). We support
+  // arbitrary selection — drag, double-click (word), or triple-click
+  // (line) — because per-character click doesn't work for CJK (the
+  // tokenizer would only ever capture a single han character).
   token: string;
   // Position to anchor the popover.
   anchorRect: DOMRect;
@@ -130,11 +133,27 @@ export function TranscriptSheet({
     return () => window.removeEventListener('keydown', onKey);
   }, [popover, onClose]);
 
-  const onTokenClick = useCallback((token: string, ev: React.MouseEvent<HTMLSpanElement>) => {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    setPopover({ token, anchorRect: rect });
-    setDraft('');
-    setGlobalScope(true);
+  // Selection-based capture. mouseup fires after both drag-select and
+  // double-click (word) / triple-click (line). When the selection is
+  // non-empty, the selected text becomes the misrecognized "token"
+  // we're correcting; otherwise (click w/o drag) we no-op.
+  const onProseMouseUp = useCallback(() => {
+    // setTimeout 0 — Safari / Chrome occasionally fire mouseup before
+    // the selection finalises on triple-click. One macrotask later
+    // window.getSelection() reads the settled selection. We keep this
+    // even in the dev-tools Chromium build because the Electron
+    // renderer matches that behaviour.
+    setTimeout(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      const text = sel.toString().trim();
+      if (!text) return;
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      setPopover({ token: text, anchorRect: rect });
+      setDraft('');
+      setGlobalScope(true);
+    }, 0);
   }, []);
 
   const dismissPopover = useCallback(() => {
@@ -266,7 +285,11 @@ export function TranscriptSheet({
             <p className="xs-status">Transcript is empty.</p>
           )}
           {!loading && !error && body.trim().length > 0 && (
-            <article className="xs-prose">
+            <article
+              className="xs-prose"
+              onMouseUp={onProseMouseUp}
+              title="選取要修正的字 (拖曳或雙擊)"
+            >
               {tokens.map((part, i) => {
                 if (part.kind === 'gap') {
                   // Preserve newlines as paragraph breaks by inserting
@@ -282,8 +305,7 @@ export function TranscriptSheet({
                       'xs-token'
                       + (isHighlighted ? ' xs-token-hl' : '')
                     }
-                    onClick={(ev) => onTokenClick(part.value, ev)}
-                    title={isHighlighted ? '已在詞庫中 — 重跑後會自動修正' : 'Click to correct'}
+                    title={isHighlighted ? '已在詞庫中 — 重跑後會自動修正' : undefined}
                   >
                     {part.value}
                   </span>

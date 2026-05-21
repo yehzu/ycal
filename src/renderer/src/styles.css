@@ -2938,7 +2938,12 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: var(--paper);
   border-color: var(--ink);
 }
-.u-btn-primary:hover:not([disabled]) { background: #000; }
+/* Use brightness filter rather than hardcoded #000 — in dark mode the
+   button's background is `--ink` (cream), and forcing #000 collapses
+   it into an all-black blob with dark `--paper`-colored text on top,
+   making the label invisible until you click. brightness(0.88) gives
+   a consistent "slightly darker" hover in both themes. */
+.u-btn-primary:hover:not([disabled]) { filter: brightness(0.88); }
 
 /* Full-screen splash for ready-to-relaunch */
 .update-splash {
@@ -5781,22 +5786,22 @@ body.mode-quickadd #root {
   line-height: 1.65;
   color: var(--ink);
   letter-spacing: -0.002em;
+  /* Text-selection is the primary interaction (drag / double-click /
+     triple-click). Make the cursor reflect that the whole article is
+     selectable rather than the per-token spans being clickable. */
+  cursor: text;
+  user-select: text;
 }
 .xs-token {
-  cursor: pointer;
   border-radius: 2px;
   padding: 0 1px;
   margin: 0 -1px;
-  transition: background-color 80ms ease;
-}
-.xs-token:hover {
-  background: rgba(196, 69, 26, 0.10);
 }
 .xs-token-hl {
   background: rgba(232, 201, 86, 0.22);
 }
-.xs-token-hl:hover {
-  background: rgba(232, 201, 86, 0.40);
+.xs-prose ::selection {
+  background: rgba(196, 69, 26, 0.22);
 }
 .xs-gap {
   white-space: pre-wrap;
