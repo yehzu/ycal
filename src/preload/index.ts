@@ -2,12 +2,16 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '@shared/types';
 import type {
   AccountSummary,
+  AttendeeSuggestion,
   CalendarSummary,
   CalendarEvent,
   CalendarFetchFailure,
   CloudStorage,
   CloudStorageInfo,
   DriveSyncStatus,
+  EventGlossary,
+  GlossaryEntry,
+  GlossaryFile,
   GoogleColors,
   ListEventsRequest,
   MeetingArchiveSummary,
@@ -222,6 +226,37 @@ const api = {
   },
   recorderDiagnoseDetection: (): Promise<Result<{ dump: string }>> =>
     ipcRenderer.invoke(IPC.RecorderDiagnoseDetection),
+
+  // Glossary — transcription correction feedback.
+  glossaryGet: (): Promise<GlossaryFile> => ipcRenderer.invoke(IPC.GlossaryGet),
+  glossarySet: (entries: GlossaryEntry[]): Promise<Result<{ file: GlossaryFile }>> =>
+    ipcRenderer.invoke(IPC.GlossarySet, entries),
+  glossaryImport: (
+    payload: { body: string; format?: 'json' | 'markdown' | 'csv' | 'auto' },
+  ): Promise<Result<{
+    parsed: number; added: number; updated: number; file: GlossaryFile;
+  }>> =>
+    ipcRenderer.invoke(IPC.GlossaryImport, payload),
+  glossarySuggestAttendees: (lookBackDays?: number): Promise<Result<{
+    suggestions: AttendeeSuggestion[];
+  }>> =>
+    ipcRenderer.invoke(IPC.GlossarySuggestAttendees, lookBackDays ?? 60),
+  eventGlossaryGet: (eventId: string): Promise<Result<{ glossary: EventGlossary }>> =>
+    ipcRenderer.invoke(IPC.EventGlossaryGet, eventId),
+  eventGlossarySet: (
+    payload: { eventId: string; accountId?: string | null; entries: GlossaryEntry[] },
+  ): Promise<Result<{ glossary: EventGlossary }>> =>
+    ipcRenderer.invoke(IPC.EventGlossarySet, payload),
+  transcriptRead: (
+    payload: { path: string; eventId?: string; accountId?: string | null },
+  ): Promise<Result<{ body: string; source: 'local' | 'drive' }>> =>
+    ipcRenderer.invoke(IPC.TranscriptRead, payload),
+  onGlossaryChanged: (handler: (next: GlossaryFile) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: GlossaryFile): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.GlossaryChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.GlossaryChanged, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('ycal', api);

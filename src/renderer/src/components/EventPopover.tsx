@@ -9,6 +9,13 @@ import { avatarBg, initials } from './MacTitleBar';
 import { DescriptionHTML } from './DescriptionHTML';
 import { MergeBadge } from './MergeBadge';
 import { PopoverAttendees } from './PopoverAttendees';
+import { TranscriptSheet } from './TranscriptSheet';
+
+interface TranscriptRequest {
+  transcriptFile: string | null;
+  audioFile: string | null;
+  accountId: string | null;
+}
 
 interface Props {
   event: CalendarEvent;
@@ -39,6 +46,11 @@ export function EventPopover({
   const [recording, setRecording] = useState<RecordingStatus | null>(null);
   const [pastRec, setPastRec] = useState<RecentRecording | null>(null);
   const [driveArchive, setDriveArchive] = useState<MeetingArchiveSummary | null>(null);
+  // Inline transcript reader (slide-in sheet). Opened from the
+  // RecordingRow's "Transcript" button. Replaces the previous behavior
+  // of shelling out to TextEdit; the sheet exposes selection-based
+  // correction that writes into the glossary.
+  const [transcript, setTranscript] = useState<TranscriptRequest | null>(null);
   const [, setNow] = useState<number>(Date.now());
   useEffect(() => {
     let cancelled = false;
@@ -213,6 +225,7 @@ export function EventPopover({
           pastRec={pastRec}
           driveArchive={driveArchive}
           autoRecord={autoRecord}
+          onOpenTranscript={setTranscript}
         />
         {event.attendees && event.attendees.length > 0 && (
           <PopoverAttendees attendees={event.attendees} />
@@ -269,6 +282,15 @@ export function EventPopover({
           </button>
         </div>
       </div>
+      {transcript && (
+        <TranscriptSheet
+          event={event}
+          transcriptFile={transcript.transcriptFile}
+          audioFile={transcript.audioFile}
+          accountId={transcript.accountId}
+          onClose={() => setTranscript(null)}
+        />
+      )}
     </>
   );
 }
@@ -306,13 +328,14 @@ async function openFromDrive(
 // via Drive), we still surface Notes/Transcript/Audio buttons backed
 // by on-demand fetches.
 function RecordingRow({
-  event, recording, pastRec, driveArchive, autoRecord,
+  event, recording, pastRec, driveArchive, autoRecord, onOpenTranscript,
 }: {
   event: CalendarEvent;
   recording: RecordingStatus | null;
   pastRec: RecentRecording | null;
   driveArchive: MeetingArchiveSummary | null;
   autoRecord: boolean;
+  onOpenTranscript: (req: TranscriptRequest) => void;
 }) {
   if (recording) {
     if (recording.state === 'recording') {
@@ -375,8 +398,13 @@ function RecordingRow({
             {recording.transcriptFile && (
               <button
                 className="pp-btn"
-                onClick={() => { void window.ycal.recorderOpenFile(recording.transcriptFile!); }}
+                onClick={() => onOpenTranscript({
+                  transcriptFile: recording.transcriptFile ?? null,
+                  audioFile: recording.audioFile ?? null,
+                  accountId: recording.accountId ?? null,
+                })}
                 style={{ padding: '2px 10px', fontSize: 12 }}
+                title="Read transcript + apply corrections to the glossary"
               >
                 Transcript
               </button>
@@ -478,8 +506,13 @@ function RecordingRow({
           {pastRec.transcriptFile && (
             <button
               className="pp-btn"
-              onClick={() => { void window.ycal.recorderOpenFile(pastRec.transcriptFile!); }}
+              onClick={() => onOpenTranscript({
+                transcriptFile: pastRec.transcriptFile,
+                audioFile: pastRec.audioFile,
+                accountId: driveAcct,
+              })}
               style={{ padding: '2px 10px', fontSize: 12 }}
+              title="Read transcript + apply corrections to the glossary"
             >
               Transcript
             </button>
@@ -487,9 +520,13 @@ function RecordingRow({
           {!pastRec.transcriptFile && driveArchive?.hasTranscript && (
             <button
               className="pp-btn"
-              onClick={() => { void openFromDrive(event.id, driveAcct, 'transcript'); }}
+              onClick={() => onOpenTranscript({
+                transcriptFile: null,
+                audioFile: pastRec.audioFile,
+                accountId: driveAcct,
+              })}
               style={{ padding: '2px 10px', fontSize: 12 }}
-              title="Fetch transcript from Drive cache"
+              title="Read transcript (fetched from Drive)"
             >
               Transcript
             </button>
@@ -544,8 +581,13 @@ function RecordingRow({
           {driveArchive.hasTranscript && (
             <button
               className="pp-btn"
-              onClick={() => { void openFromDrive(event.id, acct, 'transcript'); }}
+              onClick={() => onOpenTranscript({
+                transcriptFile: null,
+                audioFile: null,
+                accountId: acct,
+              })}
               style={{ padding: '2px 10px', fontSize: 12 }}
+              title="Read transcript (fetched from Drive)"
             >
               Transcript
             </button>

@@ -41,6 +41,7 @@ const KIND_SUFFIX: Record<ArtifactKind, string> = {
 };
 
 const META_SUFFIX = '.meta.json';
+const GLOSSARY_SUFFIX = '.glossary.json';
 const PREFIX = 'meet__';
 
 export interface ArchiveMeta {
@@ -79,6 +80,10 @@ function nameFor(eventId: string, kind: ArtifactKind): string {
 
 function metaNameFor(eventId: string): string {
   return `${PREFIX}${safeEventId(eventId)}${META_SUFFIX}`;
+}
+
+function glossaryNameFor(eventId: string): string {
+  return `${PREFIX}${safeEventId(eventId)}${GLOSSARY_SUFFIX}`;
 }
 
 // Reverse of nameFor — pull the eventIdSafe back out of a Drive filename.
@@ -353,6 +358,38 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
     return tb - ta;
   });
   return out;
+}
+
+// Per-event glossary sidecar push/pull. Lives on Drive next to
+// audio/transcript/summary so a re-process on a second Mac sees the
+// same name corrections the user made on the first one. Best-effort:
+// failure is logged but never rethrown — the glossary still works
+// locally even when Drive sync is unhappy.
+
+export async function uploadEventGlossarySidecar(
+  eventId: string, accountId: string, body: string,
+): Promise<void> {
+  try {
+    const api = await apiFor(accountId);
+    await api.upsert(glossaryNameFor(eventId), body);
+  } catch (e) {
+    console.error('[yCal meetingArchive] glossary sidecar upload failed', e);
+  }
+}
+
+export async function fetchEventGlossarySidecar(
+  eventId: string, accountId: string,
+): Promise<string | null> {
+  try {
+    const api = await apiFor(accountId);
+    const remote = await api.file(glossaryNameFor(eventId));
+    if (!remote?.id) return null;
+    const buf = await api.read(remote.id);
+    return buf.toString('utf-8');
+  } catch (e) {
+    console.error('[yCal meetingArchive] glossary sidecar fetch failed', e);
+    return null;
+  }
 }
 
 // Resolve which account holds the archive for a given event id. Walks

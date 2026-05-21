@@ -43,6 +43,10 @@ import { getActiveModelPath } from './recorderSetup';
 import { uploadMeetingArtifacts } from './meetingArchive';
 import { listAccounts } from './tokenStore';
 import {
+  applyGlossaryToSummaryPrompt, buildRuntimeFiles, getEffectiveEntries,
+} from './glossary';
+import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
+import {
   type MeetSignal, diagnoseDetection, getMeetSignal, onMeetChange,
   startMeetDetector, stopMeetDetector,
 } from './meetDetector';
@@ -847,19 +851,32 @@ async function postProcess(
   accountId: string | undefined,
 ): Promise<void> {
   notify('yCal · transcribing', title);
+  // Glossary runtime files (whisper prompt + transcript substitutions)
+  // and the dynamic claude-prompt file all need cleanup AFTER the
+  // script returns, regardless of success or failure. Stash here so
+  // the finally block can hit them all.
+  let glossaryRuntime: ReturnType<typeof buildRuntimeFiles> | null = null;
+  let promptFile: string | undefined;
   try {
-    // If the user has a custom summary prompt in Settings → Recording,
-    // materialise it on disk so post-meet.sh can read it via
-    // YCAL_SUMMARY_PROMPT. Empty / unset → script falls back to its
-    // built-in heredoc (which mirrors DEFAULT_SUMMARY_PROMPT). One
-    // file per call: live next to the audio so the user can inspect
-    // what was sent to Claude if a summary looks wrong.
-    let promptFile: string | undefined;
-    const custom = (getUiSettings().recordingSummaryPrompt ?? '').trim();
-    if (custom) {
+    // Resolve the effective glossary (global ∪ per-event) for this
+    // recording and materialise the three sidecar files post-meet.sh
+    // can consume. Empty glossary → buildRuntimeFiles returns nulls
+    // and the script's env-gated paths short-circuit.
+    const glossaryEntries = getEffectiveEntries(eventId);
+    glossaryRuntime = buildRuntimeFiles(glossaryEntries);
+
+    // Build the Claude summary prompt: user's custom template (or the
+    // default), with a glossary block appended when entries exist.
+    // Always write a prompt file when glossary entries exist, so the
+    // post-meet.sh script picks up the augmented version — otherwise
+    // its built-in heredoc would not include the glossary block.
+    const customRaw = (getUiSettings().recordingSummaryPrompt ?? '').trim();
+    const baseTemplate = customRaw || DEFAULT_SUMMARY_PROMPT;
+    const finalPrompt = applyGlossaryToSummaryPrompt(baseTemplate, glossaryEntries);
+    if (customRaw || glossaryEntries.length > 0) {
       promptFile = `${audioFile.replace(/\.m4a$/, '')}.summary.prompt.txt`;
       try {
-        fs.writeFileSync(promptFile, custom);
+        fs.writeFileSync(promptFile, finalPrompt);
       } catch (e) {
         console.error('[yCal recorder] failed to write prompt file', e);
         promptFile = undefined;
@@ -875,6 +892,12 @@ async function postProcess(
     const envExtras: NodeJS.ProcessEnv = {};
     if (promptFile) envExtras.YCAL_SUMMARY_PROMPT = promptFile;
     if (fs.existsSync(modelPath)) envExtras.YCAL_WHISPER_MODEL = modelPath;
+    if (glossaryRuntime.whisperPromptFile) {
+      envExtras.YCAL_WHISPER_PROMPT = glossaryRuntime.whisperPromptFile;
+    }
+    if (glossaryRuntime.filterFile) {
+      envExtras.YCAL_TRANSCRIPT_FILTER = glossaryRuntime.filterFile;
+    }
     const stdout = await execScript([POST_SH, audioFile, title], {
       timeoutMs: 30 * 60_000,
       envExtras: Object.keys(envExtras).length > 0 ? envExtras : undefined,
@@ -924,6 +947,13 @@ async function postProcess(
       pushStatus();
     }
     notify('yCal · transcription failed', message.slice(0, 140));
+  } finally {
+    if (glossaryRuntime) {
+      try { glossaryRuntime.cleanup(); } catch { /* best-effort */ }
+    }
+    // Leave the summary.prompt.txt on disk so the user can inspect what
+    // was sent to Claude when a summary looks wrong. Matches prior
+    // behavior of the custom-prompt path.
   }
 }
 

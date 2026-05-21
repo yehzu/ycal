@@ -1,10 +1,12 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  AccountSummary, CalendarSummary, CloudStorageInfo, DriveSyncStatus,
+  AccountSummary, AttendeeSuggestion, CalendarSummary, CloudStorageInfo,
+  DriveSyncStatus, GlossaryCategory, GlossaryEntry,
   LoadBands, LoadWindowSettings,
   MergeCriteria, RecentRecording, RecorderSetupProgress, RecorderSetupStatus,
   RecordingStatus, RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
 } from '@shared/types';
+import { useGlossary } from '../glossary';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
 import { WHISPER_MODELS } from '@shared/whisperModels';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
@@ -2103,6 +2105,15 @@ function PrefsRecording({
         </span>
       </div>
 
+      <h3 className="pref-h" style={{ marginTop: 22 }}>詞庫 / Glossary</h3>
+      <p className="pref-row-hint" style={{ maxWidth: '64ch' }}>
+        Correct names + terms whisper mishears. Each entry feeds the
+        transcription pipeline three ways: the canonical hints whisper's
+        decoder, the aliases get find/replaced after, and the canonical
+        is what Claude uses in the summary.
+      </p>
+      <GlossaryEditor />
+
       <h3 className="pref-h" style={{ marginTop: 22 }}>Recent recordings</h3>
       <RecentRecordings />
 
@@ -2114,6 +2125,393 @@ function PrefsRecording({
         Privacy &amp; Security</em>, then fully Cmd-Q + relaunch yCal — macOS
         only surfaces newly-granted permission to fresh processes.
       </p>
+    </div>
+  );
+}
+
+// ── Glossary editor ───────────────────────────────────────────────────
+// Lives in Settings → Recording. Manages the global glossary (people,
+// companies, products, terms, other). Two side panels: attendee
+// suggestions (auto-seed candidates) and import/export.
+
+const GLOSSARY_CATEGORIES: Array<{ id: GlossaryCategory; label: string }> = [
+  { id: 'person', label: '人名' },
+  { id: 'company', label: '公司' },
+  { id: 'product', label: '產品' },
+  { id: 'term', label: '術語' },
+  { id: 'other', label: '其他' },
+];
+
+function GlossaryEditor() {
+  const g = useGlossary();
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [adding, setAdding] = useState<GlossaryCategory | null>(null);
+
+  const grouped = useMemo(() => {
+    const map = new Map<GlossaryCategory, GlossaryEntry[]>();
+    for (const cat of GLOSSARY_CATEGORIES) map.set(cat.id, []);
+    for (const e of g.file.entries) {
+      const cat = (map.get(e.category) ? e.category : 'other') as GlossaryCategory;
+      map.get(cat)!.push(e);
+    }
+    return map;
+  }, [g.file.entries]);
+
+  if (g.loading) {
+    return <p className="pref-row-hint">Loading glossary…</p>;
+  }
+
+  return (
+    <div className="gx-wrap">
+      {GLOSSARY_CATEGORIES.map((cat) => {
+        const items = grouped.get(cat.id) ?? [];
+        return (
+          <div key={cat.id} className="gx-cat">
+            <div className="gx-cat-head">
+              <span className="gx-cat-label">
+                {cat.label} ({items.length})
+              </span>
+              <button
+                type="button"
+                className="gx-add"
+                onClick={() => { setAdding(cat.id); setEditingId(null); }}
+                title={`Add ${cat.label}`}
+              >
+                + Add
+              </button>
+            </div>
+            {items.length === 0 && adding !== cat.id && (
+              <p className="pref-row-hint" style={{ paddingLeft: 8 }}>
+                — empty —
+              </p>
+            )}
+            {items.map((entry) => (
+              <GlossaryRow
+                key={entry.id}
+                entry={entry}
+                editing={editingId === entry.id}
+                onStartEdit={() => { setEditingId(entry.id); setAdding(null); }}
+                onCancelEdit={() => setEditingId(null)}
+                onSave={async (patch) => {
+                  await g.updateEntry(entry.id, patch);
+                  setEditingId(null);
+                }}
+                onDelete={async () => {
+                  await g.deleteEntry(entry.id);
+                  if (editingId === entry.id) setEditingId(null);
+                }}
+              />
+            ))}
+            {adding === cat.id && (
+              <GlossaryRowEdit
+                initial={{ canonical: '', aliases: [], category: cat.id }}
+                onCancel={() => setAdding(null)}
+                onSave={async (data) => {
+                  await g.addEntry({
+                    canonical: data.canonical,
+                    aliases: data.aliases,
+                    category: cat.id,
+                    source: 'manual',
+                  });
+                  setAdding(null);
+                }}
+              />
+            )}
+          </div>
+        );
+      })}
+
+      <div className="gx-actions">
+        <button
+          type="button"
+          className="pref-button gx-btn"
+          onClick={() => setShowSuggestions((v) => !v)}
+        >
+          {showSuggestions ? 'Hide suggestions' : '從近期 attendees 找候選人 →'}
+        </button>
+        <button
+          type="button"
+          className="pref-button gx-btn"
+          onClick={() => setShowImport((v) => !v)}
+        >
+          {showImport ? 'Hide import' : '匯入詞庫…'}
+        </button>
+        <button
+          type="button"
+          className="pref-button gx-btn"
+          onClick={() => {
+            const body = JSON.stringify(g.file, null, 2);
+            void navigator.clipboard.writeText(body);
+          }}
+          title="Copies the full glossary.json to your clipboard"
+        >
+          匯出 (clipboard)
+        </button>
+      </div>
+
+      {showSuggestions && <SuggestionsDrawer g={g} onClose={() => setShowSuggestions(false)} />}
+      {showImport && <ImportPanel g={g} onClose={() => setShowImport(false)} />}
+    </div>
+  );
+}
+
+function GlossaryRow({
+  entry, editing, onStartEdit, onCancelEdit, onSave, onDelete,
+}: {
+  entry: GlossaryEntry;
+  editing: boolean;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (patch: { canonical: string; aliases: string[] }) => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  if (editing) {
+    return (
+      <GlossaryRowEdit
+        initial={{ canonical: entry.canonical, aliases: entry.aliases, category: entry.category }}
+        onCancel={onCancelEdit}
+        onSave={onSave}
+      />
+    );
+  }
+  return (
+    <div className="gx-row">
+      <div className="gx-canonical">{entry.canonical}</div>
+      <div className="gx-aliases">
+        {entry.aliases.length === 0
+          ? <span className="pref-row-hint" style={{ marginTop: 0 }}>—</span>
+          : entry.aliases.join(' · ')}
+      </div>
+      <div className="gx-row-actions">
+        <button type="button" className="gx-icon" onClick={onStartEdit} title="Edit">✎</button>
+        <button type="button" className="gx-icon" onClick={() => void onDelete()} title="Delete">⊖</button>
+      </div>
+    </div>
+  );
+}
+
+function GlossaryRowEdit({
+  initial, onCancel, onSave,
+}: {
+  initial: { canonical: string; aliases: string[]; category: GlossaryCategory };
+  onCancel: () => void;
+  onSave: (data: { canonical: string; aliases: string[] }) => Promise<void>;
+}) {
+  const [canonical, setCanonical] = useState(initial.canonical);
+  const [aliasText, setAliasText] = useState(initial.aliases.join(', '));
+  const [saving, setSaving] = useState(false);
+
+  async function commit(): Promise<void> {
+    const c = canonical.trim();
+    if (!c) { onCancel(); return; }
+    setSaving(true);
+    try {
+      const aliases = aliasText
+        .split(/[,，、]/)
+        .map((a) => a.trim())
+        .filter((a) => a.length > 0);
+      await onSave({ canonical: c, aliases });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="gx-row gx-row-edit">
+      <input
+        className="gx-input"
+        type="text"
+        placeholder="Canonical (正確寫法)"
+        autoFocus
+        value={canonical}
+        onChange={(e) => setCanonical(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void commit();
+          if (e.key === 'Escape') onCancel();
+        }}
+      />
+      <input
+        className="gx-input"
+        type="text"
+        placeholder="Aliases (comma-separated)"
+        value={aliasText}
+        onChange={(e) => setAliasText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void commit();
+          if (e.key === 'Escape') onCancel();
+        }}
+      />
+      <div className="gx-row-actions">
+        <button type="button" className="gx-icon" onClick={onCancel}>×</button>
+        <button
+          type="button"
+          className="gx-icon gx-icon-strong"
+          onClick={() => void commit()}
+          disabled={saving}
+        >
+          ✓
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SuggestionsDrawer({
+  g, onClose,
+}: {
+  g: ReturnType<typeof useGlossary>;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [suggestions, setSuggestions] = useState<AttendeeSuggestion[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const list = await g.suggestAttendees(60);
+      if (cancelled) return;
+      // Filter out attendees already in the glossary by name.
+      const existing = new Set(g.file.entries.map((e) => e.canonical.toLowerCase()));
+      const fresh = list.filter((s) => !existing.has(s.name.toLowerCase()));
+      setSuggestions(fresh);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggle = (email: string): void => {
+    const next = new Set(selected);
+    if (next.has(email)) next.delete(email);
+    else next.add(email);
+    setSelected(next);
+  };
+
+  const addSelected = async (): Promise<void> => {
+    setAdding(true);
+    try {
+      for (const s of suggestions) {
+        if (!selected.has(s.email)) continue;
+        await g.addEntry({
+          canonical: s.name,
+          aliases: [],
+          category: 'person',
+          source: 'attendee-seed',
+        });
+      }
+      onClose();
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <div className="gx-drawer">
+      <div className="gx-drawer-head">
+        <strong>近期 60 天的 attendees</strong>
+        <button type="button" className="gx-icon" onClick={onClose}>×</button>
+      </div>
+      {loading && <p className="pref-row-hint">Loading attendees…</p>}
+      {!loading && suggestions.length === 0 && (
+        <p className="pref-row-hint">沒有新候選人 — 詞庫已涵蓋最近的 attendees。</p>
+      )}
+      {!loading && suggestions.length > 0 && (
+        <>
+          <div className="gx-suggest-list">
+            {suggestions.slice(0, 50).map((s) => (
+              <label key={s.email} className="gx-suggest-row">
+                <input
+                  type="checkbox"
+                  checked={selected.has(s.email)}
+                  onChange={() => toggle(s.email)}
+                />
+                <span className="gx-suggest-name">{s.name}</span>
+                <span className="gx-suggest-meta">
+                  {s.count} × · {s.email}
+                </span>
+              </label>
+            ))}
+          </div>
+          <div className="gx-drawer-actions">
+            <button
+              type="button"
+              className="pref-button gx-btn gx-btn-strong"
+              disabled={selected.size === 0 || adding}
+              onClick={() => void addSelected()}
+            >
+              {adding ? '加入中…' : `加入 ${selected.size} 個到詞庫`}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ImportPanel({
+  g, onClose,
+}: {
+  g: ReturnType<typeof useGlossary>;
+  onClose: () => void;
+}) {
+  const [body, setBody] = useState('');
+  const [result, setResult] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function doImport(): Promise<void> {
+    if (!body.trim()) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await g.importGlossary(body, 'auto');
+      if ('error' in r) {
+        setResult(`✗ ${r.error}`);
+      } else {
+        setResult(`✓ Parsed ${r.parsed}, added ${r.added}, updated ${r.updated}.`);
+        setBody('');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="gx-drawer">
+      <div className="gx-drawer-head">
+        <strong>匯入詞庫</strong>
+        <button type="button" className="gx-icon" onClick={onClose}>×</button>
+      </div>
+      <p className="pref-row-hint" style={{ maxWidth: '60ch' }}>
+        Paste JSON, markdown, or CSV. Format is auto-detected. Existing
+        canonical entries gain new aliases (no overwrite); brand-new
+        canonicals are added.
+      </p>
+      <textarea
+        className="gx-textarea"
+        rows={10}
+        placeholder={`# 人名\n- Shawn Huang :: Sean, 順\n- Tzu-Hui Yeh :: 慈惠\n\n# 公司\n- GoFreight :: Go Freight\n`}
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+      />
+      {result && (
+        <p className="pref-row-hint" style={{ color: result.startsWith('✓') ? 'var(--accent-ok, #2a9461)' : '#c4451a' }}>
+          {result}
+        </p>
+      )}
+      <div className="gx-drawer-actions">
+        <button
+          type="button"
+          className="pref-button gx-btn gx-btn-strong"
+          disabled={busy || !body.trim()}
+          onClick={() => void doImport()}
+        >
+          {busy ? 'Importing…' : 'Import'}
+        </button>
+      </div>
     </div>
   );
 }

@@ -281,6 +281,7 @@ export const CLOUD_FILES = [
   'tasks-schedule.json',
   'settings.json',
   'tasks.md',
+  'glossary.json',
 ];
 
 // ── Cross-device file watcher ────────────────────────────────────────

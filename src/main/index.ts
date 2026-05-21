@@ -55,9 +55,17 @@ import {
 } from './recorderSetup';
 import {
   fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
-  listMeetingArchive,
+  listMeetingArchive, uploadEventGlossarySidecar,
 } from './meetingArchive';
-import type { MeetingArchiveSummary, MeetingArtifactKind } from '@shared/types';
+import {
+  getEventGlossary, getGlossary, mergeEntries, setEventGlossary, setGlossary,
+  suggestAttendeesFromCalendar,
+} from './glossary';
+import { parseGlossary, type ImportFormat } from './glossaryImport';
+import type {
+  EventGlossary, GlossaryEntry, GlossaryFile, MeetingArchiveSummary,
+  MeetingArtifactKind,
+} from '@shared/types';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -634,6 +642,105 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // ── Glossary (transcription correction) ──────────────────────────
+  ipcMain.handle(IPC.GlossaryGet, () => getGlossary());
+  ipcMain.handle(IPC.GlossarySet, (_e, entries: GlossaryEntry[]) => {
+    try {
+      const next = setGlossary(entries);
+      return { ok: true as const, file: next };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.GlossaryImport, (_e, payload: { body: string; format?: ImportFormat }) => {
+    try {
+      const parsed = parseGlossary(payload.body, payload.format ?? 'auto');
+      const result = mergeEntries(parsed);
+      return {
+        ok: true as const,
+        parsed: parsed.length,
+        added: result.added,
+        updated: result.updated,
+        file: result.merged,
+      };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.GlossarySuggestAttendees, async (_e, lookBackDays?: number) => {
+    try {
+      const suggestions = await suggestAttendeesFromCalendar(
+        typeof lookBackDays === 'number' ? lookBackDays : 60,
+      );
+      return { ok: true as const, suggestions };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.EventGlossaryGet, (_e, eventId: string) => {
+    try {
+      const data = getEventGlossary(eventId);
+      return { ok: true as const, glossary: data };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.EventGlossarySet, async (
+    _e, payload: { eventId: string; accountId?: string | null; entries: GlossaryEntry[] },
+  ) => {
+    try {
+      const data = setEventGlossary(payload.eventId, payload.entries);
+      // Best-effort Drive sidecar push so a re-process on another Mac
+      // picks up the same correction. Resolve accountId by walking
+      // archives when the caller didn't supply one.
+      let accountId = payload.accountId ?? null;
+      if (!accountId) {
+        try { accountId = await findAccountForArchive(payload.eventId); } catch { /* */ }
+      }
+      if (accountId) {
+        void uploadEventGlossarySidecar(
+          payload.eventId, accountId, JSON.stringify(data, null, 2),
+        );
+      }
+      return { ok: true as const, glossary: data };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TranscriptRead, async (
+    _e, payload: { path: string; eventId?: string; accountId?: string | null },
+  ) => {
+    try {
+      // Prefer the local file when the path is under our recordings dir;
+      // otherwise fetch the transcript from Drive (via the same
+      // safeRecordingPath gate the open-file IPC uses). An empty path
+      // skips the local check entirely — path.resolve('') would return
+      // cwd which is meaningless here.
+      if (payload.path && payload.path.trim()) {
+        const safe = safeRecordingPath(payload.path);
+        if (safe) {
+          const fs = await import('node:fs');
+          const body = await fs.promises.readFile(safe, 'utf-8');
+          return { ok: true as const, body, source: 'local' as const };
+        }
+      }
+      if (payload.eventId) {
+        let accountId = payload.accountId ?? null;
+        if (!accountId) accountId = await findAccountForArchive(payload.eventId);
+        if (!accountId) {
+          return { ok: false as const, error: 'no Drive archive found for this event' };
+        }
+        const local = await fetchMeetingArtifact(payload.eventId, accountId, 'transcript');
+        const fs = await import('node:fs');
+        const body = await fs.promises.readFile(local, 'utf-8');
+        return { ok: true as const, body, source: 'drive' as const };
+      }
+      return { ok: false as const, error: 'transcript path is outside the recordings dir' };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
 }
 
 if (isCliInvocation(process.argv)) {
@@ -777,6 +884,10 @@ function startCloudSync(win: BrowserWindow): void {
           win.webContents.send(IPC.TasksProviderDataChanged, {
             providerId: 'markdown',
           });
+          break;
+        case 'glossary.json':
+          if (!isParseableJsonObject(body)) return;
+          win.webContents.send(IPC.GlossaryChanged, getGlossary());
           break;
       }
     } catch (e) {

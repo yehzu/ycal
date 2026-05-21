@@ -721,6 +721,22 @@ export const IPC = {
   // from any Mac signed in to that same Google account.
   MeetingArchiveFetch: 'ycal:meetingArchiveFetch',
   MeetingArchiveList: 'ycal:meetingArchiveList',
+  // Glossary — user-curated 名詞表 that feeds into the three layers of
+  // the transcription pipeline (Whisper --prompt, post-substitution,
+  // Claude summary). Global glossary lives in cloudStore (cross-device);
+  // per-event override travels with the meeting archive in Drive appdata.
+  GlossaryGet: 'ycal:glossaryGet',
+  GlossarySet: 'ycal:glossarySet',
+  GlossaryImport: 'ycal:glossaryImport',
+  GlossarySuggestAttendees: 'ycal:glossarySuggestAttendees',
+  // Per-event glossary read/write (sidecar next to a recording).
+  EventGlossaryGet: 'ycal:eventGlossaryGet',
+  EventGlossarySet: 'ycal:eventGlossarySet',
+  GlossaryChanged: 'ycal:glossaryChanged',   // main → renderer push
+  // Read transcript file contents into the renderer (the in-app
+  // TranscriptSheet displays it; opening in TextEdit stays available
+  // via the existing RecorderOpenFile path).
+  TranscriptRead: 'ycal:transcriptRead',
 } as const;
 
 // Lightweight wire shape for the renderer / CLI to know which artifacts
@@ -740,3 +756,59 @@ export interface MeetingArchiveSummary {
 }
 
 export type MeetingArtifactKind = 'audio' | 'transcript' | 'summary';
+
+// ── Glossary ─────────────────────────────────────────────────────────
+// User-curated correction dictionary. Three layers consume this when
+// the recorder runs post-meet.sh:
+//   1. Whisper `--prompt` — the canonical entries (capped to ~224
+//      tokens) hint the decoder toward the user's regular vocabulary.
+//      Names + jargon improve mid-stream when the model has been told
+//      what to expect.
+//   2. Post-whisper substitution — for each entry, `aliases[i] → canonical`
+//      runs as a deterministic find/replace on the raw transcript text.
+//      Catches the explicit "Sean 應該是 Shawn" pattern that whisper still
+//      missed even with the prompt.
+//   3. Claude summary prompt — the glossary block is appended to the
+//      Claude system prompt so the note doesn't propagate raw errors
+//      and uses canonical names in the markdown output.
+
+export type GlossaryCategory = 'person' | 'company' | 'product' | 'term' | 'other';
+
+export interface GlossaryEntry {
+  id: string;                       // stable uuid; survives renames
+  canonical: string;                // what it SHOULD say
+  aliases: string[];                // what Whisper hears instead
+  category: GlossaryCategory;
+  caseSensitive?: boolean;          // default false
+  addedAt: number;                  // epoch ms
+  source: 'manual' | 'inline' | 'import' | 'attendee-seed';
+}
+
+export interface GlossaryFile {
+  version: 1;
+  entries: GlossaryEntry[];
+  updatedAt: number;
+}
+
+// Per-event glossary override — additive to the global glossary for
+// names that only matter for one meeting (客戶名, one-off terms). Lives
+// next to the audio/transcript/summary in Drive appdata as the sidecar
+// `meet__<eventIdSafe>.glossary.json`, AND mirrored locally next to the
+// `.m4a` so re-process picks it up offline.
+export interface EventGlossary {
+  eventId: string;
+  entries: GlossaryEntry[];
+}
+
+// Suggested attendee — derived from the last N days of calendar
+// attendees. The Settings UI offers these as one-click adds. Once
+// promoted the entry's `source` becomes 'attendee-seed'.
+export interface AttendeeSuggestion {
+  // displayName or email-local-part — what the UI shows.
+  name: string;
+  email: string;
+  // How many meetings in the look-back window this attendee appeared on.
+  count: number;
+  // Last meeting the user saw them on, for sort + display.
+  lastSeen: string;  // ISO date
+}
