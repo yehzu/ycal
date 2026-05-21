@@ -2394,14 +2394,24 @@ function SuggestionsDrawer({
   const addSelected = async (): Promise<void> => {
     setAdding(true);
     try {
-      for (const s of suggestions) {
-        if (!selected.has(s.email)) continue;
-        await g.addEntry({
+      // Batch save in a SINGLE writeJson — sequential addEntry() calls
+      // each read the same stale `file` closure inside useGlossary,
+      // so each write would clobber the previous (only the last would
+      // survive on disk). Build the merged list once, then saveAll.
+      const newEntries: GlossaryEntry[] = suggestions
+        .filter((s) => selected.has(s.email))
+        .map((s) => ({
+          id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
           canonical: s.name,
           aliases: [],
           category: 'person',
+          addedAt: Date.now(),
           source: 'attendee-seed',
-        });
+        }));
+      if (newEntries.length > 0) {
+        await g.saveAll([...g.file.entries, ...newEntries]);
       }
       onClose();
     } finally {
