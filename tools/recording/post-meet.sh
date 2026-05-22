@@ -47,33 +47,134 @@ command -v "$CLAUDE_BIN" >/dev/null 2>&1 \
 [[ -f "$MODEL" ]] \
   || { echo "[post-meet] whisper model not found at $MODEL" >&2; exit 2; }
 
-# Whisper needs WAV (16kHz mono is the canonical input). m4a → wav via ffmpeg
-# temp file. -ar 16000 -ac 1 = whisper's expected shape.
-work="$(mktemp -t ycal-whisper).wav"
-trap 'rm -f "$work"' EXIT
-echo "[post-meet] decoding to wav…" >&2
-ffmpeg -hide_banner -loglevel error -y -i "$audio" -ar 16000 -ac 1 "$work"
+# Initialize every temp-file slot up front so the EXIT trap can safely
+# `rm -f` all of them without worrying about which branch ran.
+work=""
+mic_wav=""
+sys_wav=""
+mic_json_base=""
+sys_json_base=""
+context_block_file=""
+trap '[[ -n "$work" ]]               && rm -f "$work"; \
+      [[ -n "$mic_wav" ]]            && rm -f "$mic_wav"; \
+      [[ -n "$sys_wav" ]]            && rm -f "$sys_wav"; \
+      [[ -n "$mic_json_base" ]]      && rm -f "${mic_json_base}.json"; \
+      [[ -n "$sys_json_base" ]]      && rm -f "${sys_json_base}.json"; \
+      [[ -n "$context_block_file" ]] && rm -f "$context_block_file"; \
+      true' EXIT
 
-echo "[post-meet] transcribing → $transcript" >&2
-# -of <base> means whisper-cli writes <base>.txt (because -otxt). We feed
-# it ${base}.transcript so the output lands at ${base}.transcript.txt.
-# -l auto lets it pick the language per segment (handles 中英混雜).
-#
-# When yCal has a glossary, $YCAL_WHISPER_PROMPT points at a small text
-# file whose contents we feed to whisper-cli's --prompt as an initial-
-# decoder hint. Whisper.cpp has a ~224-token soft cap; the dispatcher
-# trims to that before writing the file. We DO NOT pass --prompt when
-# the variable is unset or the file is empty/missing — older whisper-cli
-# builds choke on a literal empty string.
-whisper_args=(-m "$MODEL" -l auto -t 8 -otxt -of "${base}.transcript")
-if [[ -n "${YCAL_WHISPER_PROMPT:-}" && -s "${YCAL_WHISPER_PROMPT:-/dev/null}" ]]; then
-  whisper_prompt_body="$(cat "$YCAL_WHISPER_PROMPT")"
-  if [[ -n "$whisper_prompt_body" ]]; then
-    whisper_args+=(--prompt "$whisper_prompt_body")
+# Detect channel layout. Recordings made by record-meet.sh (post-stereo
+# update) are 2-channel (L=mic, R=system) so we can run whisper on each
+# channel separately and label the merged transcript with [Me]/[Other].
+# Pre-stereo files (mono) still work via the legacy single-pass path.
+channels="$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=nw=1:nk=1 "$audio" 2>/dev/null || echo 1)"
+[[ "$channels" =~ ^[0-9]+$ ]] || channels=1
+
+# Shared whisper invocation builder — pulls in the glossary prompt when
+# one is configured. Used by both the mono and stereo branches.
+build_whisper_args() {
+  local out_base="$1"
+  local out_flag="$2"  # -otxt | -oj
+  whisper_args=(-m "$MODEL" -l auto -t 8 "$out_flag" -of "$out_base")
+  if [[ -n "${YCAL_WHISPER_PROMPT:-}" && -s "${YCAL_WHISPER_PROMPT:-/dev/null}" ]]; then
+    whisper_prompt_body="$(cat "$YCAL_WHISPER_PROMPT")"
+    if [[ -n "$whisper_prompt_body" ]]; then
+      whisper_args+=(--prompt "$whisper_prompt_body")
+    fi
+  fi
+}
+
+if [[ "$channels" -ge 2 ]]; then
+  # === Stereo path: per-channel diarization ================================
+  # The recording is L=mic (you), R=system (everyone else). Pull each
+  # channel out as its own 16-kHz mono WAV, transcribe with JSON output
+  # so we have segment timestamps, then merge into a single labeled
+  # transcript ordered by start time.
+  mic_wav="$(mktemp -t ycal-whisper-mic).wav"
+  sys_wav="$(mktemp -t ycal-whisper-sys).wav"
+  mic_json_base="${base}.mic"
+  sys_json_base="${base}.sys"
+
+  echo "[post-meet] decoding stereo → mic.wav + sys.wav…" >&2
+  # -map_channel <input>.<stream>.<channel> picks a single channel and
+  # rewrites it as mono. Two -map_channel passes can't share an ffmpeg
+  # invocation cleanly (the -ar/-ac arrangement applies to both outputs),
+  # so two separate ffmpeg calls is the path that "just works".
+  ffmpeg -hide_banner -loglevel error -y -i "$audio" \
+    -map_channel 0.0.0 -ar 16000 -ac 1 "$mic_wav"
+  ffmpeg -hide_banner -loglevel error -y -i "$audio" \
+    -map_channel 0.0.1 -ar 16000 -ac 1 "$sys_wav"
+
+  if [[ -n "${YCAL_WHISPER_PROMPT:-}" && -s "${YCAL_WHISPER_PROMPT:-/dev/null}" ]]; then
     echo "[post-meet] using whisper prompt ($(wc -c <"$YCAL_WHISPER_PROMPT") bytes)" >&2
   fi
+
+  echo "[post-meet] transcribing mic channel (you)…" >&2
+  build_whisper_args "$mic_json_base" "-oj"
+  "$WHISPER_BIN" "${whisper_args[@]}" "$mic_wav" >&2
+  echo "[post-meet] transcribing system channel (others)…" >&2
+  build_whisper_args "$sys_json_base" "-oj"
+  "$WHISPER_BIN" "${whisper_args[@]}" "$sys_wav" >&2
+
+  if [[ ! -s "${mic_json_base}.json" && ! -s "${sys_json_base}.json" ]]; then
+    echo "[post-meet] both whisper passes produced no JSON — bailing" >&2; exit 3
+  fi
+
+  # Merge by timestamp. We collapse consecutive same-speaker segments
+  # (whisper splits aggressively at natural pauses) so the labeled output
+  # stays readable and the summary prompt isn't full of micro-turns.
+  if ! python3 - "${mic_json_base}.json" "${sys_json_base}.json" "$transcript" <<'PY' 2>&2; then
+import json, sys
+mic_path, sys_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def load_segments(path, label):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    segs = []
+    for s in data.get("transcription", []):
+        off_from = (s.get("offsets") or {}).get("from", 0)
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        segs.append((off_from, label, text))
+    return segs
+
+all_segs = []
+all_segs.extend(load_segments(mic_path, "Me"))
+all_segs.extend(load_segments(sys_path, "Other"))
+all_segs.sort(key=lambda x: x[0])
+
+merged = []
+for off, who, text in all_segs:
+    if merged and merged[-1][1] == who:
+        merged[-1][2] += " " + text
+    else:
+        merged.append([off, who, text])
+
+with open(out_path, "w", encoding="utf-8") as f:
+    for off, who, text in merged:
+        mm = off // 60000
+        ss = (off % 60000) // 1000
+        f.write(f"[{mm:02d}:{ss:02d}] {who}: {text}\n")
+PY
+    echo "[post-meet] merge failed — bailing" >&2; exit 3
+  fi
+else
+  # === Mono path: legacy single-pass (pre-stereo recordings) ==============
+  work="$(mktemp -t ycal-whisper).wav"
+  echo "[post-meet] decoding to wav…" >&2
+  ffmpeg -hide_banner -loglevel error -y -i "$audio" -ar 16000 -ac 1 "$work"
+
+  echo "[post-meet] transcribing → $transcript" >&2
+  build_whisper_args "${base}.transcript" "-otxt"
+  if [[ -n "${YCAL_WHISPER_PROMPT:-}" && -s "${YCAL_WHISPER_PROMPT:-/dev/null}" ]]; then
+    echo "[post-meet] using whisper prompt ($(wc -c <"$YCAL_WHISPER_PROMPT") bytes)" >&2
+  fi
+  "$WHISPER_BIN" "${whisper_args[@]}" "$work" >&2
 fi
-"$WHISPER_BIN" "${whisper_args[@]}" "$work" >&2
 
 if [[ ! -s "$transcript" ]]; then
   echo "[post-meet] transcript empty — bailing" >&2; exit 3
@@ -146,7 +247,7 @@ else
 You are an executive assistant turning a raw meeting transcript into a concise note for the participant who recorded it.
 
 Title: __TITLE__
-
+__CONTEXT__
 Transcript:
 ```
 __TRANSCRIPT__
@@ -173,11 +274,80 @@ Constraints: be concise, don't editorialise, don't fabricate. If the transcript 
 TMPL
 fi
 
+# === Meeting context block (Phase 3) ========================================
+# yCal writes <base>.context.json next to the audio when recording starts.
+# It carries the meeting title, the user's own identity (so "Me" in the
+# stereo transcript maps to a real name), the attendee list with titles,
+# and the event location/description. We format it as a human-readable
+# block here and feed it into the summary prompt as __CONTEXT__. If the
+# file is missing or python3 isn't available, the block stays empty
+# (placeholder gets stripped) and the legacy prompt shape is preserved.
+context_file="${base}.context.json"
+context_block_file="$(mktemp -t ycal-ctx-block)"
+: > "$context_block_file"
+if [[ -s "$context_file" ]] && command -v python3 >/dev/null 2>&1; then
+  python3 - "$context_file" "$context_block_file" <<'PY' 2>/dev/null || true
+import json, sys
+ctx_path, out_path = sys.argv[1], sys.argv[2]
+try:
+    with open(ctx_path, "r", encoding="utf-8") as f:
+        ctx = json.load(f)
+except Exception:
+    sys.exit(0)
+
+lines = ["", "Meeting context:"]
+me = ctx.get("me") or {}
+if me.get("name") or me.get("email"):
+    lines.append("- You: " + (me.get("name") or me.get("email") or "") + " <" + (me.get("email") or "") + ">")
+loc = ctx.get("location")
+if loc:
+    lines.append("- Location: " + loc)
+attendees = ctx.get("attendees") or []
+if attendees:
+    lines.append("- Attendees:")
+    for a in attendees:
+        name = a.get("name") or a.get("email") or ""
+        email = a.get("email") or ""
+        flags = []
+        if a.get("organizer"):
+            flags.append("organizer")
+        if a.get("optional"):
+            flags.append("optional")
+        rsvp = a.get("rsvp")
+        if rsvp and rsvp not in ("accepted", "needsAction"):
+            flags.append(rsvp)
+        suffix = (" (" + ", ".join(flags) + ")") if flags else ""
+        lines.append("    - " + name + " <" + email + ">" + suffix)
+desc = (ctx.get("description") or "").strip()
+if desc:
+    # Trim — sometimes the description is a wall of HTML from a
+    # forwarded invite; the first ~600 chars cover the agenda line.
+    if len(desc) > 600:
+        desc = desc[:600] + "..."
+    lines.append("- Description:")
+    for ln in desc.splitlines():
+        lines.append("  " + ln)
+
+lines.append("")
+lines.append("Note: stereo recordings label speakers as Me/Other. Map Me to the user above. For Other, prefer 'an attendee' over guessing — but where the discussion context (role, expertise, named references) strongly implies a specific attendee, use their name.")
+lines.append("")
+with open(out_path, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines))
+PY
+fi
+
 # Hand-fold the template — simpler than escaping shell-special chars in the
 # transcript through printf/$(…). The transcript can contain back-ticks and $.
 {
   printf '%s' "$prompt_template" \
     | awk -v t="$title" '{gsub(/__TITLE__/, t); print}' \
+    | awk -v f="$context_block_file" '
+        /__CONTEXT__/ {
+          while ((getline line < f) > 0) print line
+          close(f); next
+        }
+        { print }
+      ' \
     | awk -v f="$transcript" '
         /__TRANSCRIPT__/ {
           while ((getline line < f) > 0) print line

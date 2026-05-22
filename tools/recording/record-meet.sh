@@ -4,8 +4,11 @@
 # System audio is captured via Apple's ScreenCaptureKit (no BlackHole, no
 # Multi-Output Device). The bundled `coreaudio-tap` helper streams 16 kHz
 # mono float32 PCM to stdout; we pipe it through a FIFO to ffmpeg, which
-# also opens the default microphone via avfoundation and `amix`-es the
-# two streams into an m4a in ~/Recordings/yCal/.
+# also opens the default microphone via avfoundation and joins the two
+# streams into a STEREO m4a in ~/Recordings/yCal/ — left channel = mic
+# (you), right channel = system audio (everyone else). post-meet.sh
+# exploits this for speaker-aware transcription. Pre-stereo recordings
+# (mono) still transcribe correctly via the legacy single-pass path.
 #
 # Usage:
 #   record-meet.sh start <event_id> <title> [max_seconds]
@@ -143,18 +146,20 @@ start() {
   #
   # Filter chain: the tap stream is 16 kHz mono and the mic is whatever
   # native rate / channel count the device serves (USB mics often go
-  # 48 kHz stereo). If we let amix pick a common rate it follows the
-  # FIRST input, so the mic ends up downsampled to 16 kHz mono and the
-  # encoded m4a sounds crackly and band-limited. Resample BOTH to
-  # 48 kHz mono explicitly before mixing, then pin the output to 48 kHz
-  # mono so the AAC encoder doesn't have to clamp bitrate either.
-  # dropout_transition=0 disables amix's automatic volume rebalancing
-  # when one stream goes quiet (would otherwise duck the other side).
+  # 48 kHz stereo). We keep the two sources on SEPARATE channels of a
+  # stereo output (L=mic, R=system) — post-meet.sh exploits this for
+  # speaker-aware transcription (you on the mic, everyone else on the
+  # system feed). Older recordings recorded as mono via amix still
+  # transcribe fine; post-meet.sh detects channel count.
+  #
+  # Resample both inputs to 48 kHz mono first, then `join` into stereo
+  # so the AAC encoder gets a clean stereo signal. dropout_transition
+  # isn't relevant to `join` (no auto-ducking).
   nohup ffmpeg -hide_banner -y \
     -f f32le -ar 16000 -ac 1 -i "$fifo" \
     -f avfoundation -i ":${mic}" \
-    -filter_complex "[0:a]aresample=48000[a0];[1:a]aresample=48000,aformat=channel_layouts=mono[a1];[a0][a1]amix=inputs=2:duration=longest:normalize=0:dropout_transition=0[a]" \
-    -map "[a]" -ar 48000 -ac 1 -c:a aac -b:a 128k -movflags +faststart \
+    -filter_complex "[0:a]aresample=48000,aformat=channel_layouts=mono[sys];[1:a]aresample=48000,aformat=channel_layouts=mono[mic];[mic][sys]join=inputs=2:channel_layout=stereo[a]" \
+    -map "[a]" -ar 48000 -ac 2 -c:a aac -b:a 192k -movflags +faststart \
     "${ts_arg[@]}" \
     "$file" \
     > "${STATE_DIR}/${event_id}.ffmpeg.log" 2>&1 &

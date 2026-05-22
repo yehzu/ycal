@@ -10,7 +10,7 @@
 export const DEFAULT_SUMMARY_PROMPT = `You are an executive assistant turning a raw meeting transcript into a concise note for the participant who recorded it.
 
 Title: __TITLE__
-
+__CONTEXT__
 Transcript:
 \`\`\`
 __TRANSCRIPT__

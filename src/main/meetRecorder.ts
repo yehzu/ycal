@@ -742,6 +742,48 @@ async function fetchCandidates(ui: UiSettings): Promise<CalendarEvent[]> {
 
 // ── Start / stop / post-process ─────────────────────────────────────────
 
+// Drop a <audio>.context.json sidecar next to the m4a so post-meet.sh can
+// inject attendee + organizer info into the summary prompt. "Me" comes
+// from the recording account's profile — that lets Claude attribute the
+// stereo transcript's [Me] segments to a real name rather than a generic
+// "the user". Resources and declined attendees are filtered out; the
+// description is included so Claude has any pre-meeting agenda the
+// invite carried.
+function writeRecordingContext(
+  audioFile: string,
+  ev: CalendarEvent,
+  startedAt: number,
+  endsAt: number,
+): void {
+  const contextPath = audioFile.replace(/\.m4a$/, '.context.json');
+  const me = ev.accountId
+    ? listAccountSummaries().find((a) => a.id === ev.accountId)
+    : null;
+  const attendees = (ev.attendees ?? [])
+    .filter((a) => !a.resource && a.rsvp !== 'declined')
+    .map((a) => ({
+      name: a.name,
+      email: a.email,
+      organizer: a.organizer,
+      optional: a.optional,
+      rsvp: a.rsvp,
+    }));
+  const isoOrNull = (ms: number): string | null => {
+    if (!Number.isFinite(ms)) return null;
+    try { return new Date(ms).toISOString(); } catch { return null; }
+  };
+  const body = {
+    title: ev.title,
+    startedAt: isoOrNull(startedAt),
+    endsAt: isoOrNull(endsAt),
+    me: me ? { email: me.email, name: me.name } : null,
+    attendees,
+    location: ev.location,
+    description: ev.description,
+  };
+  fs.writeFileSync(contextPath, JSON.stringify(body, null, 2));
+}
+
 async function startRecording(ev: CalendarEvent): Promise<void> {
   const endsAt = Date.parse(ev.end);
   const maxSecs = Math.ceil((endsAt - Date.now() + STOP_SLACK_MS) / 1000);
@@ -779,6 +821,14 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     const stdout = await execScript([RECORD_SH, 'start', ev.id, ev.title, String(maxSecs)]);
     status.audioFile = stdout.trim() || undefined;
     pushStatus();
+    // Drop a context.json next to the audio so post-meet.sh can feed
+    // the attendee list (with the recorder's own identity surfaced as
+    // "Me") into Claude's summary prompt. Failures here are non-fatal —
+    // the summary still works, it just won't have attribution context.
+    if (status.audioFile) {
+      try { writeRecordingContext(status.audioFile, ev, status.startedAt, endsAt); }
+      catch (e) { console.error('[yCal recorder] failed to write context sidecar', e); }
+    }
     notify('yCal · recording', ev.title || 'Meeting');
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
