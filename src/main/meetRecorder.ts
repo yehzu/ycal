@@ -47,8 +47,8 @@ import {
 } from './glossary';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
 import {
-  type MeetSignal, diagnoseDetection, getMeetSignal, onMeetChange,
-  startMeetDetector, stopMeetDetector,
+  type MeetSignal, diagnoseDetection, extractMeetCode, getMeetSignal,
+  onMeetChange, probeMeetCodeOpen, startMeetDetector, stopMeetDetector,
 } from './meetDetector';
 
 // Re-export for index.ts → IPC plumbing. Keeps meetRecorder.ts as the
@@ -627,20 +627,45 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     const event = await pickEventForActiveMeet(ui, signal);
     void startRecording(event);
   } else {
-    // Tab-closed signal. Don't blindly stop every recording — the user
-    // often works in Slack / Notion / IDE for >90s during a meeting,
-    // which trips OFF_DEBOUNCE_MS. If the recording's calendar event
-    // is still in its scheduled window, trust the calendar over the
-    // tab signal and keep recording. Calendar's `endsAt` check in
-    // tick() will land the stop at the real end time.
+    // Tab-closed signal. The global probe lost the Meet — but that could
+    // be a brief glitch (osascript timeout in a busy multi-tab browser,
+    // hidden window state, etc.) rather than the user actually leaving.
     //
-    // Synthetic active-Meet events (no calendar attribution) don't get
-    // this protection — their endsAt is an arbitrary +1h cap, not a
-    // real meeting end — so they stop on tab-closed as before.
+    // Two-tier check before stopping:
+    //   1. If we know the recording's meet room code (extracted from the
+    //      calendar event's meetUrl), do a *targeted* probe for that
+    //      specific URL in any browser tab. If found → keep recording
+    //      (user is still in this meeting, the global probe just missed
+    //      it). If confidently gone → stop (user really left). If the
+    //      targeted probe is inconclusive (timeout / browser not
+    //      reachable) → fall through to step 2.
+    //   2. If the calendar event is still in its scheduled window
+    //      (real event with accountId + endsAt > now), keep recording
+    //      and let tick() land the stop at the real end. Otherwise stop.
+    //
+    // Synthetic active-Meet events have no meetCode and no accountId,
+    // so they stop on the tab-closed signal — same as before.
     const now = Date.now();
     let stoppedAny = false;
     for (const [id, s] of recordings) {
       if (s.state !== 'recording') continue;
+
+      if (s.meetCode) {
+        const stillOpen = await probeMeetCodeOpen(s.meetCode);
+        if (stillOpen === true) {
+          console.log(`[yCal recorder] inMeet=false ignored for ${id} — meet code ${s.meetCode} still open in browser`);
+          continue;
+        }
+        if (stillOpen === false) {
+          console.log(`[yCal recorder] meet code ${s.meetCode} confirmed gone — stopping ${id}`);
+          void stopRecording(id);
+          stoppedAny = true;
+          continue;
+        }
+        // null: probe inconclusive (timeout / browser unreachable).
+        // Fall through to the calendar-window fallback.
+      }
+
       const calendarStillInWindow =
         s.accountId && s.endsAt != null && now < s.endsAt;
       if (calendarStillInWindow) {
@@ -859,6 +884,7 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     MIN_RUNWAY_SECS,
   );
 
+  const meetCode = extractMeetCode(ev.meetUrl) ?? undefined;
   const status: RecordingStatus = {
     eventId: ev.id,
     title: ev.title,
@@ -866,6 +892,7 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     startedAt: Date.now(),
     endsAt,
     accountId: ev.accountId || undefined,
+    meetCode,
   };
   recordings.set(ev.id, status);
   // Clear cooldown — explicit start (manual or automatic) means this

@@ -233,6 +233,16 @@ function looksLikeMeetingUrl(text: string): boolean {
   return /^[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}$/.test(first);
 }
 
+// Pull the room code out of a meet URL — the part after meet.google.com/
+// that looks like aaa-bbbb-ccc. Tolerates query strings, fragments,
+// trailing slashes, and various URL shapes Google emits (e.g.
+// "https://meet.google.com/lookup/abc-defg-hij" or the bare code).
+export function extractMeetCode(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const m = /meet\.google\.com\/(?:[a-z]+\/)?([a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4})/i.exec(url);
+  return m ? m[1].toLowerCase() : null;
+}
+
 // "Meet - <something>" tab title — real meetings render the meeting
 // subject or code here, while the PWA on its landing page shows
 // "Meet - Google Workspace". Filter that one explicitly.
@@ -395,4 +405,53 @@ export function getMeetSignal(): MeetSignal { return state; }
 export function onMeetChange(fn: (s: MeetSignal) => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
+}
+
+// Targeted probe: is this specific meet room code open in any tab right
+// now? Used by the recorder to decide whether a "tab-closed" debounce
+// should actually stop the recording. Returns:
+//   true  — at least one tab matches; the user is still in this meeting
+//   false — no tab matches; the user really left (probed both browsers
+//           successfully, neither saw it)
+//   null  — couldn't tell (osascript error / timeout); caller should
+//           fall back to a more conservative signal
+//
+// The room code is matched against the URL only; titles aren't reliable
+// (background tabs often have stale titles).
+export async function probeMeetCodeOpen(code: string): Promise<boolean | null> {
+  if (!/^[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}$/i.test(code)) return null;
+  const needle = code.toLowerCase();
+  const checkBrowser = (app: 'Google Chrome' | 'Arc') => {
+    // Walk every tab of every window; bail on the first hit.
+    return `tell application "${app}"
+      if not running then return "no"
+      repeat with winIdx from 1 to count of windows
+        try
+          repeat with tabRef in tabs of window winIdx
+            try
+              set urlText to (URL of tabRef) as text
+              if urlText contains "${needle}" then return "yes"
+            end try
+          end repeat
+        end try
+      end repeat
+      return "no"
+    end tell`;
+  };
+  let sawMatch = false;
+  let everyBrowserAnswered = true;
+  for (const app of ['Google Chrome', 'Arc'] as const) {
+    try {
+      const out = await runScript(checkBrowser(app), 8_000);
+      if (out.startsWith('yes')) { sawMatch = true; break; }
+      // "no" is a clean negative — keep going to check the next browser.
+    } catch {
+      // App not installed / not running / timed out — can't tell from this
+      // browser. Note that we got an inconclusive answer.
+      everyBrowserAnswered = false;
+    }
+  }
+  if (sawMatch) return true;
+  if (everyBrowserAnswered) return false;
+  return null;
 }

@@ -343,6 +343,11 @@ export interface RecordingStatus {
   // archive. Surfaced so callers can pass it back to
   // fetchMeetingArtifact without re-discovering it.
   accountId?: string;
+  // Google Meet room code extracted from the originating event's meetUrl
+  // (e.g. "abc-defg-hij"). Used by the active-Meet stop logic to probe
+  // for THIS specific URL in any browser tab — keeps the recording going
+  // when the user multitasks during the meeting.
+  meetCode?: string;
   error?: string;
 }
 
