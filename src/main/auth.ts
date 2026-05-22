@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { google } from 'googleapis';
 import { loadOAuthConfig } from './config';
 import { upsertAccount, type StoredAccount } from './tokenStore';
+import { NETWORK_TIMEOUT_MS, withNetworkTimeout } from './networkTimeout';
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',
@@ -136,7 +137,11 @@ async function runAuthDance(
     server.close();
   }
 
-  const { tokens } = await oauth2.getToken(result.code);
+  const { tokens } = await withNetworkTimeout(
+    'oauth.getToken',
+    () => oauth2.getToken(result.code),
+    NETWORK_TIMEOUT_MS * 2, // sign-in is user-initiated; allow extra slack.
+  );
   if (!tokens.refresh_token) {
     throw new Error(
       'Google did not return a refresh token. Revoke the app at myaccount.google.com/permissions and try again.',
@@ -145,7 +150,9 @@ async function runAuthDance(
   oauth2.setCredentials(tokens);
 
   const oauth2v2 = google.oauth2({ version: 'v2', auth: oauth2 });
-  const profile = await oauth2v2.userinfo.get();
+  const profile = await withNetworkTimeout('oauth.userinfo', () =>
+    oauth2v2.userinfo.get({}, { timeout: NETWORK_TIMEOUT_MS }),
+  );
   const email = profile.data.email;
   if (!email) throw new Error('Google profile missing email.');
 

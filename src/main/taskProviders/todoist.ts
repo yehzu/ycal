@@ -164,14 +164,25 @@ async function rest<T>(
   apiKey: string, method: 'GET' | 'POST',
   endpoint: string, body?: unknown,
 ): Promise<T> {
-  const r = await fetch(API_BASE + endpoint, {
-    method,
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  // Hard ceiling on a single Todoist round-trip; without it, an offline
+  // captive-portal hang (DNS resolves but TCP stalls) would freeze the
+  // tasks IPC pipe forever.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 10_000);
+  let r: Response;
+  try {
+    r = await fetch(API_BASE + endpoint, {
+      method,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!r.ok) {
     const text = await r.text().catch(() => '');
     throw new Error(`Todoist ${method} ${endpoint} → ${r.status} ${r.statusText}${text ? ': ' + text.slice(0, 240) : ''}`);

@@ -620,6 +620,25 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   white-space: nowrap;
   font-style: italic;
 }
+.offline-pill {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #8a3a3a;
+  background: rgba(213, 0, 0, 0.08);
+  border: 0.5px solid rgba(138, 58, 58, 0.45);
+  padding: 1px 7px 2px;
+  margin-right: 4px;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+.app.dark .offline-pill {
+  color: #ffb4b4;
+  background: rgba(255, 120, 120, 0.10);
+  border-color: rgba(255, 120, 120, 0.40);
+}
 .view-switch {
   display: inline-flex;
   border: 0.5px solid var(--rule);

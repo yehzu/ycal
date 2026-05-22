@@ -14,6 +14,7 @@
 
 import { google, type drive_v3 } from 'googleapis';
 import type { OAuth2Client } from 'google-auth-library';
+import { NETWORK_TIMEOUT_MS, withNetworkTimeout } from './networkTimeout';
 
 export interface AppDataFile {
   id: string;
@@ -29,35 +30,47 @@ export class DriveAppDataAPI {
   }
 
   async list(): Promise<AppDataFile[]> {
-    const res = await this.drive.files.list({
-      spaces: 'appDataFolder',
-      // pageSize defaults to 100. yCal writes ≤ 6 files; one page is
-      // plenty. If we ever blow past, paginate.
-      pageSize: 100,
-      fields: 'files(id, name, size, modifiedTime)',
-    });
+    const res = await withNetworkTimeout('drive.list', () =>
+      this.drive.files.list(
+        {
+          spaces: 'appDataFolder',
+          // pageSize defaults to 100. yCal writes ≤ 6 files; one page is
+          // plenty. If we ever blow past, paginate.
+          pageSize: 100,
+          fields: 'files(id, name, size, modifiedTime)',
+        },
+        { timeout: NETWORK_TIMEOUT_MS },
+      ),
+    );
     return (res.data.files ?? []) as AppDataFile[];
   }
 
   async file(name: string): Promise<AppDataFile | null> {
-    const res = await this.drive.files.list({
-      spaces: 'appDataFolder',
-      pageSize: 10,
-      // Drive query language: name='settings.json' AND space='appDataFolder'
-      // (the spaces param above already constrains the space, but Drive
-      // accepts the name filter too).
-      q: `name='${name.replace(/'/g, "\\'")}'`,
-      fields: 'files(id, name, size, modifiedTime)',
-    });
+    const res = await withNetworkTimeout(`drive.file(${name})`, () =>
+      this.drive.files.list(
+        {
+          spaces: 'appDataFolder',
+          pageSize: 10,
+          // Drive query language: name='settings.json' AND space='appDataFolder'
+          // (the spaces param above already constrains the space, but Drive
+          // accepts the name filter too).
+          q: `name='${name.replace(/'/g, "\\'")}'`,
+          fields: 'files(id, name, size, modifiedTime)',
+        },
+        { timeout: NETWORK_TIMEOUT_MS },
+      ),
+    );
     const files = (res.data.files ?? []) as AppDataFile[];
     return files[0] ?? null;
   }
 
   async read(fileId: string): Promise<Buffer> {
     // alt=media downloads the raw body; default returns metadata.
-    const res = await this.drive.files.get(
-      { fileId, alt: 'media' },
-      { responseType: 'arraybuffer' },
+    const res = await withNetworkTimeout(`drive.read(${fileId})`, () =>
+      this.drive.files.get(
+        { fileId, alt: 'media' },
+        { responseType: 'arraybuffer', timeout: NETWORK_TIMEOUT_MS },
+      ),
     );
     // googleapis types `data` as unknown for arraybuffer responses; the
     // runtime value is the raw bytes.
@@ -78,28 +91,40 @@ export class DriveAppDataAPI {
         : require('node:stream').Readable.from(body),
     };
     if (existing?.id) {
-      const res = await this.drive.files.update({
-        fileId: existing.id,
-        media,
-        fields: 'id',
-      });
+      const res = await withNetworkTimeout(`drive.update(${name})`, () =>
+        this.drive.files.update(
+          {
+            fileId: existing.id,
+            media,
+            fields: 'id',
+          },
+          { timeout: NETWORK_TIMEOUT_MS },
+        ),
+      );
       return existing.id ?? (res.data.id ?? '');
     }
-    const res = await this.drive.files.create({
-      requestBody: {
-        name,
-        // The magic string that places the file in the hidden app folder.
-        // Without this the file lands in the user's main Drive.
-        parents: ['appDataFolder'],
-      },
-      media,
-      fields: 'id',
-    });
+    const res = await withNetworkTimeout(`drive.create(${name})`, () =>
+      this.drive.files.create(
+        {
+          requestBody: {
+            name,
+            // The magic string that places the file in the hidden app folder.
+            // Without this the file lands in the user's main Drive.
+            parents: ['appDataFolder'],
+          },
+          media,
+          fields: 'id',
+        },
+        { timeout: NETWORK_TIMEOUT_MS },
+      ),
+    );
     if (!res.data.id) throw new Error('Drive create returned no file id');
     return res.data.id;
   }
 
   async delete(fileId: string): Promise<void> {
-    await this.drive.files.delete({ fileId });
+    await withNetworkTimeout(`drive.delete(${fileId})`, () =>
+      this.drive.files.delete({ fileId }, { timeout: NETWORK_TIMEOUT_MS }),
+    );
   }
 }

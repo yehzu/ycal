@@ -1,6 +1,10 @@
+import { app } from 'electron';
+import * as path from 'node:path';
+import { promises as fsp, readFileSync } from 'node:fs';
 import { google, calendar_v3 } from 'googleapis';
 import { authClientForAccount } from './auth';
 import { listAccounts, getAccount } from './tokenStore';
+import { NETWORK_TIMEOUT_MS, withNetworkTimeout } from './networkTimeout';
 import type {
   CalendarSummary,
   CalendarEvent,
@@ -11,6 +15,42 @@ import type {
   ListEventsResult,
   AccountSummary,
 } from '@shared/types';
+
+// Persistent on-disk fallback for events. The in-memory eventsCache below
+// dies on app restart; this file survives so a cold boot without network
+// shows yesterday's calendar instead of a blank grid. Per-device (lives in
+// userData) — there's no benefit to cloud-routing it.
+const DISK_CACHE_FILENAME = 'events-cache.json';
+
+interface EventsDiskCache {
+  cachedAt: number;
+  timeMin: string;
+  timeMax: string;
+  events: CalendarEvent[];
+}
+
+function diskCachePath(): string {
+  return path.join(app.getPath('userData'), DISK_CACHE_FILENAME);
+}
+
+function readEventsDiskCache(): EventsDiskCache | null {
+  try {
+    const raw = readFileSync(diskCachePath(), 'utf-8');
+    const parsed = JSON.parse(raw) as EventsDiskCache;
+    if (!parsed || !Array.isArray(parsed.events)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeEventsDiskCache(timeMin: string, timeMax: string, events: CalendarEvent[]): void {
+  const body = JSON.stringify({ cachedAt: Date.now(), timeMin, timeMax, events });
+  // Fire-and-forget — disk-cache write failures aren't worth blocking IPC.
+  fsp.writeFile(diskCachePath(), body, 'utf-8').catch((e) => {
+    console.error('[yCal] events disk cache write failed:', e);
+  });
+}
 
 // Cache the color palette for the lifetime of the process. It rarely changes,
 // and we'd otherwise refetch it on every event load.
@@ -127,7 +167,9 @@ export async function fetchColors(): Promise<GoogleColors> {
   for (const acc of accounts) {
     try {
       const c = cal(acc.id);
-      const res = await c.colors.get({});
+      const res = await withNetworkTimeout(`${acc.email}/colors`, () =>
+        c.colors.get({}, { timeout: NETWORK_TIMEOUT_MS }),
+      );
       const event: GoogleColors['event'] = {};
       const calendar: GoogleColors['calendar'] = {};
       for (const [k, v] of Object.entries(res.data.event ?? {})) {
@@ -173,7 +215,9 @@ export async function listAllCalendars(): Promise<CalendarSummary[]> {
       const c = google.calendar({ version: 'v3', auth: authClientForAccount(acc) });
       let pageToken: string | undefined;
       do {
-        const res = await c.calendarList.list({ pageToken, maxResults: 250 });
+        const res = await withNetworkTimeout(`${acc.email}/calendarList`, () =>
+          c.calendarList.list({ pageToken, maxResults: 250 }, { timeout: NETWORK_TIMEOUT_MS }),
+        );
         for (const item of res.data.items ?? []) {
           if (!item.id) continue;
           rows.push({
@@ -405,15 +449,20 @@ export async function listEvents(req: ListEventsRequest): Promise<ListEventsResu
           do {
             const pt = pageToken;
             const res = await withTransientRetry(`${acc.email}/${cal.name}`, () =>
-              client.events.list({
-                calendarId: cal.id,
-                timeMin: req.timeMin,
-                timeMax: req.timeMax,
-                singleEvents: true,
-                orderBy: 'startTime',
-                maxResults: 2500,
-                pageToken: pt,
-              }),
+              withNetworkTimeout(`${acc.email}/${cal.name}/events`, () =>
+                client.events.list(
+                  {
+                    calendarId: cal.id,
+                    timeMin: req.timeMin,
+                    timeMax: req.timeMax,
+                    singleEvents: true,
+                    orderBy: 'startTime',
+                    maxResults: 2500,
+                    pageToken: pt,
+                  },
+                  { timeout: NETWORK_TIMEOUT_MS },
+                ),
+              ),
             );
             for (const ev of res.data.items ?? []) {
               if (!ev.id || !ev.start || !ev.end) continue;
@@ -492,6 +541,25 @@ export async function listEvents(req: ListEventsRequest): Promise<ListEventsResu
   // "Retry" and instantly gets back the same gap.
   if (failures.length === 0) {
     eventsCache.set(cacheKey, { at: Date.now(), data: out });
+    writeEventsDiskCache(req.timeMin, req.timeMax, out);
   }
+
+  // Network-degraded fallback: every calendar failed transiently (typically
+  // offline / DNS hang). If the on-disk cache covers the requested window,
+  // serve it so the calendar isn't blank. Failures are still returned so
+  // the renderer surfaces the degraded state.
+  if (out.length === 0 && failures.length > 0 && failures.every((f) => f.transient)) {
+    const disk = readEventsDiskCache();
+    if (disk && disk.timeMin <= req.timeMin && disk.timeMax >= req.timeMax) {
+      const filtered = disk.events.filter(
+        (e) => e.start >= req.timeMin && e.start <= req.timeMax,
+      );
+      console.warn(
+        `[yCal] events fetch failed transiently — serving ${filtered.length} events from disk cache (cached ${new Date(disk.cachedAt).toISOString()})`,
+      );
+      return { events: filtered, failures };
+    }
+  }
+
   return { events: out, failures };
 }

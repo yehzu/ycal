@@ -388,6 +388,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const refreshEvents = store.refreshEvents;
   useEffect(() => {
     const tryRefresh = () => {
+      // Don't even try when the renderer knows we're offline — the store's
+      // 'online' listener fires its own refresh on reconnect.
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       const now = Date.now();
       if (now - lastRefreshRef.current < REFRESH_THROTTLE_MS) return;
       lastRefreshRef.current = now;
@@ -737,6 +740,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
               setAnchor={setAnchor}
               goToToday={goToToday}
               loading={store.loading}
+              online={store.online}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenSearch={() => setSearchOpen(true)}
             />

@@ -11,12 +11,13 @@ interface Props {
   setAnchor: (d: Date) => void;
   goToToday: () => void;
   loading: boolean;
+  online: boolean;
   onOpenSettings: () => void;
   onOpenSearch: () => void;
 }
 
 export function MainToolbar({
-  view, setView, anchor, setAnchor, goToToday, loading, onOpenSettings,
+  view, setView, anchor, setAnchor, goToToday, loading, online, onOpenSettings,
   onOpenSearch,
 }: Props) {
   // macOS uses ⌘, Windows/Linux uses Ctrl. Detect once for the hint label.
@@ -92,7 +93,12 @@ export function MainToolbar({
           <span className="lbl">Search events &amp; todos</span>
           <span className="kb">{searchHint}</span>
         </button>
-        {loading && <span className="sync-hint">syncing…</span>}
+        {!online && (
+          <span className="offline-pill" title="No network connection — showing cached data. Reconnect to sync.">
+            offline
+          </span>
+        )}
+        {loading && online && <span className="sync-hint">syncing…</span>}
         <button className="icon-btn" onClick={stepBack}>‹</button>
         <button className="icon-btn today-btn" onClick={goToToday}>
           Today

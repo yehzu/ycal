@@ -54,6 +54,11 @@ export interface Store {
   weatherError: string | null;
   setWeatherUrl: (url: string | null) => Promise<void>;
 
+  // True when navigator.onLine is true. Drives the "offline" header pill,
+  // disables auto-refresh while offline, and triggers a single catch-up
+  // refresh on the transition back to online.
+  online: boolean;
+
   // Cross-device sync hooks. The App-level subscriber to SettingsChanged
   // calls these to imperatively replace the slices the store owns. They
   // do NOT round-trip back to disk (the data already came from disk via
@@ -101,6 +106,9 @@ export function useStore(
   const [weatherUrl, setWeatherUrlState] = useState<string | null>(null);
   const [weatherDays, setWeatherDays] = useState<WeatherDay[]>([]);
   const [weatherError, setWeatherError] = useState<string | null>(null);
+  const [online, setOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
+  );
 
   const setAccountActive = useCallback((id: string, on: boolean) => {
     setAccountsActiveState((prev) => ({ ...prev, [id]: on }));
@@ -160,6 +168,11 @@ export function useStore(
     startTs: number, endTs: number, force: boolean,
   ): Promise<void> => {
     if (inFlightRef.current) return;
+    // Skip when the renderer knows we're offline — the IPC would just
+    // bounce through main's googleapis layer until the network timeout
+    // (10s) fires, wasting a beach-balling spinner. The 'online' event
+    // listener will trigger a catch-up refresh on reconnect.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
     inFlightRef.current = true;
     setLoading(true);
     try {
@@ -312,6 +325,27 @@ export function useStore(
     loadEventsForRange,
   ]);
 
+  // Track navigator.onLine. When the connection comes back, fire one
+  // refresh so the user catches up immediately instead of waiting for the
+  // next focus / 5-min interval. Going offline does NOT clear events —
+  // the disk-cache hydration in main keeps the last-good snapshot showing.
+  const refreshOnReconnectRef = useRef(refreshEvents);
+  useEffect(() => { refreshOnReconnectRef.current = refreshEvents; }, [refreshEvents]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const goOnline = () => {
+      setOnline(true);
+      void refreshOnReconnectRef.current();
+    };
+    const goOffline = () => setOnline(false);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
+
   // Filter events by visibility, then collapse cross-calendar duplicates.
   const visibleEvents = useMemo(() => {
     const filtered = events.filter((e) => {
@@ -346,6 +380,7 @@ export function useStore(
     weatherDays,
     weatherError,
     setWeatherUrl: updateWeatherUrl,
+    online,
     applyRemoteUi,
     applyRemoteWeatherUrl,
   };
