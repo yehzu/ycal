@@ -47,7 +47,7 @@ import {
 import { getTasksLocal, setTasksLocal } from './tasksStore';
 import {
   diagnoseDetection, getMeetSignal, listRecentRecordings, listRecordings,
-  recordingsDir, reprocessRecording, safeRecordingPath, startMeetRecorder,
+  recordingsDir, reprocessRecording, resummarizeRecording, safeRecordingPath, startMeetRecorder,
   startRecordingManual, stopMeetRecorder, stopRecordingManual,
 } from './meetRecorder';
 import {
@@ -588,6 +588,14 @@ function registerIpc() {
   ipcMain.handle(IPC.RecorderReprocess, async (_e, payload: { eventId: string; audioFile: string; title: string; accountId?: string }) => {
     try {
       await reprocessRecording(payload.eventId, payload.audioFile, payload.title, payload.accountId);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.RecorderResummarize, async (_e, payload: { eventId: string; audioFile: string; title: string; accountId?: string }) => {
+    try {
+      await resummarizeRecording(payload.eventId, payload.audioFile, payload.title, payload.accountId);
       return { ok: true as const };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };

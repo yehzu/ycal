@@ -705,6 +705,10 @@ export const IPC = {
   // the popover when the user has changed model / prompt and wants to
   // regenerate the meeting note without re-recording.
   RecorderReprocess: 'ycal:recorderReprocess',
+  // Re-run ONLY the claude summarization step on an existing transcript.
+  // Skips whisper entirely — for the case where the transcript is fine
+  // but the user wants a new note (different prompt, updated glossary).
+  RecorderResummarize: 'ycal:recorderResummarize',
   // Open a recording-related file (m4a / transcript / summary). Restricted
   // server-side to paths under ~/Recordings/yCal so the renderer can't
   // ask main to open arbitrary files.

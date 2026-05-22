@@ -247,6 +247,25 @@ export function TranscriptSheet({
     }
   }, [event, audioFile, onClose]);
 
+  const resummarize = useCallback(async () => {
+    if (!audioFile) return;
+    setReprocessing(true);
+    try {
+      const res = await window.ycal.recorderResummarize({
+        eventId: event.id,
+        audioFile,
+        title: event.title,
+        accountId: event.accountId,
+      });
+      if (!res.ok) {
+        console.error('[yCal] resummarize failed:', res.error);
+      }
+      onClose();
+    } finally {
+      setReprocessing(false);
+    }
+  }, [event, audioFile, onClose]);
+
   const openExternally = useCallback(() => {
     if (!transcriptFile) return;
     void window.ycal.recorderOpenFile(transcriptFile);
@@ -319,6 +338,16 @@ export function TranscriptSheet({
           {transcriptFile && (
             <button className="pp-btn" onClick={openExternally}>
               Open externally
+            </button>
+          )}
+          {audioFile && (
+            <button
+              className="pp-btn"
+              onClick={resummarize}
+              disabled={reprocessing}
+              title="Re-run only the claude summary against the current transcript — fast, no re-transcribe"
+            >
+              {reprocessing ? '…' : '只重跑 summary'}
             </button>
           )}
           {audioFile && (

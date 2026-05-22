@@ -23,6 +23,10 @@
 #                          raw transcript before it's written to disk. Each
 #                          line: {"from": "...", "to": "...", "caseSensitive": bool}
 #                          Optional.
+#   YCAL_SUMMARY_ONLY      when "1", skip transcription entirely and re-run
+#                          ONLY the claude summarization step against the
+#                          existing <base>.transcript.txt. Fails if the
+#                          transcript is missing.
 
 set -euo pipefail
 
@@ -62,6 +66,18 @@ trap '[[ -n "$work" ]]               && rm -f "$work"; \
       [[ -n "$sys_json_base" ]]      && rm -f "${sys_json_base}.json"; \
       [[ -n "$context_block_file" ]] && rm -f "$context_block_file"; \
       true' EXIT
+
+# YCAL_SUMMARY_ONLY=1 skips transcription entirely and re-runs only the
+# summarization step against the existing transcript.txt. Used by the
+# popover "Re-summarize" button when the transcript is fine but the
+# summary needs to be regenerated against a different prompt / glossary.
+if [[ "${YCAL_SUMMARY_ONLY:-}" == "1" ]]; then
+  if [[ ! -s "$transcript" ]]; then
+    echo "[post-meet] YCAL_SUMMARY_ONLY=1 but no transcript at $transcript — bailing" >&2
+    exit 6
+  fi
+  echo "[post-meet] summary-only mode — reusing existing transcript ($(wc -c <"$transcript") bytes)" >&2
+else
 
 # Detect channel layout. Recordings made by record-meet.sh (post-stereo
 # update) are 2-channel (L=mic, R=system) so we can run whisper on each
@@ -177,9 +193,14 @@ else
   "$WHISPER_BIN" "${whisper_args[@]}" "$work" >&2
 fi
 
+fi  # YCAL_SUMMARY_ONLY else-branch
+
 if [[ ! -s "$transcript" ]]; then
   echo "[post-meet] transcript empty — bailing" >&2; exit 3
 fi
+
+# Substitution pass + summarization run in both modes (summary-only still
+# wants the latest glossary applied before claude sees the transcript).
 
 # === Substitution pass ======================================================
 # When the dispatcher supplied a substitution file, run each rule against

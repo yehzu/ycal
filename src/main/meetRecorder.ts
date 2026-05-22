@@ -400,6 +400,42 @@ export async function reprocessRecording(
   await postProcess(eventId, safe, title, accountId);
 }
 
+// Re-run ONLY the claude summarization step against the existing
+// transcript.txt next to the audio. Skips whisper entirely — useful when
+// the transcript is fine but the user wants a fresh note against a
+// different prompt or an updated glossary. Fails if the transcript is
+// missing (the user should re-process instead in that case).
+export async function resummarizeRecording(
+  eventId: string,
+  audioFile: string,
+  title: string,
+  accountId?: string,
+): Promise<void> {
+  if (!fs.existsSync(audioFile)) {
+    throw new Error(`audio file missing: ${audioFile}`);
+  }
+  const safe = safeRecordingPath(audioFile);
+  if (!safe) {
+    throw new Error('audio file is not under the recordings dir');
+  }
+  const transcript = safe.replace(/\.m4a$/, '.transcript.txt');
+  if (!fs.existsSync(transcript)) {
+    throw new Error('no transcript on disk — use Re-process instead');
+  }
+  skipped.delete(eventId);
+  const status: RecordingStatus = {
+    eventId,
+    title,
+    state: 'processing',
+    startedAt: Date.now(),
+    audioFile: safe,
+    accountId,
+  };
+  recordings.set(eventId, status);
+  pushStatus();
+  await postProcess(eventId, safe, title, accountId, true);
+}
+
 // ── Recovery ────────────────────────────────────────────────────────────
 // On startup, scan ~/.ycal/recordings for live ffmpeg processes the
 // previous yCal instance launched. The helper script uses nohup so
@@ -786,7 +822,19 @@ function writeRecordingContext(
 
 async function startRecording(ev: CalendarEvent): Promise<void> {
   const endsAt = Date.parse(ev.end);
-  const maxSecs = Math.ceil((endsAt - Date.now() + STOP_SLACK_MS) / 1000);
+  // Active-Meet detection can hand us an event that's already 30+ min past
+  // its scheduled end (the user left the Meet tab open). Without clamping,
+  // the script's `-t <negative>` lands in ffmpeg's atrim filter and
+  // silently produces a 0-byte file — which stopRecording then auto-
+  // deletes, leaving no trace for the user. Clamp to 30 min runway so the
+  // recording can still run for someone who's actively in the call past
+  // the scheduled end.
+  const remainingMs = Number.isFinite(endsAt) ? endsAt - Date.now() : 0;
+  const MIN_RUNWAY_SECS = 30 * 60;
+  const maxSecs = Math.max(
+    Math.ceil((remainingMs + STOP_SLACK_MS) / 1000),
+    MIN_RUNWAY_SECS,
+  );
 
   const status: RecordingStatus = {
     eventId: ev.id,
@@ -885,7 +933,14 @@ async function stopRecording(eventId: string): Promise<void> {
     if (st.size < MIN_AUDIO_BYTES) {
       console.log(`[yCal recorder] discarding empty recording (${st.size}B) ${audioFile}`);
       try { fs.unlinkSync(audioFile); } catch { /* */ }
-      recordings.delete(eventId);
+      // Surface this as a visible failure instead of silently dropping
+      // the row. Empty recordings used to vanish from the popover with
+      // no explanation — the user just saw "yCal was recording" with no
+      // file to show for it. Keep the entry around so the auto-prune
+      // (30 min) sweeps it eventually but the user can see what happened.
+      status.state = 'failed';
+      status.error = `Recording produced no audio (${st.size}B). Check Screen Recording / Microphone permissions, or the event may already be over.`;
+      status.audioFile = undefined;
       pushStatus();
       return;
     }
@@ -899,8 +954,9 @@ async function postProcess(
   audioFile: string,
   title: string,
   accountId: string | undefined,
+  summaryOnly = false,
 ): Promise<void> {
-  notify('yCal · transcribing', title);
+  notify(summaryOnly ? 'yCal · re-summarizing' : 'yCal · transcribing', title);
   // Glossary runtime files (whisper prompt + transcript substitutions)
   // and the dynamic claude-prompt file all need cleanup AFTER the
   // script returns, regardless of success or failure. Stash here so
@@ -948,6 +1004,7 @@ async function postProcess(
     if (glossaryRuntime.filterFile) {
       envExtras.YCAL_TRANSCRIPT_FILTER = glossaryRuntime.filterFile;
     }
+    if (summaryOnly) envExtras.YCAL_SUMMARY_ONLY = '1';
     const stdout = await execScript([POST_SH, audioFile, title], {
       timeoutMs: 30 * 60_000,
       envExtras: Object.keys(envExtras).length > 0 ? envExtras : undefined,

@@ -419,6 +419,23 @@ function RecordingRow({
                 Audio
               </button>
             )}
+            {recording.audioFile && recording.transcriptFile && (
+              <button
+                className="pp-btn"
+                onClick={() => {
+                  void window.ycal.recorderResummarize({
+                    eventId: event.id,
+                    audioFile: recording.audioFile!,
+                    title: event.title,
+                    accountId: recording.accountId,
+                  });
+                }}
+                style={{ padding: '2px 10px', fontSize: 12 }}
+                title="Re-run only the claude summary against the current transcript"
+              >
+                Re-summarize
+              </button>
+            )}
             {recording.audioFile && (
               <button
                 className="pp-btn"
@@ -538,6 +555,23 @@ function RecordingRow({
           >
             Audio
           </button>
+          {pastRec.transcriptFile && (
+            <button
+              className="pp-btn"
+              onClick={() => {
+                void window.ycal.recorderResummarize({
+                  eventId: event.id,
+                  audioFile: pastRec.audioFile,
+                  title: event.title,
+                  accountId: driveAcct ?? undefined,
+                });
+              }}
+              style={{ padding: '2px 10px', fontSize: 12 }}
+              title="Re-run only the claude summary against the current transcript"
+            >
+              Re-summarize
+            </button>
+          )}
           <button
             className="pp-btn"
             onClick={() => {
