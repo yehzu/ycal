@@ -2138,16 +2138,51 @@ function PrefsRecording({
 }
 
 // ── People directory editor ───────────────────────────────────────────
-// Lives in Settings → Recording. Edits people.md (cloudStore-routed)
-// directly as plaintext. The format is intentionally minimal: one
-// person per line, "email | name | title", # for comments. Saves on
-// blur so the user doesn't need to hunt for a save button.
+// Lives in Settings → Recording. Three input boxes per row (email /
+// name / title) so the user doesn't have to count pipes. Parses the
+// people.md file on mount; serializes back to the same plaintext shape
+// on save so the recorder's existing peopleStore.parsePeople reader
+// keeps working unchanged. Saves on blur (any input losing focus).
+
+interface PersonRow {
+  email: string;
+  name: string;
+  title: string;
+}
+
+function parsePeopleRows(body: string): PersonRow[] {
+  const rows: PersonRow[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const cols = t.split('|').map((c) => c.trim());
+    if (!cols[0] || !cols[0].includes('@')) continue;
+    rows.push({
+      email: cols[0],
+      name: cols[1] ?? '',
+      title: cols[2] ?? '',
+    });
+  }
+  return rows;
+}
+
+function serializePeopleRows(rows: PersonRow[]): string {
+  const header = '# yCal People Directory\n'
+    + '# email | name | title — managed via Settings → Recording.\n\n';
+  const lines = rows
+    .filter((r) => r.email.trim().length > 0)
+    .map((r) => `${r.email.trim()} | ${r.name.trim()} | ${r.title.trim()}`);
+  return header + lines.join('\n') + (lines.length ? '\n' : '');
+}
+
 function PeopleEditor() {
-  const [body, setBody] = useState<string>('');
+  const [rows, setRows] = useState<PersonRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const dirtyRef = useRef(false);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2155,7 +2190,7 @@ function PeopleEditor() {
       const res = await window.ycal.recorderGetPeople();
       if (cancelled) return;
       if (res.ok) {
-        setBody(res.body);
+        setRows(parsePeopleRows(res.body));
         setLoaded(true);
       } else {
         setError(res.error);
@@ -2165,8 +2200,8 @@ function PeopleEditor() {
     return () => { cancelled = true; };
   }, []);
 
-  const save = useCallback(async () => {
-    if (!dirty) return;
+  const persist = useCallback(async (next: PersonRow[]) => {
+    const body = serializePeopleRows(next);
     const res = await window.ycal.recorderSetPeople(body);
     if (res.ok) {
       setDirty(false);
@@ -2175,47 +2210,101 @@ function PeopleEditor() {
     } else {
       setError(res.error);
     }
-  }, [body, dirty]);
+  }, []);
+
+  const update = (i: number, patch: Partial<PersonRow>) => {
+    setRows((prev) => {
+      const next = prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
+      return next;
+    });
+    setDirty(true);
+  };
+
+  const addRow = () => {
+    setRows((prev) => [...prev, { email: '', name: '', title: '' }]);
+    setDirty(true);
+  };
+
+  const removeRow = (i: number) => {
+    setRows((prev) => {
+      const next = prev.filter((_, idx) => idx !== i);
+      // Removing a row is an explicit user action — save immediately
+      // rather than waiting for a blur that might not come.
+      void persist(next);
+      return next;
+    });
+  };
+
+  const saveOnBlur = () => {
+    if (!dirtyRef.current) return;
+    void persist(rows);
+  };
 
   if (!loaded) {
     return <p className="pref-row-hint">Loading directory…</p>;
   }
 
-  // Count parsed entries (lines with an @ that aren't comments) for a
-  // quick "this many people are mapped" status row.
-  const entryCount = body.split(/\r?\n/).filter((l) => {
-    const t = l.trim();
-    return t && !t.startsWith('#') && t.includes('@');
-  }).length;
-
   return (
-    <div>
-      <textarea
-        value={body}
-        onChange={(e) => { setBody(e.target.value); setDirty(true); }}
-        onBlur={() => { void save(); }}
-        spellCheck={false}
-        style={{
-          width: '100%',
-          minHeight: 220,
-          fontFamily: 'var(--mono)',
-          fontSize: 12,
-          lineHeight: 1.5,
-          padding: 10,
-          border: '0.5px solid var(--rule)',
-          background: 'var(--paper)',
-          color: 'var(--ink)',
-          resize: 'vertical',
-          boxSizing: 'border-box',
-        }}
-      />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6 }}>
+    <div className="people-editor">
+      <div className="people-row people-row-head">
+        <div>Email</div>
+        <div>Name</div>
+        <div>Title / role</div>
+        <div></div>
+      </div>
+      {rows.length === 0 && (
+        <p className="pref-row-hint" style={{ padding: '6px 0' }}>
+          — empty — click "+ Add person" to start.
+        </p>
+      )}
+      {rows.map((r, i) => (
+        <div key={i} className="people-row">
+          <input
+            type="email"
+            placeholder="alex@example.com"
+            value={r.email}
+            onChange={(e) => update(i, { email: e.target.value })}
+            onBlur={saveOnBlur}
+            spellCheck={false}
+            autoCapitalize="off"
+          />
+          <input
+            type="text"
+            placeholder="Alex Chen"
+            value={r.name}
+            onChange={(e) => update(i, { name: e.target.value })}
+            onBlur={saveOnBlur}
+            spellCheck={false}
+          />
+          <input
+            type="text"
+            placeholder="Engineering Manager"
+            value={r.title}
+            onChange={(e) => update(i, { title: e.target.value })}
+            onBlur={saveOnBlur}
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            className="people-del"
+            onClick={() => removeRow(i)}
+            title="Remove this person"
+            aria-label="Remove person"
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+        <button type="button" className="gx-add" onClick={addRow}>
+          + Add person
+        </button>
         <span className="pref-row-hint" style={{ margin: 0 }}>
-          {entryCount} {entryCount === 1 ? 'person' : 'people'} mapped
+          {rows.length} {rows.length === 1 ? 'person' : 'people'} mapped
         </span>
         {dirty && (
           <span className="pref-row-hint" style={{ margin: 0, fontStyle: 'italic' }}>
-            unsaved — click outside to save
+            unsaved — click outside a field to save
           </span>
         )}
         {!dirty && savedAt && (
@@ -2607,7 +2696,7 @@ function ImportPanel({
       <textarea
         className="gx-textarea"
         rows={10}
-        placeholder={`# 人名\n- Shawn Huang :: Sean, 順\n- Tzu-Hui Yeh :: 慈惠\n\n# 公司\n- GoFreight :: Go Freight\n`}
+        placeholder={`# 人名\n- Alex Chen :: 陳, Alex\n- Sam Smith :: Sammy\n\n# 公司\n- Acme Corp :: Acme\n`}
         value={body}
         onChange={(e) => setBody(e.target.value)}
       />

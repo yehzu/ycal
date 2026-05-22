@@ -1,9 +1,9 @@
 // Glossary import — accept JSON, markdown, or CSV and produce a list of
 // GlossaryEntry rows. The user keeps their domain-specific glossary
-// (e.g. GoFreight terminology) in whichever format suits their own
-// workflow (Heptabase note, Confluence export, plain CSV) and imports
-// it into yCal one-shot. Parsing is forgiving — missing fields fall
-// back to defaults rather than aborting the whole import.
+// (company terminology, product names) in whichever format suits their
+// own workflow (Heptabase note, Confluence export, plain CSV) and
+// imports it into yCal one-shot. Parsing is forgiving — missing fields
+// fall back to defaults rather than aborting the whole import.
 
 import { randomUUID } from 'node:crypto';
 import type { GlossaryCategory, GlossaryEntry } from '@shared/types';
@@ -84,11 +84,11 @@ function parseJson(body: string): GlossaryEntry[] {
 // "Canonical :: alias1, alias2".
 //
 //   ## 人名
-//   - Shawn Huang :: Sean, 順
-//   - Tzu-Hui Yeh :: 慈惠
+//   - Alex Chen :: 陳, Alex
+//   - Sam Smith :: Sammy
 //
 //   ## Companies
-//   - GoFreight :: Go Freight, GoFlight
+//   - Acme Corp :: Acme, ACME
 //
 // Also accepts a "->" or "|" separator instead of "::" — first
 // occurrence wins. A bare line with no separator is treated as a
