@@ -714,6 +714,10 @@ export const IPC = {
   // Skips whisper entirely — for the case where the transcript is fine
   // but the user wants a new note (different prompt, updated glossary).
   RecorderResummarize: 'ycal:recorderResummarize',
+  // People directory — plaintext (email | name | title per line) the
+  // recorder consults to add job titles to the summary prompt context.
+  RecorderGetPeople: 'ycal:recorderGetPeople',
+  RecorderSetPeople: 'ycal:recorderSetPeople',
   // Open a recording-related file (m4a / transcript / summary). Restricted
   // server-side to paths under ~/Recordings/yCal so the renderer can't
   // ask main to open arbitrary files.

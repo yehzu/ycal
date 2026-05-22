@@ -206,6 +206,10 @@ const api = {
     payload: { eventId: string; audioFile: string; title: string; accountId?: string },
   ): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderResummarize, payload),
+  recorderGetPeople: (): Promise<{ ok: true; body: string } | { ok: false; error: string }> =>
+    ipcRenderer.invoke(IPC.RecorderGetPeople),
+  recorderSetPeople: (body: string): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderSetPeople, body),
 
   // Per-event meeting archive on the event-owning Google account's Drive
   // appdata. Returns local cached path; downloads if needed.

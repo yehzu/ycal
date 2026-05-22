@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AccountSummary, AttendeeSuggestion, CalendarSummary, CloudStorageInfo,
   DriveSyncStatus, GlossaryCategory, GlossaryEntry,
@@ -2114,6 +2114,14 @@ function PrefsRecording({
       </p>
       <GlossaryEditor />
 
+      <h3 className="pref-h" style={{ marginTop: 22 }}>同事名冊 / People directory</h3>
+      <p className="pref-row-hint" style={{ maxWidth: '64ch' }}>
+        Map email → name + title so Claude knows who's in the room when
+        it drafts the meeting note. One person per line, fields
+        separated by <code>|</code>. Synced across Macs via iCloud.
+      </p>
+      <PeopleEditor />
+
       <h3 className="pref-h" style={{ marginTop: 22 }}>Recent recordings</h3>
       <RecentRecordings />
 
@@ -2125,6 +2133,102 @@ function PrefsRecording({
         Privacy &amp; Security</em>, then fully Cmd-Q + relaunch yCal — macOS
         only surfaces newly-granted permission to fresh processes.
       </p>
+    </div>
+  );
+}
+
+// ── People directory editor ───────────────────────────────────────────
+// Lives in Settings → Recording. Edits people.md (cloudStore-routed)
+// directly as plaintext. The format is intentionally minimal: one
+// person per line, "email | name | title", # for comments. Saves on
+// blur so the user doesn't need to hunt for a save button.
+function PeopleEditor() {
+  const [body, setBody] = useState<string>('');
+  const [loaded, setLoaded] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const res = await window.ycal.recorderGetPeople();
+      if (cancelled) return;
+      if (res.ok) {
+        setBody(res.body);
+        setLoaded(true);
+      } else {
+        setError(res.error);
+        setLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = useCallback(async () => {
+    if (!dirty) return;
+    const res = await window.ycal.recorderSetPeople(body);
+    if (res.ok) {
+      setDirty(false);
+      setSavedAt(Date.now());
+      setError(null);
+    } else {
+      setError(res.error);
+    }
+  }, [body, dirty]);
+
+  if (!loaded) {
+    return <p className="pref-row-hint">Loading directory…</p>;
+  }
+
+  // Count parsed entries (lines with an @ that aren't comments) for a
+  // quick "this many people are mapped" status row.
+  const entryCount = body.split(/\r?\n/).filter((l) => {
+    const t = l.trim();
+    return t && !t.startsWith('#') && t.includes('@');
+  }).length;
+
+  return (
+    <div>
+      <textarea
+        value={body}
+        onChange={(e) => { setBody(e.target.value); setDirty(true); }}
+        onBlur={() => { void save(); }}
+        spellCheck={false}
+        style={{
+          width: '100%',
+          minHeight: 220,
+          fontFamily: 'var(--mono)',
+          fontSize: 12,
+          lineHeight: 1.5,
+          padding: 10,
+          border: '0.5px solid var(--rule)',
+          background: 'var(--paper)',
+          color: 'var(--ink)',
+          resize: 'vertical',
+          boxSizing: 'border-box',
+        }}
+      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6 }}>
+        <span className="pref-row-hint" style={{ margin: 0 }}>
+          {entryCount} {entryCount === 1 ? 'person' : 'people'} mapped
+        </span>
+        {dirty && (
+          <span className="pref-row-hint" style={{ margin: 0, fontStyle: 'italic' }}>
+            unsaved — click outside to save
+          </span>
+        )}
+        {!dirty && savedAt && (
+          <span className="pref-row-hint" style={{ margin: 0, fontStyle: 'italic' }}>
+            saved
+          </span>
+        )}
+        {error && (
+          <span className="pref-row-hint" style={{ margin: 0, color: '#c4451a' }}>
+            {error}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

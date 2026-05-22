@@ -382,6 +382,7 @@ if attendees:
     for a in attendees:
         name = a.get("name") or a.get("email") or ""
         email = a.get("email") or ""
+        title = a.get("title") or ""
         flags = []
         if a.get("organizer"):
             flags.append("organizer")
@@ -391,7 +392,8 @@ if attendees:
         if rsvp and rsvp not in ("accepted", "needsAction"):
             flags.append(rsvp)
         suffix = (" (" + ", ".join(flags) + ")") if flags else ""
-        lines.append("    - " + name + " <" + email + ">" + suffix)
+        title_part = (" — " + title) if title else ""
+        lines.append("    - " + name + title_part + " <" + email + ">" + suffix)
 desc = (ctx.get("description") or "").strip()
 if desc:
     # Trim — sometimes the description is a wall of HTML from a

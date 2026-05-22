@@ -53,6 +53,7 @@ import {
 import {
   bindRecorderSetup, getRecorderSetupStatus, runRecorderSetup,
 } from './recorderSetup';
+import { loadPeopleText, savePeopleText } from './peopleStore';
 import {
   fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
   listMeetingArchive, uploadEventGlossarySidecar,
@@ -596,6 +597,22 @@ function registerIpc() {
   ipcMain.handle(IPC.RecorderResummarize, async (_e, payload: { eventId: string; audioFile: string; title: string; accountId?: string }) => {
     try {
       await resummarizeRecording(payload.eventId, payload.audioFile, payload.title, payload.accountId);
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.RecorderGetPeople, () => {
+    try {
+      const body = loadPeopleText();
+      return { ok: true as const, body };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.RecorderSetPeople, (_e, body: string) => {
+    try {
+      savePeopleText(body);
       return { ok: true as const };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };

@@ -45,6 +45,7 @@ import { listAccounts } from './tokenStore';
 import {
   applyGlossaryToSummaryPrompt, buildRuntimeFiles, getEffectiveEntries,
 } from './glossary';
+import { lookupPerson } from './peopleStore';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
 import {
   type MeetSignal, diagnoseDetection, extractMeetCode, getMeetSignal,
@@ -843,15 +844,22 @@ function writeRecordingContext(
   const me = ev.accountId
     ? listAccountSummaries().find((a) => a.id === ev.accountId)
     : null;
+  // Enrich each attendee with the title from the people directory
+  // (people.md, cloudStore-routed). The directory may also override
+  // the display name when Google's invite carries only an email.
   const attendees = (ev.attendees ?? [])
     .filter((a) => !a.resource && a.rsvp !== 'declined')
-    .map((a) => ({
-      name: a.name,
-      email: a.email,
-      organizer: a.organizer,
-      optional: a.optional,
-      rsvp: a.rsvp,
-    }));
+    .map((a) => {
+      const known = lookupPerson(a.email);
+      return {
+        name: known?.name ?? a.name,
+        email: a.email,
+        title: known?.title ?? null,
+        organizer: a.organizer,
+        optional: a.optional,
+        rsvp: a.rsvp,
+      };
+    });
   const isoOrNull = (ms: number): string | null => {
     if (!Number.isFinite(ms)) return null;
     try { return new Date(ms).toISOString(); } catch { return null; }

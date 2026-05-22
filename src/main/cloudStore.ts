@@ -282,6 +282,7 @@ export const CLOUD_FILES = [
   'settings.json',
   'tasks.md',
   'glossary.json',
+  'people.md',
 ];
 
 // ── Cross-device file watcher ────────────────────────────────────────
