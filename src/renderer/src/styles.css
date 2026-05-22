@@ -5967,6 +5967,53 @@ body.mode-quickadd #root {
   padding: 2px 6px;
 }
 .gx-add:hover { color: var(--ink); }
+
+/* People directory editor — three-column row of email / name / title
+ * with a delete button. Matches the visual register of the glossary
+ * editor above so the two sit comfortably next to each other. */
+.people-editor { display: block; }
+.people-row {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1.4fr 24px;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.people-row-head {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink-mute);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.people-row input {
+  font-family: var(--serif-body);
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 0.5px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 0;
+}
+.people-row input:focus {
+  outline: 1px solid var(--ink-mute);
+  outline-offset: -1px;
+}
+.people-del {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--ink-mute);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  width: 24px;
+}
+.people-del:hover { color: #c4451a; }
 .gx-row {
   display: grid;
   grid-template-columns: 1fr 1.4fr auto;
