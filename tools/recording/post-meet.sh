@@ -139,10 +139,28 @@ if [[ "$channels" -ge 2 ]]; then
 
   # Merge by timestamp. We collapse consecutive same-speaker segments
   # (whisper splits aggressively at natural pauses) so the labeled output
-  # stays readable and the summary prompt isn't full of micro-turns.
+  # stays readable. We also do bleed suppression — when the user records
+  # without headphones, the mic picks up speaker bleed of the others,
+  # which whisper transcribes into [Me] segments that are near-duplicates
+  # of nearby [Other] segments. We drop those duplicate [Me] entries so
+  # the transcript reflects who actually spoke. System channel wins;
+  # mic-only content (user speaking when others aren't) is preserved.
   if ! python3 - "${mic_json_base}.json" "${sys_json_base}.json" "$transcript" <<'PY' 2>&2; then
-import json, sys
+import json, sys, unicodedata
+from difflib import SequenceMatcher
+
 mic_path, sys_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# Bleed-suppression window: a [Me] segment within this many ms of any
+# [Other] segment whose normalized text is >= DEDUP_THRESHOLD similar
+# is treated as mic crosstalk and dropped. Window covers acoustic
+# propagation (mic-to-speaker distance) + whisper's segmentation jitter.
+DEDUP_WINDOW_MS = 4000
+DEDUP_THRESHOLD = 0.5
+
+def normalize(s):
+    s = unicodedata.normalize('NFKC', s)
+    return ''.join(c for c in s.lower() if c.isalnum())
 
 def load_segments(path, label):
     try:
@@ -156,26 +174,60 @@ def load_segments(path, label):
         text = (s.get("text") or "").strip()
         if not text:
             continue
-        segs.append((off_from, label, text))
+        segs.append({'off': off_from, 'label': label, 'text': text, 'norm': normalize(text)})
     return segs
 
-all_segs = []
-all_segs.extend(load_segments(mic_path, "Me"))
-all_segs.extend(load_segments(sys_path, "Other"))
-all_segs.sort(key=lambda x: x[0])
+mic = load_segments(mic_path, "Me")
+sys_segs = load_segments(sys_path, "Other")
+
+# Bleed suppression. For each [Me] segment, scan nearby [Other] segments
+# (in time) and drop the [Me] if any has high text similarity. We pick
+# the threshold at 0.5 SequenceMatcher ratio — high enough that random
+# brief overlaps don't trigger, low enough that whisper's per-channel
+# divergence on identical audio (different decoder runs hear slightly
+# different words) is still caught.
+suppressed = 0
+kept_mic = []
+sys_by_time = sorted(sys_segs, key=lambda x: x['off'])
+for m in mic:
+    if len(m['norm']) < 2:
+        kept_mic.append(m)  # too short to compare; keep it
+        continue
+    bled = False
+    for o in sys_by_time:
+        dt = o['off'] - m['off']
+        if dt < -DEDUP_WINDOW_MS:
+            continue
+        if dt > DEDUP_WINDOW_MS:
+            break
+        if len(o['norm']) < 2:
+            continue
+        if SequenceMatcher(None, m['norm'], o['norm']).ratio() >= DEDUP_THRESHOLD:
+            bled = True
+            break
+    if bled:
+        suppressed += 1
+    else:
+        kept_mic.append(m)
+
+if suppressed > 0:
+    sys.stderr.write(f"[post-meet] bleed suppression dropped {suppressed} mic segments (of {len(mic)}; user is likely not on headphones)\n")
+
+all_segs = kept_mic + sys_segs
+all_segs.sort(key=lambda x: x['off'])
 
 merged = []
-for off, who, text in all_segs:
-    if merged and merged[-1][1] == who:
-        merged[-1][2] += " " + text
+for s in all_segs:
+    if merged and merged[-1]['label'] == s['label']:
+        merged[-1]['text'] += ' ' + s['text']
     else:
-        merged.append([off, who, text])
+        merged.append({'off': s['off'], 'label': s['label'], 'text': s['text']})
 
 with open(out_path, "w", encoding="utf-8") as f:
-    for off, who, text in merged:
-        mm = off // 60000
-        ss = (off % 60000) // 1000
-        f.write(f"[{mm:02d}:{ss:02d}] {who}: {text}\n")
+    for s in merged:
+        mm = s['off'] // 60000
+        ss = (s['off'] % 60000) // 1000
+        f.write(f"[{mm:02d}:{ss:02d}] {s['label']}: {s['text']}\n")
 PY
     echo "[post-meet] merge failed — bailing" >&2; exit 3
   fi
