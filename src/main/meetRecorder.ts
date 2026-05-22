@@ -530,23 +530,27 @@ async function tick(): Promise<void> {
   }
   if (!scriptsInstalled()) return;
 
-  // 'activeMeet' mode: the meetDetector callback is the start/stop
-  // signal. The calendar-time logic below would race with it (e.g.
-  // start recording at event.start even though the user isn't in Meet
-  // yet), so short-circuit and rely on handleMeetSignal exclusively.
-  // We still call pruneFinished and update recordings (above) so the
-  // UI list ages out cleanly.
-  if (ui.recordingTrigger === 'activeMeet') return;
-
   const now = Date.now();
 
-  // Stop recordings whose scheduled end has passed.
+  // Stop recordings whose scheduled end has passed. Runs in BOTH
+  // trigger modes — in activeMeet mode handleMeetSignal won't stop a
+  // recording while its calendar window is still open (we trust
+  // calendar over the tab signal during meetings), so we need this
+  // tick-driven stop to land the recording at the real end time.
   for (const [id, s] of recordings) {
     if (s.state !== 'recording') continue;
     if (s.endsAt != null && now >= s.endsAt) {
       void stopRecording(id);
     }
   }
+
+  // 'activeMeet' mode: the meetDetector callback owns START decisions.
+  // The remaining calendar-time logic below schedules new recordings
+  // from upcoming events, which would race with the detector (e.g.
+  // start recording at event.start even though the user isn't in Meet
+  // yet) — short-circuit and rely on handleMeetSignal exclusively for
+  // start. End-time auto-stop already ran above.
+  if (ui.recordingTrigger === 'activeMeet') return;
 
   const candidates = await fetchCandidates(ui).catch((e) => {
     console.error('[yCal recorder] candidates fetch failed', e);
@@ -623,9 +627,28 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     const event = await pickEventForActiveMeet(ui, signal);
     void startRecording(event);
   } else {
+    // Tab-closed signal. Don't blindly stop every recording — the user
+    // often works in Slack / Notion / IDE for >90s during a meeting,
+    // which trips OFF_DEBOUNCE_MS. If the recording's calendar event
+    // is still in its scheduled window, trust the calendar over the
+    // tab signal and keep recording. Calendar's `endsAt` check in
+    // tick() will land the stop at the real end time.
+    //
+    // Synthetic active-Meet events (no calendar attribution) don't get
+    // this protection — their endsAt is an arbitrary +1h cap, not a
+    // real meeting end — so they stop on tab-closed as before.
+    const now = Date.now();
     let stoppedAny = false;
     for (const [id, s] of recordings) {
-      if (s.state === 'recording') { void stopRecording(id); stoppedAny = true; }
+      if (s.state !== 'recording') continue;
+      const calendarStillInWindow =
+        s.accountId && s.endsAt != null && now < s.endsAt;
+      if (calendarStillInWindow) {
+        console.log(`[yCal recorder] inMeet=false ignored for ${id} — calendar event still active (ends in ${Math.round((s.endsAt! - now) / 1000)}s)`);
+        continue;
+      }
+      void stopRecording(id);
+      stoppedAny = true;
     }
     if (stoppedAny) lastActiveMeetStopAt = Date.now();
   }
