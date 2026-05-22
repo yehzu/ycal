@@ -96,14 +96,15 @@ if [[ "$channels" -ge 2 ]]; then
   sys_json_base="${base}.sys"
 
   echo "[post-meet] decoding stereo → mic.wav + sys.wav…" >&2
-  # -map_channel <input>.<stream>.<channel> picks a single channel and
-  # rewrites it as mono. Two -map_channel passes can't share an ffmpeg
-  # invocation cleanly (the -ar/-ac arrangement applies to both outputs),
-  # so two separate ffmpeg calls is the path that "just works".
+  # ffmpeg removed `-map_channel` in 7.x. Use the `channelsplit` filter
+  # instead — it splits the stereo input into two independent mono streams
+  # in a single decode pass. [l] is the left (mic) channel; [r] is the
+  # right (system) channel. -ac 1 on each output is belt-and-suspenders;
+  # channelsplit already yields mono.
   ffmpeg -hide_banner -loglevel error -y -i "$audio" \
-    -map_channel 0.0.0 -ar 16000 -ac 1 "$mic_wav"
-  ffmpeg -hide_banner -loglevel error -y -i "$audio" \
-    -map_channel 0.0.1 -ar 16000 -ac 1 "$sys_wav"
+    -filter_complex "[0:a]channelsplit=channel_layout=stereo[l][r]" \
+    -map "[l]" -ar 16000 -ac 1 "$mic_wav" \
+    -map "[r]" -ar 16000 -ac 1 "$sys_wav"
 
   if [[ -n "${YCAL_WHISPER_PROMPT:-}" && -s "${YCAL_WHISPER_PROMPT:-/dev/null}" ]]; then
     echo "[post-meet] using whisper prompt ($(wc -c <"$YCAL_WHISPER_PROMPT") bytes)" >&2
