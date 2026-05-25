@@ -327,8 +327,14 @@ export interface RecordingStatus {
   state: 'recording' | 'processing' | 'uploading' | 'done' | 'failed';
   startedAt: number;       // epoch ms
   // When in 'recording' state, the wall-clock at which the recorder will
-  // auto-stop (event.end). Renderer can use this for a countdown.
+  // auto-stop (event.end). Renderer can use this for a countdown. May
+  // get rolled forward in activeMeet mode when the meeting overruns —
+  // see `originalEndsAt`.
   endsAt?: number;
+  // Activemeet overrun bookkeeping: the original event.end snapshotted at
+  // startRecording, immutable across endsAt extensions. Compared against
+  // `endsAt` to enforce the overrun cap (don't extend beyond +60min).
+  originalEndsAt?: number;
   audioFile?: string;
   // Local copy of the transcript next to the m4a (post-meet.sh writes
   // `<base>.transcript.txt`). Used by the popover's Transcript button

@@ -73,6 +73,12 @@ const MIN_AUDIO_BYTES = 30 * 1024;
 // (stale browser tab, brief tab switch, sleep/wake bounce) from
 // churning out dozens of short empty files.
 const ACTIVE_MEET_COOLDOWN_MS = 3 * 60_000;
+// Overrun extension in activeMeet mode: when a recording's endsAt is
+// reached but the meet room is still open in a browser tab, roll
+// endsAt forward by this much and keep recording. Capped by
+// OVERRUN_MAX_MS so a forgotten tab can't run forever.
+const OVERRUN_EXTEND_MS = 15 * 60_000;
+const OVERRUN_MAX_MS = 60 * 60_000;
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -165,6 +171,16 @@ function ensureHelpersInstalled(): void {
 
 const recordings = new Map<string, RecordingStatus>();
 const skipped = new Set<string>();
+// Meet room codes whose last start attempt failed. Used to break the
+// active-Meet retry loop when record-meet.sh keeps failing on the same
+// room (missing helper script, denied mic permission, broken tap, etc.).
+// Each detector tick generates a brand-new synthetic eventId
+// (`meet-<timestamp>`) so the per-eventId `skipped` set can't block
+// retries. Keyed by meet code instead so the same room is rejected
+// regardless of how many synthetic events get generated. Cleared on the
+// `inMeet=false` transition (user actually left) and on manual start
+// (explicit do-over).
+const failedMeetCodes = new Set<string>();
 // Events that have crossed event.start while the user has
 // "confirmBeforeStart" on. We've shown a notification; the user hasn't
 // clicked yet. Keep the event payload so the notification's action
@@ -353,6 +369,10 @@ export async function startRecordingManual(event: CalendarEvent): Promise<void> 
     skipped.delete(event.id);
     pushStatus();
   }
+  // Manual start is an explicit do-over — clear the per-room block so
+  // the active-Meet detector can retry this room before the user leaves.
+  const manualCode = extractMeetCode(event.meetUrl);
+  if (manualCode) failedMeetCodes.delete(manualCode);
   await startRecording(event);
 }
 
@@ -533,16 +553,39 @@ async function tick(): Promise<void> {
 
   const now = Date.now();
 
-  // Stop recordings whose scheduled end has passed. Runs in BOTH
-  // trigger modes — in activeMeet mode handleMeetSignal won't stop a
-  // recording while its calendar window is still open (we trust
-  // calendar over the tab signal during meetings), so we need this
-  // tick-driven stop to land the recording at the real end time.
+  // Stop recordings whose scheduled end has passed. Calendar mode stops
+  // immediately — that's the contract: the calendar event ended, the
+  // recording ends with it. ActiveMeet mode is gentler: if the meet
+  // room is still open in a browser tab, the meeting is overrunning —
+  // roll endsAt forward by OVERRUN_EXTEND_MS and keep recording, up to
+  // OVERRUN_MAX_MS past the original end so a forgotten tab can't run
+  // the mic forever.
   for (const [id, s] of recordings) {
     if (s.state !== 'recording') continue;
-    if (s.endsAt != null && now >= s.endsAt) {
-      void stopRecording(id);
+    if (s.endsAt == null || now < s.endsAt) continue;
+
+    if (ui.recordingTrigger === 'activeMeet' && s.meetCode) {
+      const original = s.originalEndsAt ?? s.endsAt;
+      const totalExtension = s.endsAt - original;
+      if (totalExtension < OVERRUN_MAX_MS) {
+        const stillOpen = await probeMeetCodeOpen(s.meetCode);
+        if (stillOpen === true) {
+          if (s.originalEndsAt == null) s.originalEndsAt = original;
+          s.endsAt = s.endsAt + OVERRUN_EXTEND_MS;
+          console.log(
+            `[yCal recorder] meeting ${id} overrunning — extending +${OVERRUN_EXTEND_MS / 60_000}min (total +${(s.endsAt - original) / 60_000}min / cap ${OVERRUN_MAX_MS / 60_000}min)`,
+          );
+          pushStatus();
+          continue;
+        }
+        // stillOpen === false: confirmed gone → stop. null (inconclusive):
+        // fall through to stop too, since endsAt was hit and we can't
+        // verify the call is still happening.
+      } else {
+        console.log(`[yCal recorder] meeting ${id} hit overrun cap (+${OVERRUN_MAX_MS / 60_000}min) — stopping`);
+      }
     }
+    void stopRecording(id);
   }
 
   // 'activeMeet' mode: the meetDetector callback owns START decisions.
@@ -615,6 +658,15 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     for (const s of recordings.values()) {
       if (s.state === 'recording' || s.state === 'processing') return;
     }
+    // Per-room block. If the previous attempt at THIS exact room failed
+    // (script broken, mic permission denied, etc.), don't keep spamming
+    // start attempts every 10s — wait until the user leaves and rejoins
+    // (the inMeet=false transition clears failedMeetCodes).
+    const signalCode = extractMeetCode(signal.title) ?? undefined;
+    if (signalCode && failedMeetCodes.has(signalCode)) {
+      console.log(`[yCal recorder] in-Meet signal ignored — ${signalCode} previously failed; leave + rejoin to retry`);
+      return;
+    }
     // Cooldown after a stop. A stale Meet tab (or a sleep/wake bounce)
     // can re-trigger the detector seconds after a previous recording
     // ends. Without this gate, we churn out short empty files in a
@@ -677,6 +729,10 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
       stoppedAny = true;
     }
     if (stoppedAny) lastActiveMeetStopAt = Date.now();
+    // User actually left (the detector's 90s off-debounce already
+    // confirmed it). Forget any room-codes we'd blocked from earlier
+    // failed starts so the next rejoin gets a fresh try.
+    if (failedMeetCodes.size > 0) failedMeetCodes.clear();
   }
 }
 
@@ -716,11 +772,19 @@ async function pickEventForActiveMeet(
 
 function synthesizeMeetEvent(signal: MeetSignal): CalendarEvent {
   // Title heuristic: Google Meet uses "Meet - <code>" or "Meet -
-  // <topic>" in the tab title. Strip the prefix when present.
-  const title = (signal.title ?? '').replace(/^.*Meet\s*-\s*/, '').trim()
-    || 'Untitled meeting';
+  // <topic>" in the tab title. Strip the prefix when present. When the
+  // signal carries a raw URL (the detector's `chrome:`/`arc:` path
+  // captures the URL string itself), fall back to the meet code so the
+  // tray/popover row shows "abc-defg-hij" instead of a 60-char URL.
+  const rawTitle = (signal.title ?? '').trim();
+  const code = extractMeetCode(rawTitle);
+  let title = rawTitle.replace(/^.*Meet\s*-\s*/, '').trim();
+  if (!title || /meet\.google\.com/i.test(title)) {
+    title = code ?? 'Untitled meeting';
+  }
+  const meetUrl = code ? `https://meet.google.com/${code}` : '';
   const now = new Date();
-  const end = new Date(now.getTime() + 60 * 60_000);  // 1h cap; safety net catches overruns at +30m
+  const end = new Date(now.getTime() + 60 * 60_000);  // 1h cap; overrun extension rolls this forward when the room is still open
   return {
     id: `meet-${now.toISOString().replace(/[:.]/g, '-')}`,
     accountId: '',
@@ -737,7 +801,7 @@ function synthesizeMeetEvent(signal: MeetSignal): CalendarEvent {
     status: 'confirmed',
     eventType: 'default',
     rsvp: 'accepted',
-    meetUrl: '',
+    meetUrl,
   };
 }
 
@@ -899,6 +963,7 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     state: 'recording',
     startedAt: Date.now(),
     endsAt,
+    originalEndsAt: Number.isFinite(endsAt) ? endsAt : undefined,
     accountId: ev.accountId || undefined,
     meetCode,
   };
@@ -944,6 +1009,12 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     pushStatus();
     notify('yCal · recording failed to start', message.slice(0, 140));
     skipped.add(ev.id);
+    // Block re-entry for this exact meet room until the user leaves +
+    // rejoins. Without this, active-Meet mode would mint a new
+    // synthetic eventId every 10s and stack up another Failed row each
+    // time. The set is cleared on inMeet=false (real exit) and on
+    // manual start.
+    if (meetCode) failedMeetCodes.add(meetCode);
   }
 }
 
