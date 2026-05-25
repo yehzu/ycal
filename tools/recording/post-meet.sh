@@ -336,7 +336,12 @@ Write meeting notes in markdown. Match the language used in the transcript (mixe
 What was decided, by whom (if clear), and rationale.
 
 ## Action items
-Markdown table: | Owner | What | Due |. Only items that are explicit or strongly implied. Don't invent owners or dates.
+Markdown table: | Owner | What | Due |. Only items explicitly or strongly implied. Don't invent dates.
+
+Owner discipline — pick exactly one of three forms, in this order of preference:
+1. **Attendee** — a name from the "Attendees" list. Write the name plain.
+2. **Known-but-absent** — a name from "Known people (NOT at this meeting)" that the meeting explicitly delegated work to. Write "Name (absent)". When there's an in-meeting follow-up owner ("Alice will brief Bob"), prefer Alice as owner with "brief Bob on …" in the What column — it keeps the action with someone who was actually there.
+3. **Unverified** — a name in the transcript that matches NEITHER list. The transcription is probably wrong (Whisper mis-hearing) or the name is third-party context, not an owner. Write the name with a trailing "?" (e.g. "Gomei?") so the reader knows to check. Do NOT silently promote unknown names to owners.
 
 ## Open questions
 Things raised but unresolved.
@@ -403,6 +408,25 @@ if desc:
     lines.append("- Description:")
     for ln in desc.splitlines():
         lines.append("  " + ln)
+
+# Broader directory of people the user knows (from people.md) who are NOT
+# at this meeting. Lets the prompt distinguish a legitimate delegation to
+# an absent colleague from a Whisper-hallucinated name. Truncated for
+# token budget — if the directory is huge, the most useful entries
+# (those mentioned in the transcript) tend to be common enough to fit.
+known = ctx.get("knownPeople") or []
+if known:
+    capped = known[:80]
+    lines.append("- Known people (NOT at this meeting — only use if explicitly delegated to):")
+    for p in capped:
+        name = p.get("name") or ""
+        title = p.get("title") or ""
+        if not name:
+            continue
+        title_part = (" — " + title) if title else ""
+        lines.append("    - " + name + title_part)
+    if len(known) > len(capped):
+        lines.append("    - (… " + str(len(known) - len(capped)) + " more not shown)")
 
 lines.append("")
 lines.append("Note: stereo recordings label speakers as Me/Other. Map Me to the user above. For Other, prefer 'an attendee' over guessing — but where the discussion context (role, expertise, named references) strongly implies a specific attendee, use their name.")

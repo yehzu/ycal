@@ -45,7 +45,7 @@ import { listAccounts } from './tokenStore';
 import {
   applyGlossaryToSummaryPrompt, buildRuntimeFiles, getEffectiveEntries,
 } from './glossary';
-import { lookupPerson } from './peopleStore';
+import { lookupPerson, loadPeopleText, parsePeople } from './peopleStore';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
 import {
   type MeetSignal, diagnoseDetection, extractMeetCode, getMeetSignal,
@@ -911,6 +911,7 @@ function writeRecordingContext(
   // Enrich each attendee with the title from the people directory
   // (people.md, cloudStore-routed). The directory may also override
   // the display name when Google's invite carries only an email.
+  const directory = parsePeople(loadPeopleText());
   const attendees = (ev.attendees ?? [])
     .filter((a) => !a.resource && a.rsvp !== 'declined')
     .map((a) => {
@@ -924,6 +925,17 @@ function writeRecordingContext(
         rsvp: a.rsvp,
       };
     });
+  // Send the rest of the people directory too — names of folks who aren't
+  // at this meeting but who the user knows. Used by the summary prompt
+  // to distinguish "legitimate delegation to absent person" from
+  // "Whisper hallucinated a name that doesn't exist" when LLM picks
+  // owners for action items.
+  const attendeeEmails = new Set(
+    attendees.map((a) => (a.email ?? '').toLowerCase()).filter(Boolean),
+  );
+  const knownPeople = Array.from(directory.values())
+    .filter((p) => p.name && !attendeeEmails.has(p.email))
+    .map((p) => ({ name: p.name, email: p.email, title: p.title }));
   const isoOrNull = (ms: number): string | null => {
     if (!Number.isFinite(ms)) return null;
     try { return new Date(ms).toISOString(); } catch { return null; }
@@ -934,6 +946,7 @@ function writeRecordingContext(
     endsAt: isoOrNull(endsAt),
     me: me ? { email: me.email, name: me.name } : null,
     attendees,
+    knownPeople,
     location: ev.location,
     description: ev.description,
   };
