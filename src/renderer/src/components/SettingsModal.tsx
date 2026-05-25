@@ -1943,7 +1943,7 @@ function PrefsRecording({
       </PrefRow>
       <PrefRow
         label="HuggingFace token"
-        hint="Read-only token used to download the public pyannote model. Accept the license at huggingface.co/pyannote/speaker-diarization-3.1 + huggingface.co/pyannote/segmentation-3.0, then generate a token. Synced across Macs via cloudStore."
+        hint="Read-only token used to download the public pyannote model. Accept the license at all three URLs first: huggingface.co/pyannote/speaker-diarization-community-1, huggingface.co/pyannote/speaker-diarization-3.1, huggingface.co/pyannote/segmentation-3.0. Then generate the token. Synced across Macs via cloudStore."
       >
         <input
           type="password"

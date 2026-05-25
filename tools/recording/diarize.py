@@ -12,12 +12,11 @@ Why a separate Python process: pyannote.audio needs Python + PyTorch +
 app stays Node-only and the venv is purely opt-in. post-meet.sh shells out
 to this script when YCAL_DIARIZE_ENABLED=1.
 
-Pinning notes: pyannote 4.x switched to a gated model that requires extra
-HF license clicks; PyTorch 2.6+ changed `torch.load` defaults that break
-the 3.x checkpoint loader. The yCal venv pins:
-  pyannote.audio >=3.1,<4.0
-  torch <2.6, torchaudio <2.6
-  huggingface_hub <0.30   (newer drops use_auth_token kwarg)
+Uses pyannote.audio 4.x and the speaker-diarization-community-1 model.
+Compared to 3.1: better speaker separation (matched +1 speaker correctly
+on the same audio in PoC), no version pins required for torch/hf_hub.
+Trade-off: needs one extra HuggingFace license click for the
+community-1 repo on top of segmentation-3.0.
 """
 
 from __future__ import annotations
@@ -65,14 +64,15 @@ def main() -> int:
     print("[diarize] loading pipeline (first run downloads ~500 MB)…", file=sys.stderr, flush=True)
     try:
         pipe = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=args.hf_token,
+            "pyannote/speaker-diarization-community-1",
+            token=args.hf_token,
         )
     except Exception as e:
         msg = str(e)
         if "gated" in msg.lower() or "403" in msg:
             print(
-                "[diarize] HuggingFace returned 403. Accept the model license at:\n"
+                "[diarize] HuggingFace returned 403. Accept the model license at all three URLs:\n"
+                "  https://huggingface.co/pyannote/speaker-diarization-community-1\n"
                 "  https://huggingface.co/pyannote/speaker-diarization-3.1\n"
                 "  https://huggingface.co/pyannote/segmentation-3.0",
                 file=sys.stderr,
@@ -96,9 +96,13 @@ def main() -> int:
         max_speakers=args.max_speakers,
     )
 
+    # pyannote 4.x: pipeline returns a DiarizeOutput wrapping two
+    # Annotations. Use the non-exclusive speaker_diarization so overlapping
+    # speech still maps to a label rather than disappearing.
+    diar = annotation.speaker_diarization
     intervals = [
         (turn.start, turn.end, label)
-        for turn, _, label in annotation.itertracks(yield_label=True)
+        for turn, _, label in diar.itertracks(yield_label=True)
     ]
     intervals.sort(key=lambda r: r[0])
     n_spk = len({i[2] for i in intervals})

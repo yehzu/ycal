@@ -37,16 +37,14 @@ const POST_SH = path.join(os.homedir(), '.ycal', 'post-meet.sh');
 const DIARIZE_VENV = path.join(os.homedir(), '.ycal', 'diarize-venv');
 const DIARIZE_VENV_PY = path.join(DIARIZE_VENV, 'bin', 'python');
 
-// Pinned dependency stack for diarization. Newer pyannote (4.x) uses a
-// gated model that needs extra license clicks; newer torch (2.6+) breaks
-// pyannote 3.x's checkpoint loader; newer huggingface_hub (0.30+) drops
-// the use_auth_token kwarg pyannote 3.x still calls. These three pins
-// hold the assembly together. Validated 2026-05-25.
+// Dependency stack for diarization. pyannote.audio 4.x uses the newer
+// speaker-diarization-community-1 model (better accuracy than 3.1 in our
+// PoC) and works with the latest torch + huggingface_hub — no version
+// pins needed. Validated 2026-05-25 on Python 3.12.
 const DIARIZE_PINS = [
-  'pyannote.audio>=3.1,<4.0',
-  'torch<2.6',
-  'torchaudio<2.6',
-  'huggingface_hub<0.30',
+  'pyannote.audio>=4.0',
+  'torch',
+  'torchaudio',
 ];
 
 // Resolve the user's chosen whisper model into a concrete path + URL.
@@ -118,14 +116,70 @@ function fileSize(p: string): number {
 // Find a system Python suitable for the diarize venv. pyannote 3.x +
 // torch <2.6 wheels exist for 3.10–3.12. 3.13+ doesn't have matching
 // wheels yet; 3.9 is below pyannote's floor.
+//
+// Pyenv quirk: ~/.pyenv/shims/python3.X is a dispatch script that only
+// works when that version is in `pyenv global` or `pyenv local`. A user
+// who has 3.12.10 installed but pyenv global'd to 3.8 will see the
+// shim file exist (whichOf finds it) but execution returns
+// "pyenv: python3.12: command not found". So we prefer the REAL binary
+// inside ~/.pyenv/versions/3.12.X/bin/python3.12 over the shim, and
+// verify shims with a quick `--version` probe before accepting them.
 function findCompatiblePython(): string | null {
   for (const v of ['3.12', '3.11', '3.10']) {
-    const p = whichOf(`python${v}`);
+    const p = findPythonByMinor(v);
     if (p) return p;
   }
-  // Generic `python3` last — only acceptable if its version is in range.
+  // Generic `python3` last — only acceptable if it actually runs and
+  // reports a version in our supported range.
   const generic = whichOf('python3');
-  return generic;
+  if (generic && verifyPythonVersion(generic, ['3.10', '3.11', '3.12'])) {
+    return generic;
+  }
+  return null;
+}
+
+// Look for a `python3.<minor>` install, preferring direct binaries over
+// pyenv shims so users with multiple versions installed but a different
+// `pyenv global` setting still get a working venv.
+function findPythonByMinor(minor: string): string | null {
+  // 1. Direct pyenv version binaries — bypass the shim entirely.
+  try {
+    const versionsDir = path.join(os.homedir(), '.pyenv', 'versions');
+    const versions = fs.readdirSync(versionsDir).sort().reverse();
+    for (const v of versions) {
+      if (!v.startsWith(`${minor}.`)) continue;
+      const real = path.join(versionsDir, v, 'bin', `python${minor}`);
+      try {
+        const st = fs.statSync(real);
+        if (st.isFile() && (st.mode & 0o111)) return real;
+      } catch { /* keep looking */ }
+    }
+  } catch { /* no pyenv */ }
+
+  // 2. Homebrew / system: `which python3.X` then verify it executes.
+  const found = whichOf(`python${minor}`);
+  if (found && verifyPythonVersion(found, [minor])) {
+    return found;
+  }
+  return null;
+}
+
+// Run `<python> --version` and return true if it matches one of the
+// allowed minor versions. Catches pyenv shims dispatching to a missing
+// install (the shim file exists but `--version` exits non-zero).
+function verifyPythonVersion(pythonPath: string, allowedMinors: string[]): boolean {
+  try {
+    const out = require('node:child_process').execFileSync(
+      pythonPath,
+      ['--version'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000 },
+    );
+    const m = /Python\s+3\.(\d+)/.exec(out);
+    if (!m) return false;
+    return allowedMinors.some((mn) => mn === `3.${m[1]}`);
+  } catch {
+    return false;
+  }
 }
 
 function diarizeVenvOk(): boolean {
