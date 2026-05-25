@@ -10,3 +10,5 @@ config.local.json
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 build/oauth-client.json
+__pycache__/
+*.pyc

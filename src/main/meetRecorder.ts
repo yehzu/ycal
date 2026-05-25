@@ -39,7 +39,7 @@ import { getUiSettings } from './settings';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
-import { getActiveModelPath } from './recorderSetup';
+import { getActiveModelPath, getDiarizeVenvPython, isDiarizeVenvReady } from './recorderSetup';
 import { uploadMeetingArtifacts } from './meetingArchive';
 import { listAccounts } from './tokenStore';
 import {
@@ -86,6 +86,7 @@ const SCRIPT_DIR = path.join(os.homedir(), '.ycal');
 const STATE_DIR = path.join(SCRIPT_DIR, 'recordings');
 const RECORD_SH = path.join(SCRIPT_DIR, 'record-meet.sh');
 const POST_SH = path.join(SCRIPT_DIR, 'post-meet.sh');
+const DIARIZE_PY = path.join(SCRIPT_DIR, 'diarize.py');
 const TAP_BIN = path.join(SCRIPT_DIR, 'bin', 'coreaudio-tap');
 
 // Locate a bundled asset across dev + packaged layouts. In dev we sit at
@@ -137,6 +138,7 @@ function ensureHelpersInstalled(): void {
     [resolveBundled('native', 'coreaudio-tap'), TAP_BIN, 'coreaudio-tap'],
     [scriptSource('record-meet.sh'), RECORD_SH, 'record-meet.sh'],
     [scriptSource('post-meet.sh'), POST_SH, 'post-meet.sh'],
+    [scriptSource('diarize.py'), DIARIZE_PY, 'diarize.py'],
   ];
   for (const [src, dst, label] of pairs) {
     if (!src) {
@@ -1147,6 +1149,19 @@ async function postProcess(
       envExtras.YCAL_TRANSCRIPT_FILTER = glossaryRuntime.filterFile;
     }
     if (summaryOnly) envExtras.YCAL_SUMMARY_ONLY = '1';
+    // Speaker diarization toggle. When the user has enabled it in
+    // Settings → Recording AND set their HF token AND the venv is
+    // installed, hand post-meet.sh everything it needs to splice
+    // [SPK1]/[SPK2]/… labels into the [Other] segments of the merged
+    // transcript. Any missing piece → the env vars stay unset and
+    // post-meet.sh falls back to the legacy [Me]/[Other] flow.
+    const diarizeCfg = getUiSettings().recorderDiarize;
+    if (diarizeCfg?.enabled && diarizeCfg.hfToken && isDiarizeVenvReady()) {
+      envExtras.YCAL_DIARIZE_ENABLED = '1';
+      envExtras.YCAL_HF_TOKEN = diarizeCfg.hfToken;
+      envExtras.YCAL_DIARIZE_PY = DIARIZE_PY;
+      envExtras.YCAL_DIARIZE_VENV_PY = getDiarizeVenvPython();
+    }
     const stdout = await execScript([POST_SH, audioFile, title], {
       timeoutMs: 30 * 60_000,
       envExtras: Object.keys(envExtras).length > 0 ? envExtras : undefined,

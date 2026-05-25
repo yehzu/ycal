@@ -236,6 +236,22 @@ export interface UiSettings {
   // summary are uploaded — saves ~30–60 MB per hour-long meeting at the
   // cost of one-machine-only re-process.
   recordingUploadAudio?: boolean;
+  // Speaker diarization (pyannote.audio). When enabled AND `hfToken` is
+  // set, post-meet.sh runs the diarization Python script on the system-
+  // audio channel and splices speaker labels ([SPK1]/[SPK2]/…) into the
+  // transcript before claude summarisation. The summary prompt is told
+  // to map labels to actual attendees from the calendar invite.
+  //
+  // Both fields live in settings.json (cloudStore-routed) — the HF token
+  // is read-only access to a public model registry, not a personal
+  // credential like Todoist's key or a Google refresh token. Sync across
+  // Macs is the whole point: set up once, every Mac gets diarized
+  // summaries for free. The downloaded pyannote model (~500 MB) is NOT
+  // synced — it lives in ~/.ycal/diarize-venv/ per machine.
+  recorderDiarize?: {
+    enabled: boolean;
+    hfToken: string | null;
+  };
 }
 
 // Recording-pipeline dependency status. Surfaced to the Settings →
@@ -257,9 +273,19 @@ export interface RecorderSetupStatus {
   // Bundled scripts + coreaudio-tap that yCal auto-syncs into ~/.ycal/.
   scripts: { installed: boolean };
   coreaudioTap: { installed: boolean; path: string };
+  // Speaker-diarization Python venv at ~/.ycal/diarize-venv/. Optional —
+  // recordings work without it, just with [Me]/[Other] labels only.
+  // `pythonPath` reports the system Python the venv was built from, so
+  // the UI can surface "needs Python 3.10–3.12" diagnostics.
+  diarizeVenv: {
+    installed: boolean;
+    venvPath: string;
+    pythonPath: string | null;
+  };
   // Aggregate: true when everything required for auto-record (brew is
   // NOT required — we only need it to install the others; once they're
-  // there, brew can disappear).
+  // there, brew can disappear). Diarize is intentionally NOT included
+  // in `ready` — it's opt-in.
   ready: boolean;
 }
 
@@ -267,12 +293,14 @@ export interface RecorderSetupStatus {
 // stdout/stderr from brew or curl. `phase` lets the UI label which
 // step we're on without parsing free-form text.
 export interface RecorderSetupProgress {
-  phase: 'starting' | 'brew' | 'model' | 'done' | 'error';
+  phase: 'starting' | 'brew' | 'model' | 'diarize' | 'done' | 'error';
   line?: string;
   // Populated when phase === 'error'.
   error?: string;
   // 0..100 for the model download phase; absent for other phases.
   modelPercent?: number;
+  // 0..100 for the diarize venv install phase; absent for other phases.
+  diarizePercent?: number;
 }
 
 // Live "are we in a Meet right now" signal from meetDetector. Surfaced
@@ -709,6 +737,7 @@ export const IPC = {
   // Auto-setup: probe what's missing, install in one shot via brew + curl.
   RecorderGetSetupStatus: 'ycal:recorderGetSetupStatus',
   RecorderRunSetup: 'ycal:recorderRunSetup',
+  RecorderRunDiarizeSetup: 'ycal:recorderRunDiarizeSetup',
   RecorderSetupProgress: 'ycal:recorderSetupProgress',  // main → renderer push
   // Browse finished recordings on disk.
   RecorderListRecent: 'ycal:recorderListRecent',

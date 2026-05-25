@@ -51,7 +51,7 @@ import {
   startRecordingManual, stopMeetRecorder, stopRecordingManual,
 } from './meetRecorder';
 import {
-  bindRecorderSetup, getRecorderSetupStatus, runRecorderSetup,
+  bindRecorderSetup, getRecorderSetupStatus, runDiarizeSetup, runRecorderSetup,
 } from './recorderSetup';
 import { loadPeopleText, savePeopleText } from './peopleStore';
 import {
@@ -568,6 +568,14 @@ function registerIpc() {
     // push channel. We don't await — the renderer wires its own listener
     // and the click handler returns immediately.
     void runRecorderSetup();
+    return { ok: true as const };
+  });
+  ipcMain.handle(IPC.RecorderRunDiarizeSetup, () => {
+    // Same fire-and-forget pattern as runRecorderSetup. Sets up the
+    // pyannote.audio Python venv at ~/.ycal/diarize-venv/. ~1.5 GB
+    // download (torch + pyannote weights) — UI shows progress over the
+    // RecorderSetupProgress push channel with phase='diarize'.
+    void runDiarizeSetup();
     return { ok: true as const };
   });
   ipcMain.handle(IPC.RecorderListRecent, (_e, limit?: number) =>

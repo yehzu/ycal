@@ -184,6 +184,8 @@ const api = {
     ipcRenderer.invoke(IPC.RecorderGetSetupStatus),
   recorderRunSetup: (): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderRunSetup),
+  recorderRunDiarizeSetup: (): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderRunDiarizeSetup),
   onRecorderSetupProgress: (handler: (p: RecorderSetupProgress) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, payload: RecorderSetupProgress): void =>
       handler(payload);

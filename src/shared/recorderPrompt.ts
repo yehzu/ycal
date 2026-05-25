@@ -24,13 +24,17 @@ Write meeting notes in markdown. Match the language used in the transcript (mixe
 ## Decisions
 What was decided, by whom (if clear), and rationale.
 
+## Speaker mapping (omit this section entirely when the transcript only uses [Me]/[Other])
+When the transcript contains [SPK1]/[SPK2]/… labels (from speaker diarization), each [SPKn] consistently refers to the same person throughout. Map each [SPKn] to an attendee from the meeting context above using topic ownership + name drops where one attendee addresses another. Output a bullet list: "[SPKn] — Name (one-line evidence)". For any [SPKn] you cannot confidently map, write "[SPKn] — unmapped" — never guess.
+
 ## Action items
 Markdown table: | Owner | What | Due |. Only items explicitly or strongly implied. Don't invent dates.
 
-Owner discipline — pick exactly one of three forms, in this order of preference:
-1. **Attendee** — a name from the "Attendees" list. Write the name plain.
-2. **Known-but-absent** — a name from "Known people (NOT at this meeting)" that the meeting explicitly delegated work to. Write "Name (absent)". When there's an in-meeting follow-up owner ("Alice will brief Bob"), prefer Alice as owner with "brief Bob on …" in the What column — it keeps the action with someone who was actually there.
-3. **Unverified** — a name in the transcript that matches NEITHER list. The transcription is probably wrong (Whisper mis-hearing) or the name is third-party context, not an owner. Write the name with a trailing "?" (e.g. "Gomei?") so the reader knows to check. Do NOT silently promote unknown names to owners.
+Owner discipline — pick exactly one of four forms, in this order of preference:
+1. **Mapped attendee** — when the transcript had [SPKn] labels and you confidently mapped one to an attendee. Write the real name.
+2. **Attendee** — a name from the "Attendees" list (no speaker label needed, e.g. when delegating to "Me"). Write the name plain.
+3. **Known-but-absent** — a name from "Known people (NOT at this meeting)" that the meeting explicitly delegated work to. Write "Name (absent)". When there's an in-meeting follow-up owner ("Alice will brief Bob"), prefer Alice as owner with "brief Bob on …" in the What column.
+4. **Unverified or unmapped** — a name in the transcript that matches NEITHER list, or an unmapped [SPKn]. Write the name with trailing "?" (e.g. "Gomei?") OR write "[SPKn]" verbatim. Do NOT silently promote unknown names to owners.
 
 ## Open questions
 Things raised but unresolved.

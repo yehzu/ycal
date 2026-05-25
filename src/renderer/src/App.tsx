@@ -138,6 +138,16 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [recordingUploadAudio, setRecordingUploadAudio] = useState<boolean>(
     () => initialUi.recordingUploadAudio ?? true,
   );
+  // Speaker diarization config. Lives in settings.json (cloud-routed) so
+  // it follows the user across Macs — the HF token is a low-sensitivity
+  // download token for public pyannote models, not a personal credential.
+  const [recorderDiarize, setRecorderDiarize] = useState<{
+    enabled: boolean;
+    hfToken: string | null;
+  }>(() => ({
+    enabled: initialUi.recorderDiarize?.enabled ?? false,
+    hfToken: initialUi.recorderDiarize?.hfToken ?? null,
+  }));
   const [loadWindow, setLoadWindow] = useState<LoadWindowSettings>(
     () => ({ ...DEFAULT_LOAD_WINDOW, ...(initialUi.loadWindow ?? {}) }),
   );
@@ -244,6 +254,10 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setRecordingWhisperModel(ui.recordingWhisperModel ?? 'large-v3-turbo');
       setRecordingSummaryPrompt(ui.recordingSummaryPrompt ?? '');
       setRecordingUploadAudio(ui.recordingUploadAudio ?? true);
+      setRecorderDiarize({
+        enabled: ui.recorderDiarize?.enabled ?? false,
+        hfToken: ui.recorderDiarize?.hfToken ?? null,
+      });
       setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
       setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
       setCustomTagSuggestions(ui.customTagSuggestions ?? []);
@@ -351,6 +365,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       recordingWhisperModel,
       recordingSummaryPrompt: recordingSummaryPrompt || undefined,
       recordingUploadAudio,
+      recorderDiarize,
       loadWindow,
       loadBands,
       customTagSuggestions,
@@ -361,7 +376,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
     autoRolloverPastTasks, autoRecordMeetings, recordingConfirmBeforeStart,
     recordingTrigger, recordingWhisperModel, recordingSummaryPrompt,
-    recordingUploadAudio,
+    recordingUploadAudio, recorderDiarize,
     loadWindow, loadBands, customTagSuggestions, theme,
   ]);
 
@@ -959,6 +974,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setRecordingSummaryPrompt={setRecordingSummaryPrompt}
           recordingUploadAudio={recordingUploadAudio}
           setRecordingUploadAudio={setRecordingUploadAudio}
+          recorderDiarize={recorderDiarize}
+          setRecorderDiarize={setRecorderDiarize}
           loadWindow={loadWindow}
           setLoadWindow={setLoadWindow}
           loadBands={loadBands}

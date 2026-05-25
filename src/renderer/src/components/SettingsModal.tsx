@@ -68,6 +68,8 @@ interface Props {
   setRecordingSummaryPrompt: (v: string) => void;
   recordingUploadAudio: boolean;
   setRecordingUploadAudio: (v: boolean) => void;
+  recorderDiarize: { enabled: boolean; hfToken: string | null };
+  setRecorderDiarize: (v: { enabled: boolean; hfToken: string | null }) => void;
   // Day-load gauge window
   loadWindow: LoadWindowSettings;
   setLoadWindow: (next: LoadWindowSettings) => void;
@@ -252,6 +254,8 @@ export function SettingsModal(props: Props) {
                 setSummaryPrompt={props.setRecordingSummaryPrompt}
                 uploadAudio={props.recordingUploadAudio}
                 setUploadAudio={props.setRecordingUploadAudio}
+                diarize={props.recorderDiarize}
+                setDiarize={props.setRecorderDiarize}
               />
             )}
             {tab === 'shortcuts' && <PrefsShortcuts />}
@@ -1669,6 +1673,7 @@ function PrefsRecording({
   whisperModel, setWhisperModel,
   summaryPrompt, setSummaryPrompt,
   uploadAudio, setUploadAudio,
+  diarize, setDiarize,
 }: {
   autoRecord: boolean;
   setAutoRecord: (v: boolean) => void;
@@ -1682,6 +1687,8 @@ function PrefsRecording({
   setSummaryPrompt: (v: string) => void;
   uploadAudio: boolean;
   setUploadAudio: (v: boolean) => void;
+  diarize: { enabled: boolean; hfToken: string | null };
+  setDiarize: (v: { enabled: boolean; hfToken: string | null }) => void;
 }) {
   const [status, setStatus] = useState<RecorderSetupStatus | null>(null);
   const [installing, setInstalling] = useState<boolean>(false);
@@ -1733,6 +1740,13 @@ function PrefsRecording({
     setInstalling(true);
     setPhase('starting');
     await window.ycal.recorderRunSetup();
+  }
+
+  async function handleInstallDiarize(): Promise<void> {
+    setLog([]); setError(null); setModelPct(undefined);
+    setInstalling(true);
+    setPhase('starting');
+    await window.ycal.recorderRunDiarizeSetup();
   }
 
   const rows: Array<{
@@ -1789,12 +1803,30 @@ function PrefsRecording({
           ? undefined
           : 'Optional, but post-meet summaries skip if missing.',
       },
+      {
+        label: 'diarize venv',
+        ok: status.diarizeVenv.installed,
+        detail: status.diarizeVenv.installed
+          ? status.diarizeVenv.venvPath
+          : status.diarizeVenv.pythonPath
+            ? `optional — Setup creates ${status.diarizeVenv.venvPath} from ${status.diarizeVenv.pythonPath}`
+            : 'optional — no Python 3.10–3.12 found (brew install python@3.12 first)',
+        note: 'Required only when "Speaker separation" is enabled below.',
+      },
     ]
     : [];
 
   const ready = status?.ready ?? false;
   const canInstall = status?.brew.installed
     && (!status.ffmpeg.installed || !status.whisperCli.installed || !status.whisperModel.installed)
+    && !installing;
+  // Diarize venv install is independent of the main "install" button —
+  // user may want it set up even when everything else is already in place,
+  // and we don't want it gated on Homebrew (Python often comes from pyenv
+  // or another source).
+  const canInstallDiarize = status != null
+    && status.diarizeVenv.pythonPath !== null
+    && !status.diarizeVenv.installed
     && !installing;
   const installLabel = (() => {
     if (installing) {
@@ -1804,6 +1836,7 @@ function PrefsRecording({
           ? `Downloading model · ${modelPct.toFixed(0)}%`
           : 'Downloading model…';
       }
+      if (phase === 'diarize') return 'Installing diarize venv…';
       return 'Installing…';
     }
     return 'Install missing dependencies';
@@ -1884,6 +1917,52 @@ function PrefsRecording({
         }
       >
         <PrefSwitch value={uploadAudio} onChange={setUploadAudio} />
+      </PrefRow>
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Speaker separation</h3>
+      <p className="pref-row-hint" style={{ maxWidth: '60ch', marginTop: 0 }}>
+        Upgrade the [Other] channel into per-speaker labels ([SPK1], [SPK2], …)
+        using <code>pyannote.audio</code> diarization. The summary prompt then
+        maps those labels to the calendar event's actual attendees — so action
+        items get attributed to real people, and Whisper-hallucinated names get
+        flagged with a "?". Setup creates <code>~/.ycal/diarize-venv/</code>{' '}
+        (~1.5 GB once) and downloads a ~500 MB pyannote model on first use.
+      </p>
+      <PrefRow
+        label="Enable speaker separation"
+        hint={
+          diarize.enabled
+            ? 'When recordings finish, post-meet.sh runs diarization before claude. Adds ~2–5 min per hour of audio.'
+            : 'Off — recordings keep the [Me]/[Other] split only.'
+        }
+      >
+        <PrefSwitch
+          value={diarize.enabled}
+          onChange={(v) => setDiarize({ ...diarize, enabled: v })}
+        />
+      </PrefRow>
+      <PrefRow
+        label="HuggingFace token"
+        hint="Read-only token used to download the public pyannote model. Accept the license at huggingface.co/pyannote/speaker-diarization-3.1 + huggingface.co/pyannote/segmentation-3.0, then generate a token. Synced across Macs via cloudStore."
+      >
+        <input
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="hf_…"
+          value={diarize.hfToken ?? ''}
+          onChange={(e) =>
+            setDiarize({ ...diarize, hfToken: e.target.value.trim() || null })
+          }
+          style={{
+            width: 260,
+            padding: '4px 8px',
+            border: '1px solid var(--border, #d0d0d0)',
+            borderRadius: 4,
+            fontSize: 12,
+            fontFamily: 'monospace',
+          }}
+        />
       </PrefRow>
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Transcription model</h3>
@@ -1996,6 +2075,31 @@ function PrefsRecording({
             Install Homebrew first; the button activates after.
           </span>
         )}
+        <button
+          type="button"
+          className="pref-button"
+          disabled={!canInstallDiarize}
+          onClick={() => void handleInstallDiarize()}
+          style={{
+            padding: '6px 14px',
+            borderRadius: 6,
+            border: '1px solid var(--border, #d0d0d0)',
+            background: 'transparent',
+            cursor: canInstallDiarize ? 'pointer' : 'default',
+            opacity: status?.diarizeVenv.installed ? 0.5 : 1,
+          }}
+          title={
+            !status?.diarizeVenv.pythonPath
+              ? 'Install Python 3.10–3.12 first (brew install python@3.12)'
+              : status?.diarizeVenv.installed
+                ? 'Diarize venv already set up'
+                : 'Create the pyannote.audio venv (~1.5 GB)'
+          }
+        >
+          {status?.diarizeVenv.installed
+            ? 'Diarize venv ✓'
+            : 'Setup diarize venv (~1.5 GB)'}
+        </button>
       </div>
 
       {!status?.brew.installed && status !== null && (

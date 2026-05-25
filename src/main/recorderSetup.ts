@@ -34,6 +34,20 @@ const MODELS_DIR = path.join(os.homedir(), '.ycal', 'models');
 const TAP_BIN = path.join(os.homedir(), '.ycal', 'bin', 'coreaudio-tap');
 const RECORD_SH = path.join(os.homedir(), '.ycal', 'record-meet.sh');
 const POST_SH = path.join(os.homedir(), '.ycal', 'post-meet.sh');
+const DIARIZE_VENV = path.join(os.homedir(), '.ycal', 'diarize-venv');
+const DIARIZE_VENV_PY = path.join(DIARIZE_VENV, 'bin', 'python');
+
+// Pinned dependency stack for diarization. Newer pyannote (4.x) uses a
+// gated model that needs extra license clicks; newer torch (2.6+) breaks
+// pyannote 3.x's checkpoint loader; newer huggingface_hub (0.30+) drops
+// the use_auth_token kwarg pyannote 3.x still calls. These three pins
+// hold the assembly together. Validated 2026-05-25.
+const DIARIZE_PINS = [
+  'pyannote.audio>=3.1,<4.0',
+  'torch<2.6',
+  'torchaudio<2.6',
+  'huggingface_hub<0.30',
+];
 
 // Resolve the user's chosen whisper model into a concrete path + URL.
 // Reads the live settings each call so a model swap from Settings →
@@ -101,6 +115,30 @@ function fileSize(p: string): number {
   try { return fs.statSync(p).size; } catch { return 0; }
 }
 
+// Find a system Python suitable for the diarize venv. pyannote 3.x +
+// torch <2.6 wheels exist for 3.10–3.12. 3.13+ doesn't have matching
+// wheels yet; 3.9 is below pyannote's floor.
+function findCompatiblePython(): string | null {
+  for (const v of ['3.12', '3.11', '3.10']) {
+    const p = whichOf(`python${v}`);
+    if (p) return p;
+  }
+  // Generic `python3` last — only acceptable if its version is in range.
+  const generic = whichOf('python3');
+  return generic;
+}
+
+function diarizeVenvOk(): boolean {
+  try {
+    const st = fs.statSync(DIARIZE_VENV_PY);
+    if (!st.isFile() || !(st.mode & 0o111)) return false;
+  } catch { return false; }
+  // Cheap structural check — pyannote.audio's __init__.py presence.
+  // Avoid spawning the venv to import; that would slow probe by ~3s.
+  // The full install path writes a sentinel file when done; rely on that.
+  return fs.existsSync(path.join(DIARIZE_VENV, '.ycal-diarize-ready'));
+}
+
 export function getRecorderSetupStatus(): RecorderSetupStatus {
   const brew = whichOf('brew');
   const ffmpeg = whichOf('ffmpeg');
@@ -120,6 +158,7 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
     } catch { return false; }
   })();
   const scriptsOk = fs.existsSync(RECORD_SH) && fs.existsSync(POST_SH);
+  const diarizeOk = diarizeVenvOk();
 
   return {
     brew: { installed: brew !== null, path: brew },
@@ -129,6 +168,11 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
     whisperModel: { installed: modelOk, path: model.path, sizeBytes: modelSize },
     scripts: { installed: scriptsOk },
     coreaudioTap: { installed: tapOk, path: TAP_BIN },
+    diarizeVenv: {
+      installed: diarizeOk,
+      venvPath: DIARIZE_VENV,
+      pythonPath: findCompatiblePython(),
+    },
     ready: ffmpeg !== null && whisperCli !== null && modelOk && tapOk && scriptsOk,
   };
 }
@@ -283,4 +327,135 @@ export async function runRecorderSetup(): Promise<void> {
   } finally {
     setupInFlight = false;
   }
+}
+
+// Build the diarize venv: create it from a compatible system Python,
+// install the pinned pyannote/torch/huggingface_hub stack, then drop a
+// sentinel marker so the next status probe sees it as ready. Runs in
+// the same in-flight gate as runRecorderSetup so the UI can't kick
+// both at once.
+export async function runDiarizeSetup(): Promise<void> {
+  if (setupInFlight) {
+    pushProgress({ phase: 'error', error: 'setup already in progress' });
+    return;
+  }
+  setupInFlight = true;
+  try {
+    pushProgress({ phase: 'starting', line: 'Setting up diarization venv…' });
+
+    const py = findCompatiblePython();
+    if (!py) {
+      pushProgress({
+        phase: 'error',
+        error:
+          'No compatible Python found. pyannote.audio requires Python 3.10–3.12.\n' +
+          'Install via Homebrew:  brew install python@3.12',
+      });
+      return;
+    }
+
+    pushProgress({ phase: 'diarize', line: `Using Python: ${py}` });
+
+    // Step 1: create venv if missing.
+    if (!fs.existsSync(DIARIZE_VENV_PY)) {
+      pushProgress({ phase: 'diarize', line: `$ ${py} -m venv ${DIARIZE_VENV}` });
+      const venv = await runStreaming(
+        py,
+        ['-m', 'venv', DIARIZE_VENV],
+        (line) => pushProgress({ phase: 'diarize', line }),
+      );
+      if (!venv.ok) {
+        pushProgress({
+          phase: 'error',
+          error: `venv creation failed (exit ${venv.code})`,
+        });
+        return;
+      }
+    } else {
+      pushProgress({ phase: 'diarize', line: '(venv directory already present)' });
+    }
+
+    // Step 2: upgrade pip (keeps install logs short).
+    const pip = path.join(DIARIZE_VENV, 'bin', 'pip');
+    pushProgress({ phase: 'diarize', line: '$ pip install --upgrade pip' });
+    const upgrade = await runStreaming(
+      pip,
+      ['install', '--upgrade', 'pip'],
+      (line) => pushProgress({ phase: 'diarize', line }),
+    );
+    if (!upgrade.ok) {
+      pushProgress({
+        phase: 'error',
+        error: `pip upgrade failed (exit ${upgrade.code})`,
+      });
+      return;
+    }
+
+    // Step 3: install pinned stack. ~1.5GB download for torch.
+    pushProgress({
+      phase: 'diarize',
+      line: `$ pip install ${DIARIZE_PINS.join(' ')}  (downloads ~1.5GB)`,
+    });
+    const install = await runStreaming(
+      pip,
+      ['install', ...DIARIZE_PINS],
+      (line) => pushProgress({ phase: 'diarize', line }),
+    );
+    if (!install.ok) {
+      pushProgress({
+        phase: 'error',
+        error: `pyannote/torch install failed (exit ${install.code})`,
+      });
+      return;
+    }
+
+    // Step 4: import smoke test — catches broken wheels before the
+    // user's first recording fails halfway through.
+    pushProgress({ phase: 'diarize', line: 'verifying pyannote.audio import…' });
+    const smoke = await runStreaming(
+      DIARIZE_VENV_PY,
+      ['-c', 'import pyannote.audio; import torch; print("ok", pyannote.audio.__version__, torch.__version__)'],
+      (line) => pushProgress({ phase: 'diarize', line }),
+    );
+    if (!smoke.ok) {
+      pushProgress({
+        phase: 'error',
+        error: `pyannote.audio import failed after install (exit ${smoke.code}). Check the log above.`,
+      });
+      return;
+    }
+
+    // Step 5: drop sentinel.
+    try {
+      fs.writeFileSync(
+        path.join(DIARIZE_VENV, '.ycal-diarize-ready'),
+        `${new Date().toISOString()}\nPython: ${py}\n${DIARIZE_PINS.join('\n')}\n`,
+      );
+    } catch (e) {
+      pushProgress({
+        phase: 'error',
+        error: `sentinel write failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
+      return;
+    }
+
+    pushProgress({ phase: 'done', line: 'Diarization environment ready.' });
+  } catch (e) {
+    pushProgress({
+      phase: 'error',
+      error: e instanceof Error ? e.message : String(e),
+    });
+  } finally {
+    setupInFlight = false;
+  }
+}
+
+// Path resolvers for callers (meetRecorder.postProcess passes them as
+// env to post-meet.sh so the shell can decide whether to run diarize).
+export function getDiarizeVenvPython(): string {
+  return DIARIZE_VENV_PY;
+}
+
+export function isDiarizeVenvReady(): boolean {
+  return diarizeVenvOk();
 }

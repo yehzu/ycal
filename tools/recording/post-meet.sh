@@ -231,6 +231,36 @@ with open(out_path, "w", encoding="utf-8") as f:
 PY
     echo "[post-meet] merge failed — bailing" >&2; exit 3
   fi
+
+  # === Speaker diarization (optional, stereo-only) =========================
+  # When the GUI's recorderDiarize.enabled toggle is on AND an HF token is
+  # set, replace [Other] labels in the merged transcript with [SPK1]/[SPK2]
+  # /… based on pyannote.audio's speaker separation of the system-audio
+  # (right) channel. The summary prompt knows what to do with these
+  # labels — map them to attendees from the calendar invite.
+  #
+  # We only run on the stereo path because the system-audio WAV ($sys_wav)
+  # is what holds the multi-speaker mix; the mono path has no separable
+  # signal to diarize. Failure is non-fatal: we fall back to [Other].
+  if [[ "${YCAL_DIARIZE_ENABLED:-}" == "1" \
+        && -n "${YCAL_DIARIZE_PY:-}" && -f "${YCAL_DIARIZE_PY:-}" \
+        && -n "${YCAL_DIARIZE_VENV_PY:-}" && -x "${YCAL_DIARIZE_VENV_PY:-}" \
+        && -n "${YCAL_HF_TOKEN:-}" \
+        && -s "$sys_wav" ]]; then
+    echo "[post-meet] running speaker diarization (this can take 2-5 min on long recordings)…" >&2
+    diarized="${transcript}.diarized"
+    if "$YCAL_DIARIZE_VENV_PY" "$YCAL_DIARIZE_PY" \
+         --audio "$sys_wav" \
+         --transcript "$transcript" \
+         --out "$diarized" \
+         --hf-token "$YCAL_HF_TOKEN" >&2; then
+      mv "$diarized" "$transcript"
+      echo "[post-meet] transcript upgraded with speaker labels" >&2
+    else
+      echo "[post-meet] diarization exited non-zero — keeping stereo labels" >&2
+      rm -f "$diarized"
+    fi
+  fi
 else
   # === Mono path: legacy single-pass (pre-stereo recordings) ==============
   work="$(mktemp -t ycal-whisper).wav"
@@ -335,13 +365,17 @@ Write meeting notes in markdown. Match the language used in the transcript (mixe
 ## Decisions
 What was decided, by whom (if clear), and rationale.
 
+## Speaker mapping (omit this section entirely when the transcript only uses [Me]/[Other])
+When the transcript contains [SPK1]/[SPK2]/… labels (from speaker diarization), each [SPKn] consistently refers to the same person throughout. Map each [SPKn] to an attendee from the meeting context above using topic ownership + name drops where one attendee addresses another. Output a bullet list: "[SPKn] — Name (one-line evidence)". For any [SPKn] you cannot confidently map, write "[SPKn] — unmapped" — never guess.
+
 ## Action items
 Markdown table: | Owner | What | Due |. Only items explicitly or strongly implied. Don't invent dates.
 
-Owner discipline — pick exactly one of three forms, in this order of preference:
-1. **Attendee** — a name from the "Attendees" list. Write the name plain.
-2. **Known-but-absent** — a name from "Known people (NOT at this meeting)" that the meeting explicitly delegated work to. Write "Name (absent)". When there's an in-meeting follow-up owner ("Alice will brief Bob"), prefer Alice as owner with "brief Bob on …" in the What column — it keeps the action with someone who was actually there.
-3. **Unverified** — a name in the transcript that matches NEITHER list. The transcription is probably wrong (Whisper mis-hearing) or the name is third-party context, not an owner. Write the name with a trailing "?" (e.g. "Gomei?") so the reader knows to check. Do NOT silently promote unknown names to owners.
+Owner discipline — pick exactly one of four forms, in this order of preference:
+1. **Mapped attendee** — when the transcript had [SPKn] labels and you confidently mapped one to an attendee. Write the real name.
+2. **Attendee** — a name from the "Attendees" list (no speaker label needed, e.g. when delegating to "Me"). Write the name plain.
+3. **Known-but-absent** — a name from "Known people (NOT at this meeting)" that the meeting explicitly delegated work to. Write "Name (absent)". When there's an in-meeting follow-up owner ("Alice will brief Bob"), prefer Alice as owner with "brief Bob on …" in the What column.
+4. **Unverified or unmapped** — a name in the transcript that matches NEITHER list, or an unmapped [SPKn]. Write the name with trailing "?" (e.g. "Gomei?") OR write "[SPKn]" verbatim. Do NOT silently promote unknown names to owners.
 
 ## Open questions
 Things raised but unresolved.
