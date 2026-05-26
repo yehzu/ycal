@@ -178,6 +178,20 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   if (patch.recordingUploadAudio !== undefined) {
     next.recordingUploadAudio = patch.recordingUploadAudio;
   }
+  if (patch.recorderDiarize !== undefined) {
+    // Both fields persist: the enable toggle AND the HF token. Without
+    // this branch, every yCal update reset the user's diarize setup
+    // because the renderer's setUiSettings call landed on a setter that
+    // didn't know about the key. Clone-by-spread so a renderer that
+    // only sends `{ enabled: true }` doesn't blow away the existing
+    // hfToken (and vice versa).
+    next.recorderDiarize = {
+      enabled: patch.recorderDiarize.enabled ?? next.recorderDiarize?.enabled ?? false,
+      hfToken: patch.recorderDiarize.hfToken !== undefined
+        ? patch.recorderDiarize.hfToken
+        : (next.recorderDiarize?.hfToken ?? null),
+    };
+  }
   s.ui = next;
   write(s);
 }
