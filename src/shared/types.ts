@@ -382,6 +382,12 @@ export interface RecordingStatus {
   // for THIS specific URL in any browser tab — keeps the recording going
   // when the user multitasks during the meeting.
   meetCode?: string;
+  // Health monitor: number of consecutive seconds the m4a has been
+  // growing below the silence threshold (~1.5 kB/s for AAC at 192 kbps
+  // — well below speech which lands around 24 kB/s). Surfaces in the
+  // popover so the user sees ⚠ in real time instead of finding a silent
+  // 44-min file post-meeting. Set only while state === 'recording'.
+  silentSeconds?: number;
   error?: string;
 }
 

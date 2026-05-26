@@ -350,12 +350,26 @@ function RecordingRow({
       const elapsedSec = Math.max(0, Math.floor((Date.now() - recording.startedAt) / 1000));
       const mm = Math.floor(elapsedSec / 60);
       const ss = elapsedSec % 60;
+      // Health-monitor flag from main process — set when bytes/sec on
+      // the in-flight m4a stays below the silence threshold across a
+      // 60s rolling window. Show ⚠ + tooltip so the user can intervene
+      // mid-meeting (wake the Mac, disable Low Power Mode, switch mic).
+      const silent = (recording.silentSeconds ?? 0) >= 60;
       return (
         <div className="pp-row">
           <span className="k">Recording</span>
           <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ color: '#c4451a', fontVariantNumeric: 'tabular-nums' }}>
-              ● {mm}:{String(ss).padStart(2, '0')}
+            <span
+              style={{
+                color: silent ? '#b58605' : '#c4451a',
+                fontVariantNumeric: 'tabular-nums',
+              }}
+              title={silent
+                ? `No audio detected for ${recording.silentSeconds}s. Check mic / disable Low Power Mode.`
+                : undefined}
+            >
+              {silent ? '⚠' : '●'} {mm}:{String(ss).padStart(2, '0')}
+              {silent ? ' · silent?' : ''}
             </span>
             <button
               className="pp-btn"

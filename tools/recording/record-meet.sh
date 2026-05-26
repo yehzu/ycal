@@ -72,6 +72,43 @@ first_mic_index() {
     }'
 }
 
+# Background watcher: polls the coreaudio-tap log; if we see the
+# restart counter exhaust (10/10) AND subsequent dead-audio events
+# (i.e., the tap is permanently gone, not just transiently dying), SIGINT
+# ffmpeg so it flushes the moov atom cleanly. The post-stop silence
+# gate in meetRecorder.ts then marks the recording as failed instead of
+# running 5min of whisper on hallucination-bait. Exits when ffmpeg is
+# gone (recording ended for any reason) or when the parent script
+# explicitly SIGTERMs it.
+watch_tap_health() {
+  local tap_log="$1"
+  local ffmpeg_pid="$2"
+  local marker_file="$3"
+  # Trap so a SIGTERM from stop() exits the loop instead of leaving an
+  # orphan polling the log after the recording is gone.
+  trap 'exit 0' TERM INT
+  while kill -0 "$ffmpeg_pid" 2>/dev/null; do
+    sleep 10
+    [[ -f "$tap_log" ]] || continue
+    # Has the restart counter exhausted? `restart 10/10` is the LAST
+    # retry attempt in coreaudio-tap's loop.
+    grep -q "restart 10/10" "$tap_log" 2>/dev/null || continue
+    # After that, count dead-audio events occurring AFTER the 10/10
+    # restart line. A single one could be transient (the tap recovered
+    # below the threshold); three across our 30s+ window means it's
+    # genuinely gone.
+    local exhausted_line dead_count
+    exhausted_line=$(grep -n "restart 10/10" "$tap_log" | tail -1 | cut -d: -f1)
+    dead_count=$(awk -v start="$exhausted_line" 'NR > start && /dead audio/' "$tap_log" | wc -l | tr -d ' ')
+    if [[ "${dead_count:-0}" -ge 3 ]]; then
+      echo "[record-meet] tap permanently dead (restart 10/10 exhausted + ${dead_count} subsequent dead-audio events) — SIGINT ffmpeg" >&2
+      printf 'tap-exhausted\n' > "$marker_file" 2>/dev/null || true
+      kill -INT "$ffmpeg_pid" 2>/dev/null || true
+      exit 0
+    fi
+  done
+}
+
 start() {
   local event_id="${1:?event_id required}"
   local title="${2:-meeting}"
@@ -189,7 +226,20 @@ start() {
   echo "$tap_pid"  > "$tap_pid_file"
   echo "$keep_pid" > "${STATE_DIR}/${event_id}.keep.pid"
   echo "$file"     > "$audio_marker"
-  echo "[record-meet] started ffmpeg=$pid tap=$tap_pid keep=$keep_pid → $file" >&2
+
+  # Spawn the tap-health watcher AFTER the trio is confirmed alive — it
+  # SIGINTs ffmpeg if it sees the tap exhaust its 10-retry budget AND
+  # keep dying. The marker file lets meetRecorder distinguish "tap
+  # permanently died" failures from generic silent-recording failures
+  # when it surfaces the error in the popover.
+  local tap_marker="${STATE_DIR}/${event_id}.tap-exhausted"
+  rm -f "$tap_marker"
+  nohup bash -c "$(declare -f watch_tap_health); watch_tap_health '${STATE_DIR}/${event_id}.tap.log' '$pid' '$tap_marker'" \
+    > /dev/null 2>&1 &
+  local watch_pid=$!
+  echo "$watch_pid" > "${STATE_DIR}/${event_id}.watch.pid"
+
+  echo "[record-meet] started ffmpeg=$pid tap=$tap_pid keep=$keep_pid watch=$watch_pid → $file" >&2
   printf '%s\n' "$file"
 }
 
@@ -198,6 +248,7 @@ stop() {
   local pid_file="${STATE_DIR}/${event_id}.pid"
   local tap_pid_file="${STATE_DIR}/${event_id}.tap.pid"
   local keep_pid_file="${STATE_DIR}/${event_id}.keep.pid"
+  local watch_pid_file="${STATE_DIR}/${event_id}.watch.pid"
   local audio_marker="${STATE_DIR}/${event_id}.file"
   local fifo="${STATE_DIR}/${event_id}.fifo"
   local stdin_fifo="${STATE_DIR}/${event_id}.stdin"
@@ -243,7 +294,13 @@ stop() {
     local keep_pid; keep_pid="$(cat "$keep_pid_file")"
     kill -TERM "$keep_pid" 2>/dev/null || true
   fi
-  rm -f "$pid_file" "$tap_pid_file" "$keep_pid_file" "$audio_marker" "$fifo" "$stdin_fifo"
+  # And the tap-health watcher — exits on its own when ffmpeg dies, but
+  # SIGTERM ensures it doesn't outlive an unusual shutdown path.
+  if [[ -f "$watch_pid_file" ]]; then
+    local watch_pid; watch_pid="$(cat "$watch_pid_file")"
+    kill -TERM "$watch_pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file" "$tap_pid_file" "$keep_pid_file" "$watch_pid_file" "$audio_marker" "$fifo" "$stdin_fifo"
   echo "[record-meet] stopped $event_id" >&2
   [[ -n "$file" ]] && printf '%s\n' "$file"
 }

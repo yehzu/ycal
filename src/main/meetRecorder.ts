@@ -31,7 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, Notification, powerMonitor, shell } from 'electron';
+import { app, BrowserWindow, Notification, powerMonitor, powerSaveBlocker, shell } from 'electron';
 import { IPC, DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import type { CalendarEvent, RecentRecording, RecordingStatus, UiSettings } from '@shared/types';
 import { dedupEvents } from '@shared/dedup';
@@ -198,6 +198,52 @@ let lastActiveMeetStopAt = 0;
 // Set in startMeetRecorder so we unhook on stopMeetRecorder.
 let powerHandlersBound = false;
 
+// macOS aggressively suspends background apps in Low Power Mode and
+// during display sleep, which causes coreaudio-tap to feed zero-sample
+// callbacks and avfoundation's mic stream to deliver buffers of
+// silence — neither path returns an error, so ffmpeg keeps "recording"
+// what is in effect a silent stream. powerSaveBlocker tells macOS to
+// keep the app schedulable while a recording is in flight; we refcount
+// it so concurrent recordings (rare but possible) only release the
+// hold once all are stopped. 'prevent-app-suspension' is enough — we
+// don't need to block display sleep, just App Nap / low-power throttling.
+let powerSaveBlockerId: number | null = null;
+let powerSaveRefcount = 0;
+function acquirePowerSaveBlocker(): void {
+  powerSaveRefcount += 1;
+  if (powerSaveBlockerId !== null) return;
+  try {
+    powerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    rlog(`powerSaveBlocker.start → id=${powerSaveBlockerId} (Low Power Mode mitigation)`);
+  } catch (e) {
+    console.error('[yCal recorder] powerSaveBlocker.start failed', e);
+    powerSaveBlockerId = null;
+  }
+}
+function releasePowerSaveBlocker(): void {
+  powerSaveRefcount = Math.max(0, powerSaveRefcount - 1);
+  if (powerSaveRefcount > 0) return;
+  if (powerSaveBlockerId === null) return;
+  try { powerSaveBlocker.stop(powerSaveBlockerId); } catch { /* */ }
+  rlog(`powerSaveBlocker.stop → id=${powerSaveBlockerId}`);
+  powerSaveBlockerId = null;
+}
+
+// Per-recording health monitor state. We poll fs.stat on the in-flight
+// m4a every HEALTH_TICK_MS and compute bytes/sec over the rolling
+// HEALTH_WINDOW_MS window. AAC at 192 kbps with actual speech lands
+// around 24 kB/s; near-pure silence drops to ~700 B/s (verified against
+// the 2026-05-26 Builder Leveling case: 1.8MB / 44min ≈ 720 B/s). If
+// the rolling rate stays below SILENT_BPS_THRESHOLD across the full
+// window, the recording is almost certainly capturing silence —
+// surface a warning state to the popover so the user can intervene
+// instead of discovering it post-meeting.
+const HEALTH_TICK_MS = 15_000;
+const HEALTH_WINDOW_MS = 60_000;
+const SILENT_BPS_THRESHOLD = 1500;
+const healthTimers = new Map<string, NodeJS.Timeout>();
+const healthSamples = new Map<string, Array<{ atMs: number; size: number }>>();
+
 export function startMeetRecorder(mainWindow: BrowserWindow): void {
   // The whole pipeline assumes macOS — ScreenCaptureKit, avfoundation,
   // and the bundled coreaudio-tap binary are all darwin-only.
@@ -355,6 +401,39 @@ export function safeRecordingPath(input: string): string | null {
   return null;
 }
 
+// Best-effort recovery of a recording's original wall-clock start. Used
+// by reprocess + resummarize so re-running the pipeline doesn't rewrite
+// the cached meta.json's startedAt to "now" (which loses the real
+// meeting timestamp for any list/sort/UI that reads it later). Fallback
+// chain: in-memory status → cache meta.json (most reliable post-upload)
+// → audio filename prefix `2026-05-26_1705_…` → audio mtime → now.
+function resolveOriginalStartedAt(eventId: string, audioFile: string): number {
+  const existing = recordings.get(eventId);
+  if (existing?.startedAt && Number.isFinite(existing.startedAt)) return existing.startedAt;
+  try {
+    const cacheRoot = path.join(app.getPath('userData'), 'meeting-cache');
+    const safe = eventId.replace(/[^A-Za-z0-9._@-]+/g, '-').slice(0, 200) || 'unknown';
+    const metaPath = path.join(cacheRoot, safe, 'meta.json');
+    if (fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as { startedAt?: number };
+      if (typeof meta.startedAt === 'number' && Number.isFinite(meta.startedAt)) {
+        return meta.startedAt;
+      }
+    }
+  } catch { /* fall through */ }
+  // Filename shape from record-meet.sh: `<YYYY-MM-DD>_<HHMM>__<title>__<eventId>.m4a`.
+  // Local time (whatever zone the user was in when the recording was made).
+  const base = path.basename(audioFile);
+  const m = base.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})__/);
+  if (m) {
+    const [, y, mo, d, hh, mm] = m;
+    const dt = new Date(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mm));
+    if (!Number.isNaN(dt.getTime())) return dt.getTime();
+  }
+  try { return fs.statSync(audioFile).mtimeMs; } catch { /* */ }
+  return Date.now();
+}
+
 export async function startRecordingManual(event: CalendarEvent): Promise<void> {
   // Allow a manual start to replace a previously-failed entry. Without
   // this, a botched first attempt would block the popover's "Try again"
@@ -416,7 +495,11 @@ export async function reprocessRecording(
     eventId,
     title,
     state: 'processing',
-    startedAt: Date.now(),
+    // Preserve original recording time across re-process — otherwise the
+    // re-uploaded meta.json would carry Date.now() and the popover /
+    // listings would show "started at 18:23" for a meeting that actually
+    // ran 17:05-17:49. Falls back through cache meta → filename → mtime.
+    startedAt: resolveOriginalStartedAt(eventId, safe),
     audioFile: safe,
     accountId,
   };
@@ -452,7 +535,8 @@ export async function resummarizeRecording(
     eventId,
     title,
     state: 'processing',
-    startedAt: Date.now(),
+    // Same rationale as reprocessRecording — preserve original timing.
+    startedAt: resolveOriginalStartedAt(eventId, safe),
     audioFile: safe,
     accountId,
   };
@@ -1006,6 +1090,10 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     console.error('[yCal recorder] failed to write meta sidecar', e);
   }
 
+  // Engage the power-save blocker BEFORE spawning ffmpeg so the child
+  // inherits a non-suspended scheduler context. We pair with a release
+  // in stopRecording (and in the catch below if start fails).
+  acquirePowerSaveBlocker();
   try {
     const stdout = await execScript([RECORD_SH, 'start', ev.id, ev.title, String(maxSecs)]);
     status.audioFile = stdout.trim() || undefined;
@@ -1017,6 +1105,9 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     if (status.audioFile) {
       try { writeRecordingContext(status.audioFile, ev, status.startedAt, endsAt); }
       catch (e) { console.error('[yCal recorder] failed to write context sidecar', e); }
+      // Kick off the file-growth-rate health monitor now that we have
+      // an audio path. Stopped + cleared on stopRecording.
+      startHealthMonitor(ev.id);
     }
     notify('yCal · recording', ev.title || 'Meeting');
   } catch (e) {
@@ -1025,6 +1116,9 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     status.state = 'failed';
     status.error = message;
     pushStatus();
+    // We acquired the blocker just above; release it since the recording
+    // never actually started.
+    releasePowerSaveBlocker();
     notify('yCal · recording failed to start', message.slice(0, 140));
     skipped.add(ev.id);
     // Block re-entry for this exact meet room until the user leaves +
@@ -1049,8 +1143,13 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
   // Move out of 'recording' immediately so concurrent ticks don't try
   // to start/stop again.
   status.state = 'processing';
+  status.silentSeconds = undefined;
   pushStatus();
   skipped.add(eventId);
+  stopHealthMonitor(eventId);
+  // Release the App-Nap blocker we acquired in startRecording. Paired
+  // refcount so concurrent recordings don't drop the hold prematurely.
+  releasePowerSaveBlocker();
 
   let audioFile = status.audioFile;
   try {
@@ -1097,6 +1196,39 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
       status.audioFile = undefined;
       pushStatus();
       return;
+    }
+    // Silence gate: catch the case where MIN_AUDIO_BYTES passed (file is
+    // multi-MB) but the recording is mostly silent — both inputs delivered
+    // zeros across the meeting. AAC at 192 kbps with real speech averages
+    // ~24 kB/s; pure silence drops to ~700 B/s (verified against the
+    // 2026-05-26 Builder Leveling case: 1.8 MB / 44 min ≈ 720 B/s). Don't
+    // burn 5 min of whisper + a Claude call on what we already know is
+    // hallucination-bait. We KEEP the file on disk so the user can
+    // manually salvage if needed — just don't auto-process or upload.
+    const elapsedMs = Math.max(0, Date.now() - status.startedAt);
+    if (elapsedMs > 60_000) {
+      const avgBps = st.size / (elapsedMs / 1000);
+      if (avgBps < SILENT_BPS_THRESHOLD) {
+        // Distinguish "tap helper exhausted retries" from a generic
+        // silent recording. record-meet.sh's watcher writes the marker
+        // file when it SIGINTs ffmpeg after `restart 10/10` + sustained
+        // dead-audio events — gives the user a concrete cause instead
+        // of just "your file is silent".
+        const tapMarker = path.join(STATE_DIR, `${eventId}.tap-exhausted`);
+        const tapExhausted = fs.existsSync(tapMarker);
+        try { fs.unlinkSync(tapMarker); } catch { /* */ }
+        rlog(`silenceGate(${eventId}) avgBytesPerSec=${Math.round(avgBps)} sizeBytes=${st.size} elapsedSec=${Math.round(elapsedMs / 1000)} tapExhausted=${tapExhausted} → marking failed`);
+        status.state = 'failed';
+        status.error = tapExhausted
+          ? `Recording stopped early — coreaudio-tap helper exhausted its 10 retries and the system audio stream never recovered. File kept at ${audioFile}; check Screen Recording permission and Mac power state.`
+          : `Recording produced only silence (${Math.round(avgBps)} B/s over ${Math.round(elapsedMs / 60_000)} min). Mac was likely in Low Power Mode or App Nap. Audio file kept at ${audioFile}.`;
+        pushStatus();
+        notify(
+          tapExhausted ? 'yCal · system audio tap died' : 'yCal · recording was silent',
+          `${status.title || 'meeting'} — file kept locally, not uploaded.${tapExhausted ? '' : ' Disable Low Power Mode for in-room recordings.'}`,
+        );
+        return;
+      }
     }
   } catch { /* stat failed — fall through and let postProcess decide */ }
 
@@ -1268,6 +1400,69 @@ function notify(title: string, body: string): void {
   try {
     new Notification({ title, body, silent: true }).show();
   } catch { /* best-effort */ }
+}
+
+// ── Recording health monitor ────────────────────────────────────────────
+// Poll the in-flight m4a's size; compute byte-rate over a 60s rolling
+// window; bubble silentSeconds onto the status row so the popover can
+// show ⚠ while the recording is still salvageable (user can re-launch
+// the meeting from a powered Mac, switch mic device, etc.). The
+// notification fires once when we cross the 60s silent threshold —
+// repeated firings would just be spam.
+function startHealthMonitor(eventId: string): void {
+  // Defensive: if a prior monitor wasn't cleared, drop it before
+  // installing the new one so we don't leak timers across re-starts.
+  stopHealthMonitor(eventId);
+  healthSamples.set(eventId, []);
+  let warnedOnce = false;
+  const timer = setInterval(() => {
+    const status = recordings.get(eventId);
+    if (!status || status.state !== 'recording' || !status.audioFile) return;
+    let size: number;
+    try { size = fs.statSync(status.audioFile).size; }
+    catch { return; }
+    const now = Date.now();
+    const samples = healthSamples.get(eventId) ?? [];
+    samples.push({ atMs: now, size });
+    // Drop samples older than the rolling window. Keep at least the
+    // two latest so we always have a baseline + current for rate calc.
+    while (samples.length > 2 && samples[0].atMs < now - HEALTH_WINDOW_MS) {
+      samples.shift();
+    }
+    healthSamples.set(eventId, samples);
+    if (samples.length < 2) return;
+    const oldest = samples[0];
+    const newest = samples[samples.length - 1];
+    const elapsedMs = newest.atMs - oldest.atMs;
+    if (elapsedMs < HEALTH_WINDOW_MS - HEALTH_TICK_MS) return; // not enough history yet
+    const deltaBytes = Math.max(0, newest.size - oldest.size);
+    const bytesPerSec = deltaBytes / (elapsedMs / 1000);
+    if (bytesPerSec < SILENT_BPS_THRESHOLD) {
+      status.silentSeconds = Math.round(elapsedMs / 1000);
+      pushStatus();
+      if (!warnedOnce) {
+        warnedOnce = true;
+        notify('yCal · recording may be silent',
+          `${status.title || 'meeting'} — only ${Math.round(bytesPerSec)} B/s in last ${Math.round(elapsedMs / 1000)}s. Check mic / wake the Mac.`);
+        rlog(`silentWarning(${eventId}) bytesPerSec=${Math.round(bytesPerSec)} windowSec=${Math.round(elapsedMs / 1000)}`);
+      }
+    } else if (status.silentSeconds) {
+      // Audio resumed — clear the warning so the UI snaps back to ●.
+      status.silentSeconds = undefined;
+      pushStatus();
+    }
+  }, HEALTH_TICK_MS);
+  // Allow the process to exit if this is the only timer left (unit
+  // tests, CLI mode). Production yCal has many other timers so this
+  // is a no-op in practice.
+  if (typeof timer.unref === 'function') timer.unref();
+  healthTimers.set(eventId, timer);
+}
+
+function stopHealthMonitor(eventId: string): void {
+  const t = healthTimers.get(eventId);
+  if (t) { clearInterval(t); healthTimers.delete(eventId); }
+  healthSamples.delete(eventId);
 }
 
 // Homebrew prefixes. launchd hands Electron a stripped PATH when yCal is

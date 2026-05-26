@@ -3024,7 +3024,14 @@ function ActiveRecordingRow({ rec }: { rec: RecordingStatus }) {
   const elapsed = `${mm}:${String(ss).padStart(2, '0')}`;
 
   let glyph: string; let color: string; let label: string;
-  if (rec.state === 'recording')      { glyph = '●'; color = '#c4451a'; label = `Recording · ${elapsed}`; }
+  // Surface the silent-warning while recording — the popover shows the
+  // same flag, but this rail is where the user lives day-to-day.
+  const silent = rec.state === 'recording' && (rec.silentSeconds ?? 0) >= 60;
+  if (rec.state === 'recording' && silent) {
+    glyph = '⚠'; color = '#b58605';
+    label = `Recording · ${elapsed} · silent ${rec.silentSeconds}s?`;
+  }
+  else if (rec.state === 'recording')      { glyph = '●'; color = '#c4451a'; label = `Recording · ${elapsed}`; }
   else if (rec.state === 'processing'){ glyph = '⋯'; color = 'inherit'; label = 'Transcribing'; }
   else if (rec.state === 'done')      { glyph = '✓'; color = '#2a9461'; label = 'Notes ready'; }
   else                                { glyph = '✗'; color = '#c4451a'; label = rec.error ?? 'Failed'; }
