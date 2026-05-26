@@ -46,6 +46,10 @@ export function EventPopover({
   const [recording, setRecording] = useState<RecordingStatus | null>(null);
   const [pastRec, setPastRec] = useState<RecentRecording | null>(null);
   const [driveArchive, setDriveArchive] = useState<MeetingArchiveSummary | null>(null);
+  // True while the Drive probe (below) is in flight. The list call can
+  // take a couple of seconds on cold Drive caches, and without this hint
+  // the popover looks like "no recording" until the response lands.
+  const [driveLoading, setDriveLoading] = useState<boolean>(true);
   // Inline transcript reader (slide-in sheet). Opened from the
   // RecordingRow's "Transcript" button. Replaces the previous behavior
   // of shelling out to TextEdit; the sheet exposes selection-based
@@ -83,6 +87,7 @@ export function EventPopover({
   // exists on the machine that did the recording.
   useEffect(() => {
     let cancelled = false;
+    setDriveLoading(true);
     void window.ycal.meetingArchiveList({
       eventId: event.id,
       accountId: event.accountId,
@@ -93,6 +98,7 @@ export function EventPopover({
       } else {
         setDriveArchive(null);
       }
+      setDriveLoading(false);
     });
     return () => { cancelled = true; };
   }, [event.id, event.accountId]);
@@ -224,6 +230,7 @@ export function EventPopover({
           recording={recording}
           pastRec={pastRec}
           driveArchive={driveArchive}
+          driveLoading={driveLoading}
           autoRecord={autoRecord}
           onOpenTranscript={setTranscript}
         />
@@ -328,12 +335,13 @@ async function openFromDrive(
 // via Drive), we still surface Notes/Transcript/Audio buttons backed
 // by on-demand fetches.
 function RecordingRow({
-  event, recording, pastRec, driveArchive, autoRecord, onOpenTranscript,
+  event, recording, pastRec, driveArchive, driveLoading, autoRecord, onOpenTranscript,
 }: {
   event: CalendarEvent;
   recording: RecordingStatus | null;
   pastRec: RecentRecording | null;
   driveArchive: MeetingArchiveSummary | null;
+  driveLoading: boolean;
   autoRecord: boolean;
   onOpenTranscript: (req: TranscriptRequest) => void;
 }) {
@@ -508,8 +516,8 @@ function RecordingRow({
       <div className="pp-row">
         <span className="k">Recording</span>
         <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span title={driveArchive ? 'Mirrored to Drive' : 'Local only'}>
-            ✓ Recorded{driveArchive ? ' · Drive ✓' : ''}
+          <span title={driveArchive ? 'Mirrored to Drive' : driveLoading ? 'Checking Drive…' : 'Local only'}>
+            ✓ Recorded{driveArchive ? ' · Drive ✓' : driveLoading ? ' · ⋯' : ''}
           </span>
           {pastRec.summaryFile && (
             <button
@@ -637,6 +645,19 @@ function RecordingRow({
             </button>
           )}
         </span>
+      </div>
+    );
+  }
+
+  // Drive probe still in flight on a past meeting that could plausibly
+  // have a recording from another Mac. Surface a loading hint so the
+  // popover doesn't look stuck on "no recording" for the few seconds
+  // the Drive list takes to come back.
+  if (driveLoading && event.meetUrl && !event.allDay && Date.parse(event.end) <= Date.now()) {
+    return (
+      <div className="pp-row">
+        <span className="k">Recording</span>
+        <span className="v" style={{ opacity: 0.6 }}>⋯ Checking Drive…</span>
       </div>
     );
   }
