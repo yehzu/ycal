@@ -51,6 +51,7 @@ import {
   type MeetSignal, diagnoseDetection, extractMeetCode, getMeetSignal,
   onMeetChange, probeMeetCodeOpen, startMeetDetector, stopMeetDetector,
 } from './meetDetector';
+import { rlog, rtrace } from './recorderLog';
 
 // Re-export for index.ts → IPC plumbing. Keeps meetRecorder.ts as the
 // single entry point for "everything recorder" without index needing to
@@ -255,8 +256,9 @@ export function stopMeetRecorder(): void {
 
 function onSystemSuspend(): void {
   console.log('[yCal recorder] system suspending — stopping in-flight recordings');
+  rlog('onSystemSuspend — stopping in-flight recordings');
   for (const [id, s] of recordings) {
-    if (s.state === 'recording') void stopRecording(id);
+    if (s.state === 'recording') void stopRecording(id, 'system-suspend');
   }
   // Cancel any pending "start" confirmations the user wasn't around to
   // answer; we'd just re-notify them on wake otherwise.
@@ -381,7 +383,7 @@ export async function startRecordingManual(event: CalendarEvent): Promise<void> 
 export async function stopRecordingManual(eventId: string): Promise<void> {
   const state = recordings.get(eventId);
   if (!state || state.state !== 'recording') return;
-  await stopRecording(eventId);
+  await stopRecording(eventId, 'manual-ipc');
 }
 
 // Re-run post-meet.sh on an existing .m4a — used by the popover's
@@ -543,7 +545,7 @@ async function tick(): Promise<void> {
     // Setting may have been toggled off mid-meeting — stop anything
     // that's still recording so we honor the user's intent immediately.
     for (const [id, s] of recordings) {
-      if (s.state === 'recording') void stopRecording(id);
+      if (s.state === 'recording') void stopRecording(id, 'autoRecord-toggled-off');
     }
     // Also drop any pending-confirm entries: the user disabled the
     // feature, so we shouldn't keep "deferred-recording" state for
@@ -587,7 +589,7 @@ async function tick(): Promise<void> {
         console.log(`[yCal recorder] meeting ${id} hit overrun cap (+${OVERRUN_MAX_MS / 60_000}min) — stopping`);
       }
     }
-    void stopRecording(id);
+    void stopRecording(id, 'tick-endsAt-reached');
   }
 
   // 'activeMeet' mode: the meetDetector callback owns START decisions.
@@ -713,7 +715,7 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
         }
         if (stillOpen === false) {
           console.log(`[yCal recorder] meet code ${s.meetCode} confirmed gone — stopping ${id}`);
-          void stopRecording(id);
+          void stopRecording(id, 'inMeet-false-targetedProbe-confirmed-gone');
           stoppedAny = true;
           continue;
         }
@@ -727,7 +729,7 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
         console.log(`[yCal recorder] inMeet=false ignored for ${id} — calendar event still active (ends in ${Math.round((s.endsAt! - now) / 1000)}s)`);
         continue;
       }
-      void stopRecording(id);
+      void stopRecording(id, 'inMeet-false-no-calendar-window');
       stoppedAny = true;
     }
     if (stoppedAny) lastActiveMeetStopAt = Date.now();
@@ -983,6 +985,7 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     meetCode,
   };
   recordings.set(ev.id, status);
+  rlog(`startRecording(${ev.id}) title="${ev.title}" endsAt=${Number.isFinite(endsAt) ? new Date(endsAt).toISOString() : 'null'} maxSecs=${maxSecs} meetCode=${meetCode ?? 'none'} accountId=${ev.accountId || 'none'}`);
   // Clear cooldown — explicit start (manual or automatic) means this
   // is the recording we want, not a stale-tab echo.
   lastActiveMeetStopAt = 0;
@@ -1033,9 +1036,16 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
   }
 }
 
-async function stopRecording(eventId: string): Promise<void> {
+async function stopRecording(eventId: string, reason = 'unspecified'): Promise<void> {
   const status = recordings.get(eventId);
-  if (!status) return;
+  if (!status) {
+    rlog(`stopRecording(${eventId}, ${reason}) — no status, ignoring`);
+    return;
+  }
+  // Persist the full call-site stack so we can identify which path
+  // triggered an auto-stop after the fact. Cheap (one fs.write) and
+  // only fires on stop transitions.
+  rtrace(`stopRecording(${eventId}, reason=${reason}) state=${status.state} endsAt=${status.endsAt ? new Date(status.endsAt).toISOString() : 'null'}`);
   // Move out of 'recording' immediately so concurrent ticks don't try
   // to start/stop again.
   status.state = 'processing';
