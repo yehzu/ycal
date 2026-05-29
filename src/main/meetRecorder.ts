@@ -89,6 +89,7 @@ const RECORD_SH = path.join(SCRIPT_DIR, 'record-meet.sh');
 const POST_SH = path.join(SCRIPT_DIR, 'post-meet.sh');
 const DIARIZE_PY = path.join(SCRIPT_DIR, 'diarize.py');
 const TAP_BIN = path.join(SCRIPT_DIR, 'bin', 'coreaudio-tap');
+const VPIO_BIN = path.join(SCRIPT_DIR, 'bin', 'voiceproc-mic');
 
 // Locate a bundled asset across dev + packaged layouts. In dev we sit at
 // <repo>/out/main/index.js, so build/<name> is two dirs up. In packaged
@@ -137,6 +138,7 @@ function ensureHelpersInstalled(): void {
 
   const pairs: Array<[string | null, string, string]> = [
     [resolveBundled('native', 'coreaudio-tap'), TAP_BIN, 'coreaudio-tap'],
+    [resolveBundled('native', 'voiceproc-mic'), VPIO_BIN, 'voiceproc-mic'],
     [scriptSource('record-meet.sh'), RECORD_SH, 'record-meet.sh'],
     [scriptSource('post-meet.sh'), POST_SH, 'post-meet.sh'],
     [scriptSource('diarize.py'), DIARIZE_PY, 'diarize.py'],
@@ -574,7 +576,7 @@ function recoverInFlightRecordings(): void {
     if (!alive) {
       // Stale pid file. Clean up so the next start for the same id
       // isn't confused by it.
-      for (const ext of ['pid', 'tap.pid', 'keep.pid', 'file', 'fifo', 'stdin', 'meta.json']) {
+      for (const ext of ['pid', 'tap.pid', 'keep.pid', 'vpio.pid', 'file', 'fifo', 'stdin', 'mic.fifo', 'meta.json']) {
         try { fs.unlinkSync(path.join(STATE_DIR, `${eventId}.${ext}`)); } catch { /* */ }
       }
       continue;
@@ -1095,7 +1097,16 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
   // in stopRecording (and in the catch below if start fails).
   acquirePowerSaveBlocker();
   try {
-    const stdout = await execScript([RECORD_SH, 'start', ev.id, ev.title, String(maxSecs)]);
+    // Voice-Processing mic capture (Apple AEC). When on, record-meet.sh
+    // routes the mic through voiceproc-mic instead of raw avfoundation so
+    // speaker bleed is echo-cancelled — no headphones needed. The script
+    // falls back to raw capture if the binary is missing.
+    const startEnv: NodeJS.ProcessEnv = {};
+    if (getUiSettings().recordingVoiceProcessing) startEnv.YCAL_MIC_VPIO = '1';
+    const stdout = await execScript(
+      [RECORD_SH, 'start', ev.id, ev.title, String(maxSecs)],
+      Object.keys(startEnv).length > 0 ? { envExtras: startEnv } : {},
+    );
     status.audioFile = stdout.trim() || undefined;
     pushStatus();
     // Drop a context.json next to the audio so post-meet.sh can feed
@@ -1506,9 +1517,11 @@ function execScript(
     // tack on more env via opts.envExtras (e.g. a per-call
     // YCAL_SUMMARY_PROMPT pointing at the user's customised prompt).
     const bundledTap = resolveBundled('native', 'coreaudio-tap');
+    const bundledVpio = resolveBundled('native', 'voiceproc-mic');
     const env = {
       ...process.env,
       ...(bundledTap ? { YCAL_COREAUDIO_TAP: bundledTap } : {}),
+      ...(bundledVpio ? { YCAL_VPIO_BIN: bundledVpio } : {}),
       ...(opts.envExtras ?? {}),
       PATH: [
         ...HOMEBREW_BIN_DIRS,

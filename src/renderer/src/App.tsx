@@ -139,6 +139,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   const [recordingUploadAudio, setRecordingUploadAudio] = useState<boolean>(
     () => initialUi.recordingUploadAudio ?? true,
   );
+  const [recordingVoiceProcessing, setRecordingVoiceProcessing] = useState<boolean>(
+    () => initialUi.recordingVoiceProcessing ?? false,
+  );
   // Speaker diarization config. Lives in settings.json (cloud-routed) so
   // it follows the user across Macs — the HF token is a low-sensitivity
   // download token for public pyannote models, not a personal credential.
@@ -262,6 +265,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setRecordingWhisperModel(ui.recordingWhisperModel ?? 'large-v3-turbo');
       setRecordingSummaryPrompt(ui.recordingSummaryPrompt ?? '');
       setRecordingUploadAudio(ui.recordingUploadAudio ?? true);
+      setRecordingVoiceProcessing(ui.recordingVoiceProcessing ?? false);
       setRecorderDiarize({
         enabled: ui.recorderDiarize?.enabled ?? false,
         hfToken: ui.recorderDiarize?.hfToken ?? null,
@@ -373,6 +377,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       recordingWhisperModel,
       recordingSummaryPrompt: recordingSummaryPrompt || undefined,
       recordingUploadAudio,
+      recordingVoiceProcessing,
       recorderDiarize,
       loadWindow,
       loadBands,
@@ -384,7 +389,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
     autoRolloverPastTasks, autoRecordMeetings, recordingConfirmBeforeStart,
     recordingTrigger, recordingWhisperModel, recordingSummaryPrompt,
-    recordingUploadAudio, recorderDiarize,
+    recordingUploadAudio, recordingVoiceProcessing, recorderDiarize,
     loadWindow, loadBands, customTagSuggestions, theme,
   ]);
 
@@ -985,6 +990,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           setRecordingSummaryPrompt={setRecordingSummaryPrompt}
           recordingUploadAudio={recordingUploadAudio}
           setRecordingUploadAudio={setRecordingUploadAudio}
+          recordingVoiceProcessing={recordingVoiceProcessing}
+          setRecordingVoiceProcessing={setRecordingVoiceProcessing}
           recorderDiarize={recorderDiarize}
           setRecorderDiarize={setRecorderDiarize}
           loadWindow={loadWindow}

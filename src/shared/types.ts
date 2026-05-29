@@ -236,6 +236,15 @@ export interface UiSettings {
   // summary are uploaded — saves ~30–60 MB per hour-long meeting at the
   // cost of one-machine-only re-process.
   recordingUploadAudio?: boolean;
+  // Route the mic through Apple's Voice-Processing I/O (the AEC / noise-
+  // suppression / AGC stack FaceTime & Meet use) instead of raw
+  // avfoundation capture. Cancels speaker bleed so an open mic next to
+  // speakers (no headphones) doesn't leak the meeting onto the "you"
+  // channel — which otherwise confuses the stereo speaker-split transcript.
+  // Defaults to false (raw capture) for backwards compat; the recorder
+  // helper falls back to raw automatically if the voiceproc-mic binary is
+  // missing. macOS-only (the binary is darwin/AVAudioEngine).
+  recordingVoiceProcessing?: boolean;
   // Speaker diarization (pyannote.audio). When enabled AND `hfToken` is
   // set, post-meet.sh runs the diarization Python script on the system-
   // audio channel and splices speaker labels ([SPK1]/[SPK2]/…) into the

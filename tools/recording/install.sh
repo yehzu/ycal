@@ -31,6 +31,25 @@ else
   echo "      it from its app bundle on first launch." >&2
 fi
 
+# voiceproc-mic — Voice-Processing mic helper (Apple AEC). Same vendoring
+# slots as coreaudio-tap. Optional: record-meet.sh falls back to raw
+# avfoundation capture when it's absent.
+VPIO_SRC=""
+for candidate in \
+    "$REPO_ROOT/build/native/voiceproc-mic" \
+    "${YCAL_VPIO_BIN:-}" \
+    "/Applications/yCal.app/Contents/Resources/native/voiceproc-mic"; do
+  [[ -n "$candidate" && -x "$candidate" ]] && { VPIO_SRC="$candidate"; break; }
+done
+if [[ -n "$VPIO_SRC" ]]; then
+  cp "$VPIO_SRC" "$DST/bin/voiceproc-mic"
+  chmod +x "$DST/bin/voiceproc-mic"
+  echo "Installed voiceproc-mic from $VPIO_SRC"
+else
+  echo "INFO: voiceproc-mic not found — raw mic capture will be used until yCal" >&2
+  echo "      copies it from its app bundle on first launch." >&2
+fi
+
 pass=0; fail=0
 mark() { if [[ "$1" = ok ]]; then printf '  \033[32m✓\033[0m %s\n' "$2"; ((pass++)) || true
         else                       printf '  \033[31m✗\033[0m %s\n' "$2"; ((fail++)) || true; fi; }

@@ -4,11 +4,20 @@
 # System audio is captured via Apple's ScreenCaptureKit (no BlackHole, no
 # Multi-Output Device). The bundled `coreaudio-tap` helper streams 16 kHz
 # mono float32 PCM to stdout; we pipe it through a FIFO to ffmpeg, which
-# also opens the default microphone via avfoundation and joins the two
-# streams into a STEREO m4a in ~/Recordings/yCal/ — left channel = mic
-# (you), right channel = system audio (everyone else). post-meet.sh
-# exploits this for speaker-aware transcription. Pre-stereo recordings
-# (mono) still transcribe correctly via the legacy single-pass path.
+# joins it with the microphone into a STEREO m4a in ~/Recordings/yCal/ —
+# left channel = mic (you), right channel = system audio (everyone else).
+# post-meet.sh exploits this for speaker-aware transcription. Pre-stereo
+# recordings (mono) still transcribe correctly via the legacy single-pass
+# path.
+#
+# The mic leg has two modes:
+#   * raw (default) — ffmpeg opens the mic directly via avfoundation.
+#   * VPIO (YCAL_MIC_VPIO=1) — the mic is captured by the bundled
+#     `voiceproc-mic` helper through Apple's Voice-Processing I/O (AEC /
+#     noise-suppression / AGC) and streamed as 48 kHz mono float32 PCM to
+#     a second FIFO. This echo-cancels speaker bleed so an open mic with no
+#     headphones doesn't leak the meeting onto the "you" channel. Falls
+#     back to raw automatically if the helper binary is missing.
 #
 # Usage:
 #   record-meet.sh start <event_id> <title> [max_seconds]
@@ -22,9 +31,15 @@
 #
 # Env overrides:
 #   YCAL_RECORDING_DIR     output directory (default ~/Recordings/yCal)
-#   YCAL_MIC_NAME          substring match for mic (default: first audio device)
+#   YCAL_MIC_NAME          substring match for mic. In raw mode selects the
+#                          avfoundation device (default: first audio device);
+#                          in VPIO mode pins voiceproc-mic's input device.
+#   YCAL_MIC_VPIO          set to 1 to capture the mic via voiceproc-mic
+#                          (Apple Voice Processing) instead of raw avfoundation.
 #   YCAL_COREAUDIO_TAP     path to the coreaudio-tap binary
 #                          (default: ~/.ycal/bin/coreaudio-tap)
+#   YCAL_VPIO_BIN          path to the voiceproc-mic binary
+#                          (default: ~/.ycal/bin/voiceproc-mic)
 #
 # State (PIDs + audio path) lives in ~/.ycal/recordings/ keyed by event id.
 
@@ -34,6 +49,11 @@ YCAL_DIR="${HOME}/.ycal"
 STATE_DIR="${YCAL_DIR}/recordings"
 OUT_DIR="${YCAL_RECORDING_DIR:-${HOME}/Recordings/yCal}"
 TAP_BIN="${YCAL_COREAUDIO_TAP:-${YCAL_DIR}/bin/coreaudio-tap}"
+# Voice-Processing mic helper (Apple AEC/NS/AGC). Used for the mic leg
+# instead of raw avfoundation when YCAL_MIC_VPIO=1 and the binary exists —
+# cancels speaker bleed so an open mic (no headphones) doesn't pollute the
+# "you" channel. Falls back to raw avfoundation otherwise.
+VPIO_BIN="${YCAL_VPIO_BIN:-${YCAL_DIR}/bin/voiceproc-mic}"
 mkdir -p "$STATE_DIR" "$OUT_DIR"
 
 list_devices() {
@@ -130,15 +150,25 @@ start() {
     return 2
   fi
 
-  local mic
-  if [[ -n "${YCAL_MIC_NAME:-}" ]]; then
-    mic="$(device_index "$YCAL_MIC_NAME")"
-  else
-    mic="$(first_mic_index)"
+  # Decide the mic capture path. VPIO (Apple Voice Processing) routes the
+  # mic through a helper that echo-cancels speaker bleed; raw avfoundation
+  # opens the hardware device directly. We resolve the raw device index up
+  # front only when we'll actually use it.
+  local use_vpio=0
+  if [[ "${YCAL_MIC_VPIO:-}" == "1" && -x "$VPIO_BIN" ]]; then
+    use_vpio=1
   fi
-  if [[ -z "$mic" ]]; then
-    echo "[record-meet] no microphone device found" >&2
-    return 2
+  local mic=""
+  if [[ $use_vpio -eq 0 ]]; then
+    if [[ -n "${YCAL_MIC_NAME:-}" ]]; then
+      mic="$(device_index "$YCAL_MIC_NAME")"
+    else
+      mic="$(first_mic_index)"
+    fi
+    if [[ -z "$mic" ]]; then
+      echo "[record-meet] no microphone device found" >&2
+      return 2
+    fi
   fi
 
   local stamp safe file
@@ -167,6 +197,21 @@ start() {
   nohup "$TAP_BIN" < "$stdin_fifo" > "$fifo" 2> "${STATE_DIR}/${event_id}.tap.log" &
   local tap_pid=$!
 
+  # Mic leg. VPIO path: a second FIFO fed by voiceproc-mic (48 kHz mono
+  # float32, already echo-cancelled). Raw path: avfoundation opens the
+  # hardware device directly. mic_input holds the ffmpeg args for input #1.
+  local mic_fifo="" vpio_pid="" mic_input=()
+  if [[ $use_vpio -eq 1 ]]; then
+    mic_fifo="${STATE_DIR}/${event_id}.mic.fifo"
+    rm -f "$mic_fifo"; mkfifo "$mic_fifo"
+    # YCAL_MIC_NAME (if set) is read by the helper to pin the device.
+    nohup "$VPIO_BIN" > "$mic_fifo" 2> "${STATE_DIR}/${event_id}.vpio.log" &
+    vpio_pid=$!
+    mic_input=(-f f32le -ar 48000 -ac 1 -i "$mic_fifo")
+  else
+    mic_input=(-f avfoundation -i ":${mic}")
+  fi
+
   # -t <max_seconds> self-terminates ffmpeg in case yCal stops polling.
   local ts_arg=()
   [[ -n "$max_seconds" ]] && ts_arg=(-t "$max_seconds")
@@ -194,7 +239,7 @@ start() {
   # isn't relevant to `join` (no auto-ducking).
   nohup ffmpeg -hide_banner -y \
     -f f32le -ar 16000 -ac 1 -i "$fifo" \
-    -f avfoundation -i ":${mic}" \
+    "${mic_input[@]}" \
     -filter_complex "[0:a]aresample=48000,aformat=channel_layouts=mono[sys];[1:a]aresample=48000,aformat=channel_layouts=mono[mic];[mic][sys]join=inputs=2:channel_layout=stereo[a]" \
     -map "[a]" -ar 48000 -ac 2 -c:a aac -b:a 192k -movflags +faststart \
     "${ts_arg[@]}" \
@@ -203,28 +248,40 @@ start() {
   local pid=$!
 
   # ffmpeg fails fast if mic permission isn't granted, or if the FIFO
-  # producer never opens. Give the trio a short grace period; if any
+  # producer never opens. Give the group a short grace period; if any
   # dies during boot, surface it now instead of producing an empty m4a.
   sleep 0.8
   if ! kill -0 "$pid" 2>/dev/null; then
     kill -TERM "$tap_pid"  2>/dev/null || true
     kill -TERM "$keep_pid" 2>/dev/null || true
-    rm -f "$fifo" "$stdin_fifo"
+    [[ -n "$vpio_pid" ]] && kill -TERM "$vpio_pid" 2>/dev/null || true
+    rm -f "$fifo" "$stdin_fifo" "$mic_fifo"
     echo "[record-meet] ffmpeg died on startup — see ${STATE_DIR}/${event_id}.ffmpeg.log" >&2
     return 3
   fi
   if ! kill -0 "$tap_pid" 2>/dev/null; then
     kill -INT  "$pid"      2>/dev/null || true
     kill -TERM "$keep_pid" 2>/dev/null || true
-    rm -f "$fifo" "$stdin_fifo"
+    [[ -n "$vpio_pid" ]] && kill -TERM "$vpio_pid" 2>/dev/null || true
+    rm -f "$fifo" "$stdin_fifo" "$mic_fifo"
     echo "[record-meet] coreaudio-tap died on startup — see ${STATE_DIR}/${event_id}.tap.log" >&2
     echo "                Likely: Screen Recording permission not granted." >&2
+    return 3
+  fi
+  if [[ $use_vpio -eq 1 ]] && ! kill -0 "$vpio_pid" 2>/dev/null; then
+    kill -INT  "$pid"      2>/dev/null || true
+    kill -TERM "$tap_pid"  2>/dev/null || true
+    kill -TERM "$keep_pid" 2>/dev/null || true
+    rm -f "$fifo" "$stdin_fifo" "$mic_fifo"
+    echo "[record-meet] voiceproc-mic died on startup — see ${STATE_DIR}/${event_id}.vpio.log" >&2
+    echo "                Likely: Microphone permission not granted, or no input device." >&2
     return 3
   fi
 
   echo "$pid"      > "$pid_file"
   echo "$tap_pid"  > "$tap_pid_file"
   echo "$keep_pid" > "${STATE_DIR}/${event_id}.keep.pid"
+  [[ -n "$vpio_pid" ]] && echo "$vpio_pid" > "${STATE_DIR}/${event_id}.vpio.pid"
   echo "$file"     > "$audio_marker"
 
   # Spawn the tap-health watcher AFTER the trio is confirmed alive — it
@@ -239,7 +296,7 @@ start() {
   local watch_pid=$!
   echo "$watch_pid" > "${STATE_DIR}/${event_id}.watch.pid"
 
-  echo "[record-meet] started ffmpeg=$pid tap=$tap_pid keep=$keep_pid watch=$watch_pid → $file" >&2
+  echo "[record-meet] started ffmpeg=$pid tap=$tap_pid keep=$keep_pid watch=$watch_pid${vpio_pid:+ vpio=$vpio_pid} → $file" >&2
   printf '%s\n' "$file"
 }
 
@@ -249,9 +306,11 @@ stop() {
   local tap_pid_file="${STATE_DIR}/${event_id}.tap.pid"
   local keep_pid_file="${STATE_DIR}/${event_id}.keep.pid"
   local watch_pid_file="${STATE_DIR}/${event_id}.watch.pid"
+  local vpio_pid_file="${STATE_DIR}/${event_id}.vpio.pid"
   local audio_marker="${STATE_DIR}/${event_id}.file"
   local fifo="${STATE_DIR}/${event_id}.fifo"
   local stdin_fifo="${STATE_DIR}/${event_id}.stdin"
+  local mic_fifo="${STATE_DIR}/${event_id}.mic.fifo"
   local file=""
   [[ -f "$audio_marker" ]] && file="$(cat "$audio_marker")"
 
@@ -286,6 +345,20 @@ stop() {
       kill -KILL "$tap_pid" 2>/dev/null || true
     fi
   fi
+  # Then the VPIO mic helper (when this recording used it). It also exits
+  # on its own once ffmpeg closes the mic FIFO (broken pipe), but SIGTERM
+  # makes teardown deterministic. Its signal handler stops the engine
+  # cleanly.
+  if [[ -f "$vpio_pid_file" ]]; then
+    local vpio_pid; vpio_pid="$(cat "$vpio_pid_file")"
+    if kill -0 "$vpio_pid" 2>/dev/null; then
+      kill -TERM "$vpio_pid" 2>/dev/null || true
+      for _ in $(seq 1 20); do
+        sleep 0.1; kill -0 "$vpio_pid" 2>/dev/null || break
+      done
+      kill -KILL "$vpio_pid" 2>/dev/null || true
+    fi
+  fi
   # Finally the stdin keeper (the silent `sleep` that held the FIFO
   # write-end open). Untouched by either SIGINT or SIGTERM up to this
   # point — if we orphaned it on a crash it would idle for 24h until
@@ -300,7 +373,7 @@ stop() {
     local watch_pid; watch_pid="$(cat "$watch_pid_file")"
     kill -TERM "$watch_pid" 2>/dev/null || true
   fi
-  rm -f "$pid_file" "$tap_pid_file" "$keep_pid_file" "$watch_pid_file" "$audio_marker" "$fifo" "$stdin_fifo"
+  rm -f "$pid_file" "$tap_pid_file" "$keep_pid_file" "$watch_pid_file" "$vpio_pid_file" "$audio_marker" "$fifo" "$stdin_fifo" "$mic_fifo"
   echo "[record-meet] stopped $event_id" >&2
   [[ -n "$file" ]] && printf '%s\n' "$file"
 }

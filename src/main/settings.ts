@@ -178,6 +178,9 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   if (patch.recordingUploadAudio !== undefined) {
     next.recordingUploadAudio = patch.recordingUploadAudio;
   }
+  if (patch.recordingVoiceProcessing !== undefined) {
+    next.recordingVoiceProcessing = patch.recordingVoiceProcessing;
+  }
   if (patch.recorderDiarize !== undefined) {
     // Both fields persist: the enable toggle AND the HF token. Without
     // this branch, every yCal update reset the user's diarize setup

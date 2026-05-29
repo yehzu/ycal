@@ -68,6 +68,8 @@ interface Props {
   setRecordingSummaryPrompt: (v: string) => void;
   recordingUploadAudio: boolean;
   setRecordingUploadAudio: (v: boolean) => void;
+  recordingVoiceProcessing: boolean;
+  setRecordingVoiceProcessing: (v: boolean) => void;
   recorderDiarize: { enabled: boolean; hfToken: string | null };
   setRecorderDiarize: (v: { enabled: boolean; hfToken: string | null }) => void;
   // Day-load gauge window
@@ -254,6 +256,8 @@ export function SettingsModal(props: Props) {
                 setSummaryPrompt={props.setRecordingSummaryPrompt}
                 uploadAudio={props.recordingUploadAudio}
                 setUploadAudio={props.setRecordingUploadAudio}
+                voiceProcessing={props.recordingVoiceProcessing}
+                setVoiceProcessing={props.setRecordingVoiceProcessing}
                 diarize={props.recorderDiarize}
                 setDiarize={props.setRecorderDiarize}
               />
@@ -1673,6 +1677,7 @@ function PrefsRecording({
   whisperModel, setWhisperModel,
   summaryPrompt, setSummaryPrompt,
   uploadAudio, setUploadAudio,
+  voiceProcessing, setVoiceProcessing,
   diarize, setDiarize,
 }: {
   autoRecord: boolean;
@@ -1687,6 +1692,8 @@ function PrefsRecording({
   setSummaryPrompt: (v: string) => void;
   uploadAudio: boolean;
   setUploadAudio: (v: boolean) => void;
+  voiceProcessing: boolean;
+  setVoiceProcessing: (v: boolean) => void;
   diarize: { enabled: boolean; hfToken: string | null };
   setDiarize: (v: { enabled: boolean; hfToken: string | null }) => void;
 }) {
@@ -1900,6 +1907,18 @@ function PrefsRecording({
         </PrefRow>
       )}
       {trigger === 'activeMeet' && <ActiveMeetDiagnostics />}
+
+      <h3 className="pref-h" style={{ marginTop: 18 }}>Audio capture</h3>
+      <PrefRow
+        label="Echo-cancel the mic (Voice Isolation)"
+        hint={
+          voiceProcessing
+            ? 'Routes the mic through Apple’s Voice-Processing (the AEC stack Meet & FaceTime use) so meeting audio bleeding out of your speakers is cancelled from the "you" channel. Lets you record cleanly on an open mic without headphones. If your mic + speakers are external (e.g. Yeti + monitor), compare one meeting against off — AEC is tuned for built-in devices.'
+            : 'Mic is captured raw. If you don’t wear headphones, the meeting bleeds from your speakers into the mic and muddies the transcript. Turn on to let macOS echo-cancel it.'
+        }
+      >
+        <PrefSwitch value={voiceProcessing} onChange={setVoiceProcessing} />
+      </PrefRow>
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Cross-device storage</h3>
       <p className="pref-row-hint" style={{ maxWidth: '60ch', marginTop: 0 }}>
