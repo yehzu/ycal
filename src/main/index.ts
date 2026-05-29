@@ -1,6 +1,8 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, dialog, shell, Notification } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, dialog, shell, Notification, protocol } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createReadStream, statSync } from 'node:fs';
+import { Readable } from 'node:stream';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -63,9 +65,12 @@ import {
   suggestAttendeesFromCalendar,
 } from './glossary';
 import { parseGlossary, type ImportFormat } from './glossaryImport';
+import {
+  getNote, getNotesOverlayFile, listNotes, setNoteOverlay,
+} from './notesStore';
 import type {
   EventGlossary, GlossaryEntry, GlossaryFile, MeetingArchiveSummary,
-  MeetingArtifactKind,
+  MeetingArtifactKind, NoteOverlay,
 } from '@shared/types';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
@@ -74,6 +79,18 @@ const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 // production electron-builder bakes the .icns into the app bundle, so we
 // don't pass an explicit icon path.
 const DEV_ICON_PATH = path.resolve(__dirname_, '../../build/icon.png');
+
+// In-app meeting-audio playback streams the m4a through a custom scheme so
+// the Notes view's scrubber can <audio src=…> it without relaxing
+// webSecurity to file://. The scheme must be registered before app 'ready';
+// the handler (installed in the GUI boot block) validates every requested
+// path through safeRecordingPath, so only files under ~/Recordings/yCal or
+// the meeting-cache are ever served. `stream: true` gives us Range support
+// → seeking works on long meetings.
+const MEDIA_SCHEME = 'ycal-media';
+protocol.registerSchemesAsPrivileged([
+  { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+]);
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -594,6 +611,14 @@ function registerIpc() {
     void shell.openPath(recordingsDir());
     return { ok: true as const };
   });
+  ipcMain.handle(IPC.RecorderRevealFile, (_e, p: string) => {
+    // Same path gate as RecorderOpenFile — only files under the recordings
+    // dir / meeting-cache can be revealed.
+    const safe = safeRecordingPath(p);
+    if (!safe) return { ok: false as const, error: 'path outside recordings dir' };
+    shell.showItemInFolder(safe);
+    return { ok: true as const };
+  });
   ipcMain.handle(IPC.RecorderReprocess, async (_e, payload: { eventId: string; audioFile: string; title: string; accountId?: string }) => {
     try {
       await reprocessRecording(payload.eventId, payload.audioFile, payload.title, payload.accountId);
@@ -774,6 +799,37 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // ── Meeting notes (Notes view) ────────────────────────────────────
+  ipcMain.handle(IPC.NotesList, async () => {
+    try {
+      const notes = await listNotes();
+      return { ok: true as const, notes };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.NoteGet, async (
+    _e, payload: { eventId: string; accountId?: string | null },
+  ) => {
+    try {
+      const note = await getNote(payload.eventId, payload.accountId ?? null);
+      return { ok: true as const, note };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.NotesGetOverlay, () => getNotesOverlayFile());
+  ipcMain.handle(IPC.NotesSetOverlay, (
+    _e, payload: { eventId: string; overlay: NoteOverlay },
+  ) => {
+    try {
+      const file = setNoteOverlay(payload.eventId, payload.overlay);
+      return { ok: true as const, file };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
 }
 
 if (isCliInvocation(process.argv)) {
@@ -808,6 +864,49 @@ if (isCliInvocation(process.argv)) {
       try { app.dock.setIcon(DEV_ICON_PATH); } catch { /* dock icon is best-effort */ }
     }
     registerIpc();
+
+    // Serve meeting audio to the Notes-view scrubber. Path comes in as a
+    // `?p=` query param; safeRecordingPath rejects anything outside the
+    // recordings dir / meeting-cache, so a compromised renderer can't read
+    // arbitrary files. We honour HTTP Range ourselves (206 + Content-Range)
+    // so the <audio> element can seek anywhere in a long meeting without
+    // buffering the whole file first.
+    protocol.handle(MEDIA_SCHEME, (request) => {
+      try {
+        const p = new URL(request.url).searchParams.get('p');
+        if (!p) return new Response('missing path', { status: 400 });
+        const safe = safeRecordingPath(decodeURIComponent(p));
+        if (!safe) return new Response('forbidden', { status: 403 });
+        const total = statSync(safe).size;
+        const type = 'audio/mp4';
+        const range = request.headers.get('Range');
+        const m = range ? /bytes=(\d*)-(\d*)/.exec(range) : null;
+        if (m) {
+          let start = m[1] ? parseInt(m[1], 10) : 0;
+          let end = m[2] ? parseInt(m[2], 10) : total - 1;
+          if (!Number.isFinite(start) || start < 0) start = 0;
+          if (!Number.isFinite(end) || end >= total) end = total - 1;
+          if (start > end) { start = 0; end = total - 1; }
+          const body = Readable.toWeb(createReadStream(safe, { start, end })) as unknown as ReadableStream;
+          return new Response(body, {
+            status: 206,
+            headers: {
+              'Content-Type': type,
+              'Content-Range': `bytes ${start}-${end}/${total}`,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': String(end - start + 1),
+            },
+          });
+        }
+        const body = Readable.toWeb(createReadStream(safe)) as unknown as ReadableStream;
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': String(total) },
+        });
+      } catch (e) {
+        return new Response(e instanceof Error ? e.message : 'error', { status: 500 });
+      }
+    });
 
     if (!isConfigured()) {
       dialog.showMessageBoxSync({
@@ -921,6 +1020,10 @@ function startCloudSync(win: BrowserWindow): void {
         case 'glossary.json':
           if (!isParseableJsonObject(body)) return;
           win.webContents.send(IPC.GlossaryChanged, getGlossary());
+          break;
+        case 'meeting-notes.json':
+          if (!isParseableJsonObject(body)) return;
+          win.webContents.send(IPC.NotesOverlayChanged, getNotesOverlayFile());
           break;
       }
     } catch (e) {

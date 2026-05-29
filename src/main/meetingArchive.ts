@@ -42,6 +42,11 @@ const KIND_SUFFIX: Record<ArtifactKind, string> = {
 
 const META_SUFFIX = '.meta.json';
 const GLOSSARY_SUFFIX = '.glossary.json';
+// Structured editorial note (summary/decisions/actions/terms) the Notes
+// view renders. Travels next to the trio so a second Mac reads the same
+// AI note without re-running the pipeline. A sidecar (like glossary) so
+// it stays out of the tightly-typed ArtifactKind trio.
+const NOTE_SUFFIX = '.note.json';
 const PREFIX = 'meet__';
 
 export interface ArchiveMeta {
@@ -74,6 +79,22 @@ function safeEventId(eventId: string): string {
   return eventId.replace(/[^A-Za-z0-9._@-]+/g, '-').slice(0, 200) || 'unknown';
 }
 
+// Recover the true recording start from the m4a filename stamp
+// (`<YYYY-MM-DD_HHMM>__…`). record-meet.sh writes this once at capture time
+// and never rewrites it, so it's the authoritative start — unlike a
+// reprocess, which would otherwise stamp meta.json with "now". Returns ms
+// since epoch (local time) or null when the name doesn't carry a stamp.
+function startedAtFromAudioFile(audioFile: string | null | undefined): number | null {
+  if (!audioFile) return null;
+  const base = path.basename(audioFile).replace(/\.m4a$/i, '');
+  const stamp = base.split('__')[0];
+  const m = stamp.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m;
+  const dt = new Date(+y, +mo - 1, +d, +h, +mi);
+  return Number.isNaN(dt.getTime()) ? null : dt.getTime();
+}
+
 function nameFor(eventId: string, kind: ArtifactKind): string {
   return `${PREFIX}${safeEventId(eventId)}${KIND_SUFFIX[kind]}`;
 }
@@ -84,6 +105,10 @@ function metaNameFor(eventId: string): string {
 
 function glossaryNameFor(eventId: string): string {
   return `${PREFIX}${safeEventId(eventId)}${GLOSSARY_SUFFIX}`;
+}
+
+function noteNameFor(eventId: string): string {
+  return `${PREFIX}${safeEventId(eventId)}${NOTE_SUFFIX}`;
 }
 
 // Reverse of nameFor — pull the eventIdSafe back out of a Drive filename.
@@ -124,6 +149,19 @@ function cacheMetaPath(eventId: string): string {
   return path.join(cacheDir(eventId), 'meta.json');
 }
 
+// Read the locally-cached meta.json for an event without any Drive
+// round-trip. Used by the Notes view to resolve title/timing offline
+// (the cache is seeded on every upload + fetch). Null when absent/unreadable.
+export function readCachedMeta(eventId: string): ArchiveMeta | null {
+  try {
+    const p = cacheMetaPath(eventId);
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf-8')) as ArchiveMeta;
+  } catch {
+    return null;
+  }
+}
+
 async function apiFor(accountId: string): Promise<DriveAppDataAPI> {
   const account = getAccount(accountId);
   if (!account) {
@@ -161,13 +199,20 @@ export interface UploadResult {
 // is detectable by the absence of meta.
 export async function uploadMeetingArtifacts(input: UploadInput): Promise<UploadResult> {
   const api = await apiFor(input.accountId);
+  // Preserve the real meeting start across reprocesses. The filename stamp is
+  // immutable (set at capture); fall back to any existing meta, then to the
+  // caller's startedAt (correct for a first upload, "now" for a reprocess).
+  const prevMeta = readCachedMeta(input.eventId);
+  const startedAt = startedAtFromAudioFile(input.audioFile)
+    ?? prevMeta?.startedAt ?? input.startedAt;
+  const endsAt = input.endsAt ?? prevMeta?.endsAt;
   const result: UploadResult = {
     uploaded: {},
     meta: {
       eventId: input.eventId,
       title: input.title,
-      startedAt: input.startedAt,
-      endsAt: input.endsAt,
+      startedAt,
+      endsAt,
       accountId: input.accountId,
       uploadedAt: new Date().toISOString(),
       sizes: {},
@@ -389,6 +434,67 @@ export async function fetchEventGlossarySidecar(
   } catch (e) {
     console.error('[yCal meetingArchive] glossary sidecar fetch failed', e);
     return null;
+  }
+}
+
+// ── Structured-note sidecar (the Notes view's source of truth) ───────────
+// Same best-effort posture as the glossary sidecar: push/pull the
+// `note.json` next to the recording so the editorial note survives across
+// Macs. Reads are cached locally so the Notes view works offline.
+
+function cacheNotePath(eventId: string): string {
+  return path.join(cacheDir(eventId), 'note.json');
+}
+
+export async function uploadMeetingNoteSidecar(
+  eventId: string, accountId: string, body: string,
+): Promise<void> {
+  try {
+    const api = await apiFor(accountId);
+    await api.upsert(noteNameFor(eventId), body);
+    try {
+      fs.mkdirSync(cacheDir(eventId), { recursive: true });
+      fs.writeFileSync(cacheNotePath(eventId), body);
+    } catch { /* cache seed is best-effort */ }
+  } catch (e) {
+    console.error('[yCal meetingArchive] note sidecar upload failed', e);
+  }
+}
+
+// Return the parsed note.json body (string), preferring the local cache
+// when it's at least as fresh as Drive's copy. Null when neither has one.
+export async function fetchMeetingNoteSidecar(
+  eventId: string, accountId: string,
+): Promise<string | null> {
+  try {
+    const api = await apiFor(accountId);
+    const remote = await api.file(noteNameFor(eventId));
+    if (!remote?.id) {
+      // No Drive copy — fall back to any cached body from a prior fetch.
+      const cached = cacheNotePath(eventId);
+      return fs.existsSync(cached) ? fs.readFileSync(cached, 'utf-8') : null;
+    }
+    const cached = cacheNotePath(eventId);
+    if (fs.existsSync(cached) && remote.modifiedTime) {
+      try {
+        const st = fs.statSync(cached);
+        if (st.mtimeMs >= Date.parse(remote.modifiedTime)) {
+          return fs.readFileSync(cached, 'utf-8');
+        }
+      } catch { /* fall through to re-download */ }
+    }
+    const buf = await api.read(remote.id);
+    try {
+      fs.mkdirSync(cacheDir(eventId), { recursive: true });
+      fs.writeFileSync(cached, buf);
+    } catch { /* best-effort */ }
+    return buf.toString('utf-8');
+  } catch (e) {
+    console.error('[yCal meetingArchive] note sidecar fetch failed', e);
+    const cached = cacheNotePath(eventId);
+    try {
+      return fs.existsSync(cached) ? fs.readFileSync(cached, 'utf-8') : null;
+    } catch { return null; }
   }
 }
 

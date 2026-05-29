@@ -182,14 +182,58 @@ function verifyPythonVersion(pythonPath: string, allowedMinors: string[]): boole
   }
 }
 
+// Minimum pyannote.audio major version. diarize.py loads the
+// speaker-diarization-community-1 model with the 4.x `token=` API; a 3.x
+// venv (older `use_auth_token=`, no community-1 support) throws at load and
+// post-meet.sh silently keeps [Me]/[Other]. We refuse to engage diarization
+// on such a venv and flag it for re-setup instead.
+const DIARIZE_MIN_MAJOR = 4;
+
+// Read the installed pyannote.audio version cheaply from the venv's
+// dist-info directory name (e.g. `pyannote_audio-4.0.1.dist-info`) — no
+// subprocess, no slow `import pyannote.audio` (which pulls in torch and
+// costs several seconds). Returns null when the venv/package is absent.
+export function getDiarizePyannoteVersion(): string | null {
+  try {
+    const libDir = path.join(DIARIZE_VENV, 'lib');
+    const pyDirs = fs.readdirSync(libDir).filter((d) => /^python3\.\d+$/.test(d));
+    for (const py of pyDirs) {
+      const sp = path.join(libDir, py, 'site-packages');
+      let entries: string[];
+      try { entries = fs.readdirSync(sp); } catch { continue; }
+      for (const e of entries) {
+        const m = e.match(/^pyannote[._]audio-(\d+(?:\.\d+)*)\.dist-info$/i);
+        if (m) return m[1];
+      }
+    }
+  } catch { /* venv absent */ }
+  return null;
+}
+
+function pyannoteMajor(v: string | null): number | null {
+  if (!v) return null;
+  const n = parseInt(v.split('.')[0], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// True when the marker exists AND a usable pyannote (>= 4.x) is installed.
 function diarizeVenvOk(): boolean {
   try {
     const st = fs.statSync(DIARIZE_VENV_PY);
     if (!st.isFile() || !(st.mode & 0o111)) return false;
   } catch { return false; }
-  // Cheap structural check — pyannote.audio's __init__.py presence.
-  // Avoid spawning the venv to import; that would slow probe by ~3s.
-  // The full install path writes a sentinel file when done; rely on that.
+  if (!fs.existsSync(path.join(DIARIZE_VENV, '.ycal-diarize-ready'))) return false;
+  const maj = pyannoteMajor(getDiarizePyannoteVersion());
+  return maj !== null && maj >= DIARIZE_MIN_MAJOR;
+}
+
+// Marker present (a venv was built at some point) regardless of version.
+// Used to distinguish "never set up" from "set up but outdated".
+function diarizeMarkerPresent(): boolean {
+  try {
+    const st = fs.statSync(DIARIZE_VENV_PY);
+    if (!st.isFile()) return false;
+  } catch { return false; }
   return fs.existsSync(path.join(DIARIZE_VENV, '.ycal-diarize-ready'));
 }
 
@@ -213,6 +257,10 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
   })();
   const scriptsOk = fs.existsSync(RECORD_SH) && fs.existsSync(POST_SH);
   const diarizeOk = diarizeVenvOk();
+  const diarizePyVer = getDiarizePyannoteVersion();
+  // A venv exists but its pyannote is too old to work → "stale" (prompts
+  // re-setup) rather than "not installed".
+  const diarizeStale = diarizeMarkerPresent() && !diarizeOk;
 
   return {
     brew: { installed: brew !== null, path: brew },
@@ -226,6 +274,8 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
       installed: diarizeOk,
       venvPath: DIARIZE_VENV,
       pythonPath: findCompatiblePython(),
+      pyannoteVersion: diarizePyVer,
+      stale: diarizeStale,
     },
     ready: ffmpeg !== null && whisperCli !== null && modelOk && tapOk && scriptsOk,
   };

@@ -43,4 +43,20 @@ Things raised but unresolved.
 What the participant should do or think about next. Be concrete.
 
 Constraints: be concise, don't editorialise, don't fabricate. If the transcript is too short or noisy to summarise, say so in a single line and stop.
+
+---
+
+After the markdown note above, output a line containing EXACTLY this sentinel and nothing else:
+===YCAL-NOTE-JSON===
+Then output a SINGLE JSON object (no markdown fence, no prose before or after it) capturing the same note in structured form for the app to render:
+{
+  "summary": ["short point", "…"],
+  "decisions": ["…"],
+  "actions": [{"text": "…", "owner": "Name or null"}],
+  "openQuestions": ["…"],
+  "followups": ["…"],
+  "speakerMap": {"SPK1": "Full Name"},
+  "terms": [{"heard": "…", "suggestion": "… or null", "type": "name|term|org|region|project"}]
+}
+Rules for the JSON: match the language of the note; keep arrays empty rather than inventing content; include "speakerMap" only when the transcript used [SPKn] labels and omit any you couldn't map; the "terms" array is the proper nouns a human should double-check — names, companies, products, acronyms that sound uncertain or were likely mis-transcribed — with "suggestion" being the correct spelling when you're fairly sure (else null). Do NOT put common words in "terms".
 `;

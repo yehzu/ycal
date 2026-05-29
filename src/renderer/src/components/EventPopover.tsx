@@ -26,10 +26,12 @@ interface Props {
   // Auto-record setting from app state. Used to render a "Will auto-record"
   // hint on events that match the trigger criteria but haven't started yet.
   autoRecord: boolean;
+  // Jump to the Notes view for this event's recorded minutes.
+  onOpenNotes: (eventId: string) => void;
 }
 
 export function EventPopover({
-  event, anchorRect, calendars, accounts, onClose, autoRecord,
+  event, anchorRect, calendars, accounts, onClose, autoRecord, onOpenNotes,
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -233,6 +235,7 @@ export function EventPopover({
           driveLoading={driveLoading}
           autoRecord={autoRecord}
           onOpenTranscript={setTranscript}
+          onOpenNotes={onOpenNotes}
         />
         {event.attendees && event.attendees.length > 0 && (
           <PopoverAttendees attendees={event.attendees} />
@@ -336,6 +339,7 @@ async function openFromDrive(
 // by on-demand fetches.
 function RecordingRow({
   event, recording, pastRec, driveArchive, driveLoading, autoRecord, onOpenTranscript,
+  onOpenNotes,
 }: {
   event: CalendarEvent;
   recording: RecordingStatus | null;
@@ -344,7 +348,21 @@ function RecordingRow({
   driveLoading: boolean;
   autoRecord: boolean;
   onOpenTranscript: (req: TranscriptRequest) => void;
+  onOpenNotes: (eventId: string) => void;
 }) {
+  // The "View minutes →" button — present whenever this event has an
+  // editorial note to read (a finished local recording or a Drive archive).
+  // Opens the Notes view focused on this meeting.
+  const minutesBtn = (
+    <button
+      className="pp-btn pp-btn-strong"
+      onClick={() => onOpenNotes(event.id)}
+      style={{ padding: '2px 10px', fontSize: 12 }}
+      title="Open the editorial minutes for this meeting"
+    >
+      View minutes →
+    </button>
+  );
   if (recording) {
     if (recording.state === 'recording') {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - recording.startedAt) / 1000));
@@ -408,6 +426,7 @@ function RecordingRow({
             <span title={onDrive ? `On Drive: ${uploaded.join(', ')}` : 'Local only'}>
               ✓ Done{onDrive ? ' · Drive ✓' : ''}
             </span>
+            {minutesBtn}
             {recording.summaryFile && (
               <button
                 className="pp-btn"
@@ -476,6 +495,15 @@ function RecordingRow({
               </button>
             )}
           </span>
+          {recording.warning && (
+            <span
+              className="v"
+              style={{ marginTop: 4, color: '#9a6a1a', fontSize: 11.5, display: 'block' }}
+              title={recording.warning}
+            >
+              ⚠ {recording.warning}
+            </span>
+          )}
         </div>
       );
     }
@@ -533,6 +561,7 @@ function RecordingRow({
           <span title={driveArchive ? 'Mirrored to Drive' : driveLoading ? 'Checking Drive…' : 'Local only'}>
             ✓ Recorded{driveArchive ? ' · Drive ✓' : driveLoading ? ' · ⋯' : ''}
           </span>
+          {minutesBtn}
           {pastRec.summaryFile && (
             <button
               className="pp-btn"
@@ -625,6 +654,7 @@ function RecordingRow({
         <span className="k">Recording</span>
         <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span title="Pulled from another Mac via Drive">✓ Drive</span>
+          {minutesBtn}
           {driveArchive.hasSummary && (
             <button
               className="pp-btn"

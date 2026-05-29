@@ -281,6 +281,14 @@ export interface RecorderSetupStatus {
     installed: boolean;
     venvPath: string;
     pythonPath: string | null;
+    // Installed pyannote.audio version (read cheaply from the venv's
+    // dist-info dir name), or null when the venv is absent/unreadable.
+    pyannoteVersion: string | null;
+    // Marker present but pyannote is older than the required 4.x — the
+    // diarize script loads the community-1 model with the 4.x API and will
+    // fail at load on 3.x, so we treat this as "installed but needs re-setup"
+    // rather than silently falling back to [Me]/[Other] on every recording.
+    stale: boolean;
   };
   // Aggregate: true when everything required for auto-record (brew is
   // NOT required — we only need it to install the others; once they're
@@ -389,6 +397,12 @@ export interface RecordingStatus {
   // 44-min file post-meeting. Set only while state === 'recording'.
   silentSeconds?: number;
   error?: string;
+  // Non-fatal warning attached after processing. Today this flags the case
+  // where speaker separation was enabled but produced no [SPKn] labels
+  // (diarization silently failed) — the recording itself is fine, the
+  // result is just degraded. Surfaced in the event popover so a quiet
+  // diarization failure no longer goes unnoticed.
+  warning?: string;
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system';
@@ -764,6 +778,9 @@ export const IPC = {
   // ask main to open arbitrary files.
   RecorderOpenFile: 'ycal:recorderOpenFile',
   RecorderRevealFolder: 'ycal:recorderRevealFolder',
+  // Reveal a specific recording file in Finder (showItemInFolder), so the
+  // Notes view can locate a meeting's m4a on disk.
+  RecorderRevealFile: 'ycal:recorderRevealFile',
   // Active-Meet detection diagnostics. The renderer reads the current
   // signal (and subscribes to changes) so Settings → Recording can show
   // "live status" + dump visible processes for debugging.
@@ -791,6 +808,16 @@ export const IPC = {
   // TranscriptSheet displays it; opening in TextEdit stays available
   // via the existing RecorderOpenFile path).
   TranscriptRead: 'ycal:transcriptRead',
+  // ── Meeting notes (the editorial review surface) ────────────────────
+  // The Notes view reads structured meeting notes built in main from the
+  // recording archive (transcript + summary + note.json + glossary +
+  // meta). Corrections (status, inline edits, speaker renames, resolved
+  // terms, highlights) live in a cloudStore overlay keyed by eventId.
+  NotesList: 'ycal:notesList',          // lightweight rows for the master list
+  NoteGet: 'ycal:noteGet',              // full structured note for one event
+  NotesGetOverlay: 'ycal:notesGetOverlay',
+  NotesSetOverlay: 'ycal:notesSetOverlay',
+  NotesOverlayChanged: 'ycal:notesOverlayChanged',  // main → renderer push
 } as const;
 
 // Lightweight wire shape for the renderer / CLI to know which artifacts
@@ -865,4 +892,121 @@ export interface AttendeeSuggestion {
   count: number;
   // Last meeting the user saw them on, for sort + display.
   lastSeen: string;  // ISO date
+}
+
+// ── Meeting notes (Notes view) ─────────────────────────────────────────
+// The structured, editorial form of a recorded meeting. Built in main
+// (src/main/notesStore.ts) from the recording archive — `transcript.txt`
+// (timed speaker segments), `summary.md` / `note.json` (the AI note), the
+// glossary (terms to confirm), and `meta.json` (title + timing). The base
+// note is read-only; user corrections live in a separate cloudStore
+// overlay (`meeting-notes.json`) keyed by eventId and merged over the base
+// in the renderer — so reprocessing the recording never clobbers edits.
+
+export type NoteStatus = 'raw' | 'review' | 'corrected';
+
+// One participant. `label` is the raw transcript token (Me / Other /
+// SPK1…); `name` is the display name (diarization map, overlay rename, or
+// a sensible default). `hue` drives the accent color (shared L/C in oklch,
+// only hue varies — one editorial family).
+export interface NoteSpeaker {
+  id: string;
+  label: string;
+  name: string;
+  initials: string;
+  role: string | null;
+  hue: number;
+}
+
+// One transcript line. `html` is pre-escaped text with our own markup
+// only: low-confidence terms wrapped in <span class="nt-lc" data-term> and
+// user highlights in <mark class="nt-hl">. `t` is the start offset (sec).
+export interface NoteSegment {
+  id: string;
+  speakerId: string;
+  t: number;
+  html: string;
+}
+
+// A noun the pipeline (or glossary) flagged as possibly mis-heard.
+// `suggestion` is the canonical spelling when the glossary knows it, else
+// null (the user adds it manually).
+export interface NoteTerm {
+  id: string;
+  heard: string;
+  suggestion: string | null;
+  type: string;
+}
+
+export interface NoteAction {
+  id: string;
+  text: string;
+  owner: string | null;
+  done: boolean;
+}
+
+// Lightweight row for the master list — no segments/transcript, so the
+// list can render without reading every transcript file.
+export interface MeetingNoteSummary {
+  id: string;          // = eventId
+  eventId: string;
+  accountId: string | null;
+  title: string;
+  date: string;        // YYYY-MM-DD (local)
+  startedAt: number | null;
+  durationSec: number;
+  status: NoteStatus;
+  speakerInitials: string[];
+  pendingTermCount: number;
+  stale: boolean;
+  hasAudio: boolean;
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  // Stable hue (0–360) derived from the eventId for the list/document
+  // accent — meetings rarely carry a usable calendar color this far from
+  // the loaded window, so we fingerprint the id instead.
+  hue: number;
+}
+
+// The full structured note for one meeting (base, pre-overlay).
+export interface MeetingNote extends MeetingNoteSummary {
+  audioFile: string | null;     // local m4a path when this Mac has it
+  summary: string[];
+  decisions: string[];
+  actions: NoteAction[];
+  openQuestions: string[];
+  followups: string[];
+  speakers: NoteSpeaker[];
+  segments: NoteSegment[];
+  terms: NoteTerm[];
+  transcribedAt: number | null;
+  noteAt: number | null;
+  modelVer: string | null;
+  correctedBy: string | null;
+  source: 'note-json' | 'parsed-markdown' | 'transcript-only';
+  peaks: number[];              // 0..1 pseudo-waveform for the scrubber
+}
+
+// Per-note correction overlay. Mirrors the design's localStorage
+// `noteEdits` — every field is optional and merged over the base note.
+export interface NoteOverlay {
+  status?: NoteStatus;
+  title?: string;
+  summary?: string[];
+  decisions?: string[];
+  actions?: NoteAction[];
+  speakerNames?: Record<string, string>;   // speakerId → renamed display name
+  segSpeakers?: Record<string, string>;     // segId → reassigned speakerId
+  segHtml?: Record<string, string>;         // segId → edited HTML (incl. highlights)
+  resolvedTermIds?: string[];
+  correctedBy?: string | null;
+  noteAt?: number;                          // baseline note generation time
+  transcriptTouchedAt?: number;             // last manual transcript/term edit
+  updatedAt?: number;
+}
+
+export interface NotesOverlayFile {
+  version: 1;
+  notes: Record<string, NoteOverlay>;       // eventId → overlay
+  updatedAt: number;
 }

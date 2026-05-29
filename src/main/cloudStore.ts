@@ -283,6 +283,11 @@ export const CLOUD_FILES = [
   'tasks.md',
   'glossary.json',
   'people.md',
+  // Per-note correction overlay for the Notes view (status, inline edits,
+  // speaker renames, resolved terms, highlights) keyed by eventId. The
+  // base note is rebuilt from the recording archive; only the corrections
+  // travel here so they survive a reprocess and follow the user across Macs.
+  'meeting-notes.json',
 ];
 
 // ── Cross-device file watcher ────────────────────────────────────────

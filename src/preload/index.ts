@@ -16,6 +16,10 @@ import type {
   ListEventsRequest,
   MeetingArchiveSummary,
   MeetingArtifactKind,
+  MeetingNote,
+  MeetingNoteSummary,
+  NoteOverlay,
+  NotesOverlayFile,
   RecentRecording,
   RecorderMeetSignal,
   RecorderSetupProgress,
@@ -200,6 +204,8 @@ const api = {
     ipcRenderer.invoke(IPC.RecorderOpenFile, path),
   recorderRevealFolder: (): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderRevealFolder),
+  recorderRevealFile: (path: string): Promise<Result<{}>> =>
+    ipcRenderer.invoke(IPC.RecorderRevealFile, path),
   recorderReprocess: (
     payload: { eventId: string; audioFile: string; title: string; accountId?: string },
   ): Promise<Result<{}>> =>
@@ -266,6 +272,28 @@ const api = {
       handler(payload);
     ipcRenderer.on(IPC.GlossaryChanged, listener);
     return () => ipcRenderer.removeListener(IPC.GlossaryChanged, listener);
+  },
+
+  // Meeting notes — the editorial Notes view. listNotes() drives the
+  // master list; noteGet() fetches one full structured note; the overlay
+  // pair persists user corrections (cloudStore, cross-device).
+  notesList: (): Promise<Result<{ notes: MeetingNoteSummary[] }>> =>
+    ipcRenderer.invoke(IPC.NotesList),
+  noteGet: (
+    payload: { eventId: string; accountId?: string | null },
+  ): Promise<Result<{ note: MeetingNote }>> =>
+    ipcRenderer.invoke(IPC.NoteGet, payload),
+  notesGetOverlay: (): Promise<NotesOverlayFile> =>
+    ipcRenderer.invoke(IPC.NotesGetOverlay),
+  notesSetOverlay: (
+    payload: { eventId: string; overlay: NoteOverlay },
+  ): Promise<Result<{ file: NotesOverlayFile }>> =>
+    ipcRenderer.invoke(IPC.NotesSetOverlay, payload),
+  onNotesOverlayChanged: (handler: (next: NotesOverlayFile) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: NotesOverlayFile): void =>
+      handler(payload);
+    ipcRenderer.on(IPC.NotesOverlayChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.NotesOverlayChanged, listener);
   },
 };
 

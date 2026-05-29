@@ -384,6 +384,22 @@ Things raised but unresolved.
 What the participant should do or think about next. Be concrete.
 
 Constraints: be concise, don't editorialise, don't fabricate. If the transcript is too short or noisy to summarise, say so in a single line and stop.
+
+---
+
+After the markdown note above, output a line containing EXACTLY this sentinel and nothing else:
+===YCAL-NOTE-JSON===
+Then output a SINGLE JSON object (no markdown fence, no prose before or after it) capturing the same note in structured form for the app to render:
+{
+  "summary": ["short point", "…"],
+  "decisions": ["…"],
+  "actions": [{"text": "…", "owner": "Name or null"}],
+  "openQuestions": ["…"],
+  "followups": ["…"],
+  "speakerMap": {"SPK1": "Full Name"},
+  "terms": [{"heard": "…", "suggestion": "… or null", "type": "name|term|org|region|project"}]
+}
+Rules for the JSON: match the language of the note; keep arrays empty rather than inventing content; include "speakerMap" only when the transcript used [SPKn] labels and omit any you couldn't map; the "terms" array is the proper nouns a human should double-check — names, companies, products, acronyms that sound uncertain or were likely mis-transcribed — with "suggestion" being the correct spelling when you're fairly sure (else null). Do NOT put common words in "terms".
 TMPL
 fi
 
@@ -492,12 +508,72 @@ fi
 } > "${base}.summary.prompt.tmp"
 
 echo "[post-meet] summarising via $CLAUDE_BIN → $summary" >&2
-if ! "$CLAUDE_BIN" -p < "${base}.summary.prompt.tmp" > "$summary" 2>"${base}.summary.log"; then
+summary_raw="${base}.summary.raw"
+if ! "$CLAUDE_BIN" -p < "${base}.summary.prompt.tmp" > "$summary_raw" 2>"${base}.summary.log"; then
   echo "[post-meet] claude failed — see ${base}.summary.log" >&2
-  rm -f "${base}.summary.prompt.tmp"
+  rm -f "${base}.summary.prompt.tmp" "$summary_raw"
   exit 4
 fi
 rm -f "${base}.summary.prompt.tmp"
+
+# === Split the structured note off the markdown =============================
+# The prompt asks claude to append `===YCAL-NOTE-JSON===` + a JSON object
+# after the human markdown note. We split the raw output into:
+#   <base>.summary.md   — the markdown before the sentinel (human note)
+#   <base>.note.json    — the structured note the Notes view renders
+# Defensive: if there's no sentinel, no python3, or the JSON doesn't parse,
+# summary.md = the full output (legacy behaviour) and note.json is absent
+# (the app falls back to parsing the markdown). The human summary is never
+# left empty.
+note_json="${base}.note.json"
+rm -f "$note_json"
+SENTINEL='===YCAL-NOTE-JSON==='
+split_done=0
+if grep -qF "$SENTINEL" "$summary_raw" && command -v python3 >/dev/null 2>&1; then
+  if python3 - "$summary_raw" "$summary" "$note_json" "$SENTINEL" <<'PY' 2>>"${base}.summary.log"; then
+import json, re, sys
+raw_path, summary_path, note_path, sentinel = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(raw_path, "r", encoding="utf-8") as f:
+    raw = f.read()
+idx = raw.find(sentinel)
+if idx < 0:
+    sys.exit(1)
+md = raw[:idx].rstrip() + "\n"
+tail = raw[idx + len(sentinel):].strip()
+# Tolerate the model wrapping the JSON in a ```json fence despite the ask.
+m = re.search(r"\{.*\}", tail, re.DOTALL)
+ok_json = False
+if m:
+    try:
+        obj = json.loads(m.group(0))
+        if isinstance(obj, dict):
+            with open(note_path, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+            ok_json = True
+    except Exception as e:
+        sys.stderr.write(f"[post-meet] note.json parse failed: {e}\n")
+# Write the human summary (markdown before the sentinel). Never empty:
+# fall back to the full raw output if the split produced nothing.
+with open(summary_path, "w", encoding="utf-8") as f:
+    f.write(md if md.strip() else raw)
+sys.exit(0 if ok_json else 2)
+PY
+    split_done=1
+    echo "[post-meet] structured note.json written" >&2
+  else
+    code=$?
+    if [[ "$code" == "2" ]]; then
+      # Summary was written but JSON didn't parse — that's fine, fall through.
+      split_done=1
+      echo "[post-meet] note.json skipped (unparseable) — summary.md ok" >&2
+    fi
+  fi
+fi
+if [[ "$split_done" != "1" ]]; then
+  # No sentinel / no python3 / hard failure — keep the full output as the note.
+  cp "$summary_raw" "$summary"
+fi
+rm -f "$summary_raw"
 
 if [[ ! -s "$summary" ]]; then
   echo "[post-meet] summary empty — see ${base}.summary.log" >&2; exit 5

@@ -24,6 +24,7 @@ import { UpdateOverlay } from './components/UpdateOverlay';
 import { TasksPanel, TasksEdgeTab } from './components/TasksPanel';
 import { TaskSheet } from './components/TaskSheet';
 import { SearchPalette } from './components/SearchPalette';
+import { NotesView } from './components/NotesView';
 import { isFullyReadOnlyEvent, presentForVisibleCalendars } from './calRoles';
 
 const DEFAULT_SECTION_ORDER: SidebarSectionKey[] = [
@@ -198,6 +199,13 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   }, [view]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Notes view — which meeting's minutes are open.
+  const [notesNoteId, setNotesNoteId] = useState<string | null>(null);
+  const openNotesFor = useCallback((eventId: string) => {
+    setNotesNoteId(eventId);
+    setView('notes');
+    setPopover(null);
+  }, []);
   const selectedTask = useMemo(
     () => tasks.tasks.find((t) => t.id === selectedTaskId) ?? null,
     [tasks.tasks, selectedTaskId],
@@ -723,8 +731,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           />
         )}
 
-        <div className="app">
-          <Sidebar
+        <div className={'app' + (view === 'notes' ? ' app--notes' : '')}>
+          {view !== 'notes' && <Sidebar
             today={today}
             anchor={anchor}
             selected={selected}
@@ -745,7 +753,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
             hideDisabledCals={hideDisabledCals}
             setHideDisabledCals={setHideDisabledCals}
             showWeekNums={showWeekNums}
-          />
+          />}
 
           <main className="main">
             <MainToolbar
@@ -762,6 +770,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
 
             {store.accounts.length === 0 ? (
               <EmptyState onSignIn={handleSignIn} configured={store.configured ?? true} />
+            ) : view === 'notes' ? (
+              <NotesView selectedId={notesNoteId} onSelectId={setNotesNoteId} />
             ) : view === 'month' ? (
               <MonthGrid
                 today={today}
@@ -915,6 +925,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
           calendars={store.calendars}
           onClose={() => setPopover(null)}
           autoRecord={autoRecordMeetings}
+          onOpenNotes={openNotesFor}
         />
       )}
 

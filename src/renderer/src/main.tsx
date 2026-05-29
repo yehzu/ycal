@@ -4,6 +4,7 @@ import { App } from './App';
 import { DragProvider } from './dragController';
 import { QuickAdd } from './QuickAdd';
 import './styles.css';
+import './notes.css';
 
 // Two renderer entry shapes share a single bundle: the full calendar app
 // and the small quick-add popup. The main process picks which one to

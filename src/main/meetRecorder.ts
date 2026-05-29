@@ -40,7 +40,7 @@ import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
 import { getActiveModelPath, getDiarizeVenvPython, isDiarizeVenvReady } from './recorderSetup';
-import { uploadMeetingArtifacts } from './meetingArchive';
+import { uploadMeetingArtifacts, uploadMeetingNoteSidecar } from './meetingArchive';
 import { listAccounts } from './tokenStore';
 import {
   applyGlossaryToSummaryPrompt, buildRuntimeFiles, getEffectiveEntries,
@@ -1329,10 +1329,26 @@ async function postProcess(
       endsAt: status?.endsAt,
     });
 
+    // Quiet-failure guard: if speaker separation was requested but the
+    // transcript came back with no [SPKn] labels, diarization fell over
+    // (revoked HF token, gated model, OOM, …) and post-meet.sh silently
+    // kept [Me]/[Other]. The recording is still fine, so surface a warning
+    // rather than a failure — otherwise the user just wonders why everyone
+    // is "Other".
+    let diarizeWarning: string | undefined;
+    if (envExtras.YCAL_DIARIZE_ENABLED === '1' && fs.existsSync(transcript)) {
+      try {
+        if (!/\]\s*SPK\d/i.test(fs.readFileSync(transcript, 'utf-8'))) {
+          diarizeWarning = 'Speaker separation produced no labels — diarization may have failed. Re-run “Setup Diarization” in Settings → Recording.';
+        }
+      } catch { /* ignore */ }
+    }
+
     const finalStatus = recordings.get(eventId);
     if (finalStatus) {
       finalStatus.state = 'done';
       finalStatus.uploadedKinds = uploadedKinds;
+      if (diarizeWarning) finalStatus.warning = diarizeWarning;
       pushStatus();
     }
     const n = new Notification({
@@ -1573,6 +1589,18 @@ async function uploadArtifacts(input: {
       summaryFile: input.summaryFile,
       uploadAudio,
     });
+    // Push the structured note.json sidecar (the Notes view's source of
+    // truth) alongside the trio when post-meet.sh emitted one. Best-effort
+    // — a missing or unreadable note.json just means the Notes view falls
+    // back to parsing summary.md on this + other Macs.
+    const noteFile = input.audioFile.replace(/\.m4a$/, '.note.json');
+    if (fs.existsSync(noteFile)) {
+      try {
+        await uploadMeetingNoteSidecar(input.eventId, accountId, fs.readFileSync(noteFile, 'utf-8'));
+      } catch (e) {
+        console.error('[yCal recorder] note.json sidecar upload failed', e);
+      }
+    }
     const uploaded = Object.keys(res.uploaded) as Array<'audio' | 'transcript' | 'summary'>;
     if (Object.keys(res.errors).length > 0) {
       console.error('[yCal recorder] Drive upload partial failure', res.errors);

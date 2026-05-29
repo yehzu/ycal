@@ -2,7 +2,7 @@ import {
   DOW_LONG, MONTH_NAMES, MONTH_SHORT, addDays, addMonths, ordinal, startOfWeek,
 } from '../dates';
 
-export type ViewMode = 'month' | 'week' | 'day';
+export type ViewMode = 'month' | 'week' | 'day' | 'notes';
 
 interface Props {
   view: ViewMode;
@@ -27,7 +27,9 @@ export function MainToolbar({
   const yr = anchor.getFullYear();
 
   let title: React.ReactNode;
-  if (view === 'month') {
+  if (view === 'notes') {
+    title = <span style={{ fontStyle: 'italic' }}>Minutes</span>;
+  } else if (view === 'month') {
     title = (
       <>
         <span style={{ fontStyle: 'italic' }}>{monthName}</span>
@@ -99,13 +101,15 @@ export function MainToolbar({
           </span>
         )}
         {loading && online && <span className="sync-hint">syncing…</span>}
-        <button className="icon-btn" onClick={stepBack}>‹</button>
-        <button className="icon-btn today-btn" onClick={goToToday}>
-          Today
-        </button>
-        <button className="icon-btn" onClick={stepFwd}>›</button>
+        {view !== 'notes' && <>
+          <button className="icon-btn" onClick={stepBack}>‹</button>
+          <button className="icon-btn today-btn" onClick={goToToday}>
+            Today
+          </button>
+          <button className="icon-btn" onClick={stepFwd}>›</button>
+        </>}
         <div className="view-switch" role="tablist" style={{ marginLeft: 6 }}>
-          {(['month', 'week', 'day'] as const).map((v) => (
+          {(['month', 'week', 'day', 'notes'] as const).map((v) => (
             <button
               key={v}
               role="tab"

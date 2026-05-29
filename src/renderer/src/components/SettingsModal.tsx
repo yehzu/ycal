@@ -1807,10 +1807,12 @@ function PrefsRecording({
         label: 'diarize venv',
         ok: status.diarizeVenv.installed,
         detail: status.diarizeVenv.installed
-          ? status.diarizeVenv.venvPath
-          : status.diarizeVenv.pythonPath
-            ? `optional — Setup creates ${status.diarizeVenv.venvPath} from ${status.diarizeVenv.pythonPath}`
-            : 'optional — no Python 3.10–3.12 found (brew install python@3.12 first)',
+          ? `${status.diarizeVenv.venvPath} (pyannote ${status.diarizeVenv.pyannoteVersion ?? '?'})`
+          : status.diarizeVenv.stale
+            ? `outdated — pyannote ${status.diarizeVenv.pyannoteVersion ?? '<4'} installed, needs ≥4. Re-run Setup to upgrade.`
+            : status.diarizeVenv.pythonPath
+              ? `optional — Setup creates ${status.diarizeVenv.venvPath} from ${status.diarizeVenv.pythonPath}`
+              : 'optional — no Python 3.10–3.12 found (brew install python@3.12 first)',
         note: 'Required only when "Speaker separation" is enabled below.',
       },
     ]
@@ -1928,6 +1930,27 @@ function PrefsRecording({
         flagged with a "?". Setup creates <code>~/.ycal/diarize-venv/</code>{' '}
         (~1.5 GB once) and downloads a ~500 MB pyannote model on first use.
       </p>
+      {status?.diarizeVenv.stale && (
+        <div
+          style={{
+            margin: '4px 0 12px',
+            padding: '8px 12px',
+            border: '1px solid #e0b050',
+            background: '#faf3e0',
+            borderRadius: 6,
+            fontSize: 12,
+            lineHeight: 1.45,
+            color: '#7a5510',
+            maxWidth: '60ch',
+          }}
+        >
+          ⚠ Your diarization environment is <strong>outdated</strong> (pyannote{' '}
+          {status.diarizeVenv.pyannoteVersion ?? '<4'}; needs ≥4). Speaker
+          separation is <strong>paused</strong> — recordings keep [Me]/[Other]
+          only — until you re-run <strong>Setup diarize venv</strong> below to
+          upgrade. Then re-process a meeting to get speaker labels.
+        </div>
+      )}
       <PrefRow
         label="Enable speaker separation"
         hint={
@@ -2093,12 +2116,16 @@ function PrefsRecording({
               ? 'Install Python 3.10–3.12 first (brew install python@3.12)'
               : status?.diarizeVenv.installed
                 ? 'Diarize venv already set up'
-                : 'Create the pyannote.audio venv (~1.5 GB)'
+                : status?.diarizeVenv.stale
+                  ? 'Upgrade the venv to pyannote ≥4'
+                  : 'Create the pyannote.audio venv (~1.5 GB)'
           }
         >
           {status?.diarizeVenv.installed
             ? 'Diarize venv ✓'
-            : 'Setup diarize venv (~1.5 GB)'}
+            : status?.diarizeVenv.stale
+              ? 'Upgrade diarize venv'
+              : 'Setup diarize venv (~1.5 GB)'}
         </button>
       </div>
 
