@@ -36,14 +36,21 @@ src/
 │   │   ├── markdownDoc.ts  Markdown task parser + serializer + targeted edits
 │   │   ├── markdown.ts     Markdown-file-backed provider (cloudStore-routed tasks.md)
 │   │   └── index.ts        Registry — drop new providers here
+│   ├── meetRecorder.ts    Meeting auto-record (ffmpeg + whisper.cpp + claude) + reprocess/resummarize
+│   ├── meetingArchive.ts  Per-event Drive appdata (audio/transcript/summary + note.json/glossary sidecars)
+│   ├── recorderSetup.ts   One-click dep install + readiness probe (incl. version-gated diarize venv)
+│   ├── glossary.ts        Org terminology dictionary (feeds whisper prompt + substitution + claude)
+│   ├── notesStore.ts      Builds a structured MeetingNote from the archive + meeting-notes.json overlay
 │   ├── cli.ts            Argv-driven CLI (LLM-friendly, JSON/text/markdown)
 │   └── cliServer.ts      Unix socket server bridging external clients to runCli
 ├── preload/      contextBridge → window.ycal; the only renderer↔main surface
-├── renderer/     React UI; styled in src/renderer/src/styles.css
+├── renderer/     React UI; styled in src/renderer/src/styles.css (+ notes.css)
 │   └── src/
 │       ├── App.tsx              Main shell, wires all stores + panels
 │       ├── store.ts             Calendar events + accounts + weather hook
 │       ├── tasks.ts             Tasks store hook (provider-agnostic)
+│       ├── notes.ts             Meeting-notes store hook (list + cloudStore overlay + lazy full notes)
+│       ├── glossary.ts          Glossary store hook (global + per-event terminology dict)
 │       ├── rhythm.ts            Pure helpers — resolveRhythm / formatRhythmTime
 │       ├── dayLoad.ts           Pure helper — computeDayLoad (free / energy / intensity)
 │       ├── dragController.tsx   Pointer + HTML5 hybrid drag controller
@@ -51,10 +58,12 @@ src/
 │           ├── TimeView.tsx       Week/Day grid, task chips, rhythm lines, drops
 │           ├── TasksPanel.tsx     Right rail + TaskCard + edge tab
 │           ├── TaskSheet.tsx      Slide-in detail (description + comments)
-│           ├── EventPopover.tsx   Event detail popover (Meet link + attendees)
+│           ├── NotesView.tsx      Notes view — master list + editorial document (transcript review)
+│           ├── TranscriptSheet.tsx  Inline transcript reader + selection→glossary correction
+│           ├── EventPopover.tsx   Event detail popover (Meet link + attendees + recording row)
 │           ├── PopoverAttendees.tsx  Sorted guest list for the popover
 │           ├── DayLoad.tsx        DayLoadGauge / Readout / Summary (capacity bar)
-│           └── SettingsModal.tsx  Tabs: General/Tasks/Day rhythm/Sync/…
+│           └── SettingsModal.tsx  Tabs: General/Tasks/Day rhythm/Sync/Recording/…
 └── shared/       Cross-process types and pure helpers
     ├── types.ts        IPC contract — change carefully
     └── dedup.ts        Cross-calendar duplicate collapsing (used by both)
@@ -70,7 +79,7 @@ bin/ycal         Plain-Node CLI client (no Electron import — talks to socket)
 5. **`app.name` resolves to `"ycal"` (lowercase, from package.json `name`).** That's the userData dir name on disk: `~/Library/Application Support/ycal/`. The `productName` `"yCal"` only affects the .app bundle name. Don't call `app.setName('yCal')` — it would orphan existing users' tokens.
 6. **Tasks is a pluggable provider, not a Todoist integration.** The renderer talks to `getActiveProvider()` via IPC (`tasksList`, `tasksClose`, `tasksAddComment`, …). Adding a new backend means dropping a file in `src/main/taskProviders/` that implements the `TaskProvider` interface and registering it in `taskProviders/index.ts`. The renderer is provider-agnostic.
 7. **Task scheduling stays local-cloud — never round-trip to the upstream provider.** When a user drags a task onto a calendar slot, we record it in `tasks-schedule.json` (cloudStore-routed). We do NOT call Todoist's `update task due date`. Only completion (`closeTask`/`reopenTask`) and comments push upstream.
-8. **`cloudStore.ts` is the only thing that knows about iCloud Drive.** Anything that wants iCloud-or-local routing should go through `readJson` / `writeJson` (or `readText` / `writeText`) and register its filename in `CLOUD_FILES` so the toggle in Settings → Sync moves it correctly. Today the routed files are `rhythm.json`, `tasks-schedule.json`, `settings.json`, and `tasks.md`.
+8. **`cloudStore.ts` is the only thing that knows about iCloud Drive.** Anything that wants iCloud-or-local routing should go through `readJson` / `writeJson` (or `readText` / `writeText`) and register its filename in `CLOUD_FILES` so the toggle in Settings → Sync moves it correctly. Today the routed files are `rhythm.json`, `tasks-schedule.json`, `settings.json`, `tasks.md`, `glossary.json`, `people.md`, and `meeting-notes.json` (the Notes correction overlay).
 9. **The cross-device sync model is "iCloud-Drive routing for files; safeStorage credentials stay local."** All UI prefs + the day rhythm + the task schedule + the markdown task store follow the user across Macs through cloudStore. OAuth refresh tokens (`accounts.json`) and the Todoist API key (`todoist.key`) cannot — `safeStorage` keys are per-device. Each new Mac re-signs once. The `cloudStorage` pref ITSELF lives in `device.json` (userData, never synced) so we can read settings.json from the right location without circular bootstrapping. `cloudStore.migrateMissingToCloud()` runs at startup to handle the upgrade case where new files joined `CLOUD_FILES` after the user already toggled iCloud on.
 
    **Drive sync is the cross-platform layer** (added 2026-05-07 for iPhone parity). `src/main/driveSync.ts` mirrors every CLOUD_FILES entry through the user's Google Drive `appdata` folder, using the `https://www.googleapis.com/auth/drive.appdata` scope (added to `auth.ts` SCOPES). Layered ON TOP of cloudStore: files still live on disk per the cloudStorage pref; Drive sync shadows them via the same per-app project iOS uses. Per-device prefs (`driveSyncEnabled`, `driveSyncAccountId`) live in `device.json`. The orchestrator debounces local writes (1.5s) before pushing, polls every 5 minutes for remote pulls, and uses a per-filename `lastSeen` map to break the watcher → push → pull echo loop. Manual PUSH NOW / PULL NOW lives in Settings → Sync. Existing OAuth tokens predate the `drive.appdata` scope — users must remove + re-add a Google account once for sync to engage.
@@ -278,6 +287,29 @@ A null return from `computeDayLoad` means "nothing scheduled" — callers skip r
 - `attendees` mirrors Google's attendee object, including `additionalGuests` so "+47 others" rows roll up correctly into the count pills.
 
 `PopoverAttendees` sorts organizer → self → accepted → tentative → needsAction → declined and folds long lists past 5 with an expand/collapse. Avatar background is a stable hash of the email clamped to the 130–290 hue range so dots never collide with the warm calendar palette.
+
+## Meeting notes subsystem (the Notes view)
+
+A fourth top-level view (`view === 'notes'` in `MainToolbar`'s `ViewMode`) that turns recorded meetings into a structured, correctable editorial note. The sidebar steps aside (`.app--notes` → single column) so the document gets full width. Entry points: the **notes** tab in the view switcher, and **"View minutes →"** in the event popover's recording row (`onOpenNotes`).
+
+**It's a review surface over the REAL recording pipeline — not a separate data store.** The chain is: auto-record (`meetRecorder.ts`: ffmpeg → whisper.cpp → `claude -p` via `tools/recording/*.sh`) → per-event archive on the event-owning account's Drive appdata (`meetingArchive.ts`) → structured note built in `notesStore.ts`. Don't reinvent any of that; the Notes view consumes its output.
+
+**Where a note's fields come from (`notesStore.getNote`):**
+- `note.json` (preferred) — the structured note the summary step emits. `post-meet.sh` (+ `@shared/recorderPrompt`'s `DEFAULT_SUMMARY_PROMPT` — keep the two in sync) asks claude for the markdown note, then a `===YCAL-NOTE-JSON===` sentinel + a JSON object (`summary`/`decisions`/`actions`/`speakerMap`/`terms`). The script splits them: markdown → `summary.md`, JSON → `<base>.note.json`. **Defensive:** if the sentinel/parse fails or python3 is absent, `summary.md` keeps the whole output and note.json is simply absent.
+- else parse `summary.md` headings (TL;DR / Decisions / Action-items table / Speaker mapping / …) deterministically. **This path is mandatory** — every recording made before note.json existed has only `summary.md` + `transcript.txt` and must still appear in the Notes view.
+- `transcript.txt` (`[MM:SS] Label: text`, Label = `Me`/`Other`/`SPKn`) → timed speaker segments + the roster.
+- the glossary supplies term suggestions; in the markdown-fallback path it also derives "terms to confirm" (any alias still present verbatim in the transcript).
+
+**Corrections live in an overlay, NOT in the base note.** `meeting-notes.json` (cloudStore-routed, in `CLOUD_FILES`, keyed by eventId) holds status / inline edits / speaker renames / resolved-term ids / edited segment HTML. The renderer merges it over the base (`effectiveNote` in `NotesView.tsx`) — the same base+overlay split the Tasks subsystem uses. **This is deliberate: reprocessing regenerates the base note without clobbering the user's edits.** The cloudStore watcher pushes `NotesOverlayChanged`; the renderer applies it idempotently.
+
+**IPC:** `notesList` (lightweight `MeetingNoteSummary[]` — local recordings ∪ Drive archives, deduped by eventId), `noteGet` (one full `MeetingNote`), `notesGetOverlay` / `notesSetOverlay`. Reprocess reuses the existing `recorderReprocess` / `recorderResummarize`; "Apply dictionary" rewrites terms in the overlay locally (instant, no re-run) AND teaches the glossary. The Notes view shows reprocess progress for any in-flight recording (overlay + list `↻` badge), driven by a single `onRecorderStatusChanged` subscription in `NotesView`, and auto-refreshes the note + list on `done`.
+
+**Audio playback** streams the m4a through a custom `ycal-media://` scheme (`protocol.handle` in `index.ts`, registered privileged before `app.ready`; honours HTTP Range → 206 so seeking works) — every path validated through `safeRecordingPath`. CSP `media-src` allows the scheme. The scrubber's `⤢` reveals the file in Finder (`recorderRevealFile` → `shell.showItemInFolder`).
+
+**Gotchas:**
+- **Don't display `meta.json`'s `startedAt`.** A reprocess used to stamp it with "now". The fix: `uploadMeetingArtifacts` derives `startedAt` from the immutable filename stamp `<YYYY-MM-DD_HHMM>__…`, and `notesStore.getNote` prefers that stamp over meta. The filename stamp is the one source never rewritten.
+- **Diarization needs pyannote ≥ 4.** `tools/recording/diarize.py` loads the `speaker-diarization-community-1` model with the 4.x `token=` API; a 3.x venv throws at load and `post-meet.sh` *silently* falls back to `[Me]/[Other]` (which reads as "only 2 speakers"). `recorderSetup.ts` version-gates the readiness check (reads the venv's `dist-info` dir name — no slow import) and flags a stale venv in Settings → Recording for re-setup. A recording where diarization was requested but produced no `[SPKn]` labels gets a non-fatal `warning` on its `RecordingStatus`, shown in the popover. To get speaker labels on an existing recording: upgrade the venv (Settings → "Setup/Upgrade diarize venv", i.e. `pip install 'pyannote.audio>=4.0'` into `~/.ycal/diarize-venv`), then Reprocess.
+- Segment text is rendered as HTML via `contentEditable` (`Editable`). `notesStore` escapes the transcript text and only injects its own markup (`<span class="nt-lc">` flagged terms, `<mark class="nt-hl">` highlights), so it round-trips through the `segHtml` overlay safely.
 
 ## Drag-and-drop bug to remember
 
