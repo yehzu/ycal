@@ -1909,12 +1909,22 @@ function PrefsRecording({
       {trigger === 'activeMeet' && <ActiveMeetDiagnostics />}
 
       <h3 className="pref-h" style={{ marginTop: 18 }}>Audio capture</h3>
+      <p className="pref-row-hint" style={{ maxWidth: '60ch', marginTop: 0 }}>
+        Echo-cancellation routes the mic through Apple’s Voice-Processing (the
+        AEC stack Meet & FaceTime use) so meeting audio bleeding out of your
+        speakers is cancelled from the “you” channel — clean capture on an open
+        mic without headphones. <strong>Per-device controls (which mic + echo-cancel
+        on/off) live in the menubar → <code>Capture</code> menu</strong>, because the
+        right answer differs per machine (a home Yeti+speakers wants it on; an
+        office laptop in a hybrid room wants it off). The switch below is just the
+        default for Macs you haven’t set explicitly there.
+      </p>
       <PrefRow
-        label="Echo-cancel the mic (Voice Isolation)"
+        label="Echo-cancel the mic — default"
         hint={
           voiceProcessing
-            ? 'Routes the mic through Apple’s Voice-Processing (the AEC stack Meet & FaceTime use) so meeting audio bleeding out of your speakers is cancelled from the "you" channel. Lets you record cleanly on an open mic without headphones. If your mic + speakers are external (e.g. Yeti + monitor), compare one meeting against off — AEC is tuned for built-in devices.'
-            : 'Mic is captured raw. If you don’t wear headphones, the meeting bleeds from your speakers into the mic and muddies the transcript. Turn on to let macOS echo-cancel it.'
+            ? 'New/unset Macs default to echo-cancellation on. Override per machine in the menubar Capture menu.'
+            : 'New/unset Macs capture the mic raw. Override per machine in the menubar Capture menu.'
         }
       >
         <PrefSwitch value={voiceProcessing} onChange={setVoiceProcessing} />

@@ -36,6 +36,7 @@ import { IPC, DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import type { CalendarEvent, RecentRecording, RecordingStatus, UiSettings } from '@shared/types';
 import { dedupEvents } from '@shared/dedup';
 import { getUiSettings } from './settings';
+import { getCaptureMic, getCaptureVoiceProcessing } from './device';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
@@ -253,6 +254,7 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
   if (pollTimer) return;
   mainWindowRef = mainWindow;
   ensureHelpersInstalled();
+  void refreshAudioInputDevices(true);   // warm the menubar Capture list
   recoverInFlightRecordings();
   pollTimer = setInterval(() => { void tick(); }, POLL_MS);
   // First tick after 2s — gives the window time to paint and the user
@@ -331,6 +333,47 @@ function bindPowerHandlers(): void {
 
 export function listRecordings(): RecordingStatus[] {
   return [...recordings.values()];
+}
+
+// ── Audio input devices (for the menubar Capture menu) ──────────────────
+// Cheap-ish to enumerate (ffmpeg avfoundation list ~200-500ms), so we
+// cache the names and refresh on a TTL. The tray reads the cache
+// synchronously when building its menu and kicks an async refresh when
+// stale; warmed once at recorder startup so the first menu open is populated.
+const AUDIO_DEV_TTL_MS = 60_000;
+let audioDevCache: string[] = [];
+let audioDevCacheAt = 0;
+
+export function getAudioInputDevices(): string[] {
+  return audioDevCache;
+}
+
+export async function refreshAudioInputDevices(force = false): Promise<string[]> {
+  if (!force && audioDevCache.length > 0 && Date.now() - audioDevCacheAt < AUDIO_DEV_TTL_MS) {
+    return audioDevCache;
+  }
+  if (!scriptsInstalled()) return audioDevCache;
+  try {
+    const out = await execScript([RECORD_SH, 'list-devices']);
+    // Lines look like: `[AVFoundation indev @ 0x..] [0] Yeti Nano`.
+    // Pull the name after the trailing `[N] ` token; dedupe (devices like
+    // the Yeti register twice) while preserving enumeration order.
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const line of out.split('\n')) {
+      const m = line.match(/\[\d+\]\s+(.+?)\s*$/);
+      if (!m) continue;
+      const name = m[1].trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+    audioDevCache = names;
+    audioDevCacheAt = Date.now();
+  } catch (e) {
+    console.error('[yCal recorder] list-devices failed', e);
+  }
+  return audioDevCache;
 }
 
 // Scan ~/Recordings/yCal for finished m4a files + their companion
@@ -1097,12 +1140,25 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
   // in stopRecording (and in the catch below if start fails).
   acquirePowerSaveBlocker();
   try {
-    // Voice-Processing mic capture (Apple AEC). When on, record-meet.sh
-    // routes the mic through voiceproc-mic instead of raw avfoundation so
-    // speaker bleed is echo-cancelled — no headphones needed. The script
-    // falls back to raw capture if the binary is missing.
+    // Per-device capture config (set from the menubar Capture menu).
+    //   * Voice-Processing (Apple AEC): per-device toggle, falling back to
+    //     the global default seed when this Mac has no explicit choice yet.
+    //     When on, record-meet.sh routes the mic through voiceproc-mic so
+    //     speaker bleed is echo-cancelled (no headphones); it falls back to
+    //     raw capture if the binary is missing.
+    //   * Mic device: a name substring pins the input device (both the raw
+    //     and VPIO paths read YCAL_MIC_NAME); null = system default input.
+    // Read at start and locked for this recording — changing the menubar
+    // mid-meeting applies to the next recording, not this one.
     const startEnv: NodeJS.ProcessEnv = {};
-    if (getUiSettings().recordingVoiceProcessing) startEnv.YCAL_MIC_VPIO = '1';
+    const vpDevice = getCaptureVoiceProcessing();
+    const useVoiceProc = vpDevice === undefined
+      ? (getUiSettings().recordingVoiceProcessing ?? false)
+      : vpDevice;
+    if (useVoiceProc) startEnv.YCAL_MIC_VPIO = '1';
+    const captureMic = getCaptureMic();
+    if (captureMic) startEnv.YCAL_MIC_NAME = captureMic;
+    rlog(`startRecording capture: mic=${captureMic ?? 'system-default'} voiceProc=${useVoiceProc}`);
     const stdout = await execScript(
       [RECORD_SH, 'start', ev.id, ev.title, String(maxSecs)],
       Object.keys(startEnv).length > 0 ? { envExtras: startEnv } : {},

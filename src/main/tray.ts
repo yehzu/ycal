@@ -40,6 +40,9 @@ import { dedupEvents } from '@shared/dedup';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import type { CalendarEvent, RecordingStatus } from '@shared/types';
 import { getRecordings, onRecordingsChanged } from './recorderBus';
+import {
+  getCaptureMic, setCaptureMic, getCaptureVoiceProcessing, setCaptureVoiceProcessing,
+} from './device';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -60,6 +63,11 @@ const emptyIcon = nativeImage.createEmpty();
 // tray menu. Resolved lazily to dodge the meetRecorder ↔ tray import
 // cycle that would otherwise need an explicit bus for one function.
 let stopFn: ((eventId: string) => Promise<void>) | null = null;
+// Lazily-resolved audio-device helpers (same cycle-break as stopFn). The
+// getter returns the cached device-name list synchronously for menu build;
+// the refresher re-warms it on a TTL when the menu is rebuilt.
+let listAudioDevicesFn: (() => string[]) | null = null;
+let refreshAudioDevicesFn: ((force?: boolean) => Promise<string[]>) | null = null;
 let unsubscribeBus: (() => void) | null = null;
 
 // Resolve a bundled tray asset. In dev we sit at <repo>/out/main/index.js,
@@ -107,7 +115,12 @@ export function startTray(mainWindow: BrowserWindow): void {
   // Resolve the stop fn lazily to break the meetRecorder ↔ tray cycle.
   // import() is async + cached; we drop the result into a module ref so
   // the menu item handler can fire it synchronously without awaiting.
-  void import('./meetRecorder').then((m) => { stopFn = m.stopRecordingManual; });
+  void import('./meetRecorder').then((m) => {
+    stopFn = m.stopRecordingManual;
+    listAudioDevicesFn = m.getAudioInputDevices;
+    refreshAudioDevicesFn = m.refreshAudioInputDevices;
+    void m.refreshAudioInputDevices(true);   // warm before first menu open
+  });
   // Refresh whenever the recording state transitions — that's how the
   // "● Rec" title and the menu's recording rows stay live without our
   // 60s poll.
@@ -338,6 +351,49 @@ function buildMenu(events: CalendarEvent[], recordings: RecordingStatus[]): Menu
     }
     items.push({ type: 'separator' });
   }
+
+  // Per-device capture controls — pick the mic + toggle echo-cancellation
+  // for the NEXT recording (changes lock in at each recording's start, so
+  // set this before a meeting begins). Fire a stale-refresh of the device
+  // list so it stays current without blocking the menu build.
+  if (refreshAudioDevicesFn) void refreshAudioDevicesFn();
+  const curMic = getCaptureMic();
+  const vpDevice = getCaptureVoiceProcessing();
+  const effVoiceProc = vpDevice === undefined
+    ? (getUiSettings().recordingVoiceProcessing ?? false)
+    : vpDevice;
+  const devices = listAudioDevicesFn ? listAudioDevicesFn() : [];
+  const capSub: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'System default',
+      type: 'radio',
+      checked: !curMic,
+      click: () => { setCaptureMic(null); void refresh(); },
+    },
+  ];
+  for (const name of devices) {
+    capSub.push({
+      label: name,
+      type: 'radio',
+      checked: curMic === name,
+      click: () => { setCaptureMic(name); void refresh(); },
+    });
+  }
+  if (devices.length === 0) {
+    capSub.push({ label: 'Detecting microphones…', enabled: false });
+  }
+  capSub.push({ type: 'separator' });
+  capSub.push({
+    label: 'Echo-cancel (Voice Isolation)',
+    type: 'checkbox',
+    checked: effVoiceProc,
+    click: () => { setCaptureVoiceProcessing(!effVoiceProc); void refresh(); },
+  });
+  items.push({
+    label: `Capture: ${curMic ?? 'System default'}${effVoiceProc ? ' · echo-cx' : ''}`,
+    submenu: capSub,
+  });
+  items.push({ type: 'separator' });
 
   // Today only, and only events that haven't ended yet — past entries
   // are noise, and tomorrow's events live in the main calendar window.

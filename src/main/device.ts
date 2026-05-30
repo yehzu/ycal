@@ -24,12 +24,24 @@ interface DeviceState {
   /// both Mac↔Mac (iCloud) and Mac↔iPhone (Drive) sync.
   driveSyncEnabled?: boolean;
   driveSyncAccountId?: string | null;
+  /// Per-device meeting-capture config. Lives here (NOT in cloud-routed
+  /// settings.json) because the right answer differs per machine: a Mac
+  /// mini with a Yeti + speakers wants echo-cancellation ON, while an
+  /// office laptop joining hybrid/companion meetings wants it OFF (VPIO
+  /// would suppress the far side of the room). `captureMic` is a device-
+  /// name substring, or null = system default input. `captureVoiceProcessing`
+  /// is tri-state: undefined = "fall back to the global default seed"
+  /// (UiSettings.recordingVoiceProcessing), true/false = explicit per-device.
+  captureMic?: string | null;
+  captureVoiceProcessing?: boolean;
 }
 
 const DEFAULTS: DeviceState = {
   cloudStorage: 'local',
   driveSyncEnabled: false,
   driveSyncAccountId: null,
+  captureMic: null,
+  captureVoiceProcessing: undefined,
 };
 
 const FILE = (): string => path.join(app.getPath('userData'), 'device.json');
@@ -44,6 +56,10 @@ function read(): DeviceState {
       driveSyncEnabled: !!parsed.driveSyncEnabled,
       driveSyncAccountId: typeof parsed.driveSyncAccountId === 'string'
         ? parsed.driveSyncAccountId : null,
+      captureMic: typeof parsed.captureMic === 'string' && parsed.captureMic
+        ? parsed.captureMic : null,
+      captureVoiceProcessing: typeof parsed.captureVoiceProcessing === 'boolean'
+        ? parsed.captureVoiceProcessing : undefined,
     };
   } catch {
     return { ...DEFAULTS };
@@ -84,6 +100,32 @@ export function setDriveSyncAccountId(accountId: string | null): void {
   const cur = read();
   if ((cur.driveSyncAccountId ?? null) === accountId) return;
   write({ ...cur, driveSyncAccountId: accountId });
+}
+
+// ── Per-device capture config ──────────────────────────────────────────
+
+export function getCaptureMic(): string | null {
+  return read().captureMic ?? null;
+}
+
+export function setCaptureMic(name: string | null): void {
+  const cur = read();
+  const next = name && name.trim() ? name.trim() : null;
+  if ((cur.captureMic ?? null) === next) return;
+  write({ ...cur, captureMic: next });
+}
+
+// Tri-state: undefined means "no per-device choice yet — use the global
+// default". Callers fall back to UiSettings.recordingVoiceProcessing when
+// this returns undefined.
+export function getCaptureVoiceProcessing(): boolean | undefined {
+  return read().captureVoiceProcessing;
+}
+
+export function setCaptureVoiceProcessing(on: boolean): void {
+  const cur = read();
+  if (cur.captureVoiceProcessing === on) return;
+  write({ ...cur, captureVoiceProcessing: on });
 }
 
 // One-shot: when upgrading from a build that wrote `cloudStorage` into
