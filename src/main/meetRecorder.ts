@@ -175,6 +175,37 @@ function ensureHelpersInstalled(): void {
   }
 }
 
+// Per-recording scratch lives in STATE_DIR. record-meet.sh deletes the
+// live runtime files (.pid/.fifo/.stdin/.meta.json/.file) on stop, but the
+// diagnostic logs (.ffmpeg.log/.tap.log/.vpio.log/.tap-exhausted) are
+// deliberately KEPT — they're the forensic trail when a recording comes
+// back silent / cut / garbled, which you only notice AFTER it finishes
+// (so deleting on stop would destroy the evidence at the worst moment).
+// They're only useful while recent, so prune anything older than this at
+// startup. Active recordings' files are freshly written, so an age cutoff
+// never touches an in-flight capture. (Recorded .m4a audio lives in
+// ~/Recordings/yCal, NOT here, so this never deletes a recording.)
+const RECORDER_STATE_RETAIN_DAYS = 14;
+
+function pruneRecorderState(): void {
+  let entries: string[];
+  try { entries = fs.readdirSync(STATE_DIR); } catch { return; }
+  const cutoff = Date.now() - RECORDER_STATE_RETAIN_DAYS * 24 * 60 * 60_000;
+  let pruned = 0;
+  for (const name of entries) {
+    const p = path.join(STATE_DIR, name);
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile() || st.mtimeMs >= cutoff) continue;
+      fs.unlinkSync(p);
+      pruned += 1;
+    } catch { /* missing/unreadable — skip */ }
+  }
+  if (pruned > 0) {
+    console.log(`[yCal recorder] pruned ${pruned} stale state files (>${RECORDER_STATE_RETAIN_DAYS}d) from ${STATE_DIR}`);
+  }
+}
+
 const recordings = new Map<string, RecordingStatus>();
 const skipped = new Set<string>();
 // Meet room codes whose last start attempt failed. Used to break the
@@ -256,6 +287,7 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
   ensureHelpersInstalled();
   void refreshAudioInputDevices(true);   // warm the menubar Capture list
   recoverInFlightRecordings();
+  pruneRecorderState();                  // clear stale per-recording logs (>14d)
   pollTimer = setInterval(() => { void tick(); }, POLL_MS);
   // First tick after 2s — gives the window time to paint and the user
   // time to grant mic permission if this is the very first launch.
