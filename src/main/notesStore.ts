@@ -622,11 +622,13 @@ export async function getNote(
 // Lightweight rows for the master list. Merges local recordings (fast,
 // on-disk) with the Drive archive (cross-Mac), deduped by eventId. Term
 // counts come from a cheap local note.json read when present.
-export async function listNotes(): Promise<MeetingNoteSummary[]> {
+const sortByStart = (a: MeetingNoteSummary, b: MeetingNoteSummary): number =>
+  (b.startedAt ?? 0) - (a.startedAt ?? 0);
+
+// Local recordings on this Mac → summary map. Pure disk reads, no network.
+function buildLocalNotes(): Map<string, MeetingNoteSummary> {
   const byEvent = new Map<string, MeetingNoteSummary>();
   const entries = getGlossary().entries;
-
-  // 1. Local recordings on this Mac.
   let recents: ReturnType<typeof listRecentRecordings> = [];
   try { recents = listRecentRecordings(500); } catch { /* none */ }
   for (const r of recents) {
@@ -635,12 +637,26 @@ export async function listNotes(): Promise<MeetingNoteSummary[]> {
     const meta = readCachedMeta(r.eventId);
     // Filename stamp first (immutable); meta can be clobbered by reprocess.
     const at = startedAt ?? meta?.startedAt ?? r.modifiedAt;
-    const summary = buildLocalSummary(r, meta?.title || title, at, entries);
-    byEvent.set(r.eventId, summary);
+    byEvent.set(r.eventId, buildLocalSummary(r, meta?.title || title, at, entries));
   }
+  return byEvent;
+}
 
-  // 2. Drive archives (cross-Mac). Fill gaps + enrich titles. Network —
-  //    tolerate failure so the list still shows local notes when offline.
+// Fast path: local recordings only, NO network. The Notes view renders this
+// immediately so the page paints instantly, then calls listNotes() to merge
+// in the cross-Mac Drive archives. Splitting this out is what fixes the
+// "Notes page hangs for seconds before anything shows" — the Drive list was
+// blocking the whole list behind a multi-account network round-trip.
+export function listNotesLocal(): MeetingNoteSummary[] {
+  return [...buildLocalNotes().values()].sort(sortByStart);
+}
+
+// Full list: local ∪ Drive archives, deduped by eventId. Awaits the network.
+export async function listNotes(): Promise<MeetingNoteSummary[]> {
+  const byEvent = buildLocalNotes();
+
+  // Drive archives (cross-Mac). Fill gaps + enrich titles. Network —
+  // tolerate failure so the list still shows local notes when offline.
   let archives: Awaited<ReturnType<typeof listAllMeetingArchives>> = [];
   try { archives = await listAllMeetingArchives(); } catch { /* offline */ }
   for (const a of archives) {

@@ -38,12 +38,21 @@ export function useMeetingNotes(): NotesStore {
   const refreshList = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await window.ycal.notesList();
-      if (res.ok) {
-        setSummaries(res.notes);
+      // Phase 1 — local-only, instant paint. No Drive network in the way.
+      const local = await window.ycal.notesListLocal();
+      if (local.ok) {
+        setSummaries(local.notes);
         setError(null);
-      } else {
-        setError(res.error);
+        setLoading(false);    // page is usable now; Drive merges in below
+      }
+      // Phase 2 — full list incl. cross-Mac Drive archives. Replaces the
+      // local set once the network round-trip returns (superset of phase 1).
+      const full = await window.ycal.notesList();
+      if (full.ok) {
+        setSummaries(full.notes);
+        setError(null);
+      } else if (!local.ok) {
+        setError(full.error);
       }
     } finally {
       setLoading(false);

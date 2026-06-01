@@ -264,12 +264,19 @@ export function useStore(
     // would hide every event until next restart; ignore instead.
     const incomingAccounts = Object.keys(ui.accountsActive).length;
     if (incomingAccounts === 0 && accountsRef.current.length > 0) return;
-    // Otherwise replace the visibility maps wholesale — Mac A's view of
-    // which accounts/calendars are active is the truth, and a partial
-    // merge would leave stale toggles around if Mac A explicitly turned
-    // one off.
-    setAccountsActiveState({ ...ui.accountsActive });
-    setCalVisibleState({ ...ui.calVisible });
+    // MERGE the visibility maps rather than wholesale-replacing them. A
+    // pushed settings.json is often SPARSER than our in-memory map — most
+    // commonly it's the iPhone yCal (synced via Drive appdata, and it
+    // doesn't know every calendar this Mac has), or a momentarily-stale
+    // copy mid-sync. A wholesale replace drops the keys the remote omits,
+    // so a calendar the user hid HERE silently reappears (the "visibility
+    // reset after upgrade" bug). Merge instead: every value the remote DOES
+    // carry still wins (so an explicit toggle on another device propagates),
+    // while keys the remote omits keep their local value. The main-side
+    // setUiSettings only ever accumulates keys (never deletes), so merge
+    // can't strand a toggle the canonical store actually meant to drop.
+    setAccountsActiveState((prev) => ({ ...prev, ...ui.accountsActive }));
+    setCalVisibleState((prev) => ({ ...prev, ...ui.calVisible }));
   }, []);
 
   const applyRemoteWeatherUrl = useCallback((url: string | null) => {

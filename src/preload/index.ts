@@ -279,6 +279,10 @@ const api = {
   // pair persists user corrections (cloudStore, cross-device).
   notesList: (): Promise<Result<{ notes: MeetingNoteSummary[] }>> =>
     ipcRenderer.invoke(IPC.NotesList),
+  // Local-only fast path — paints the Notes list instantly; notesList()
+  // is called right after to merge in cross-Mac Drive archives.
+  notesListLocal: (): Promise<Result<{ notes: MeetingNoteSummary[] }>> =>
+    ipcRenderer.invoke(IPC.NotesListLocal),
   noteGet: (
     payload: { eventId: string; accountId?: string | null },
   ): Promise<Result<{ note: MeetingNote }>> =>

@@ -823,6 +823,7 @@ export const IPC = {
   // meta). Corrections (status, inline edits, speaker renames, resolved
   // terms, highlights) live in a cloudStore overlay keyed by eventId.
   NotesList: 'ycal:notesList',          // lightweight rows for the master list
+  NotesListLocal: 'ycal:notesListLocal', // local-only fast path (no Drive)
   NoteGet: 'ycal:noteGet',              // full structured note for one event
   NotesGetOverlay: 'ycal:notesGetOverlay',
   NotesSetOverlay: 'ycal:notesSetOverlay',

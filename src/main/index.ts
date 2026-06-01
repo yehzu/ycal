@@ -66,7 +66,7 @@ import {
 } from './glossary';
 import { parseGlossary, type ImportFormat } from './glossaryImport';
 import {
-  getNote, getNotesOverlayFile, listNotes, setNoteOverlay,
+  getNote, getNotesOverlayFile, listNotes, listNotesLocal, setNoteOverlay,
 } from './notesStore';
 import type {
   EventGlossary, GlossaryEntry, GlossaryFile, MeetingArchiveSummary,
@@ -805,6 +805,15 @@ function registerIpc() {
     try {
       const notes = await listNotes();
       return { ok: true as const, notes };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  // Fast local-only list — no Drive network. The renderer calls this first
+  // to paint instantly, then NotesList to merge in cross-Mac archives.
+  ipcMain.handle(IPC.NotesListLocal, () => {
+    try {
+      return { ok: true as const, notes: listNotesLocal() };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }

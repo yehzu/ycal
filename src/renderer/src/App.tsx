@@ -255,7 +255,10 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       setShowWeather(ui.showWeather ?? true);
       setUnits(ui.units ?? 'F');
       setMergeCriteria({ ...DEFAULT_MERGE_CRITERIA, ...(ui.mergeCriteria ?? {}) });
-      setCalRoles({ ...ui.calRoles });
+      // Merge, don't replace — same rationale as store.applyRemoteUi's
+      // calVisible: a sparse/stale push (e.g. iPhone yCal via Drive) must
+      // not drop the per-calendar role assignments this Mac set.
+      setCalRoles((prev) => ({ ...prev, ...ui.calRoles }));
       setSectionOrder((ui.sectionOrder as SidebarSectionKey[]) ?? DEFAULT_SECTION_ORDER);
       setHideDisabledCals(ui.hideDisabledCals ?? false);
       setAutoRolloverPastTasks(ui.autoRolloverPastTasks ?? true);

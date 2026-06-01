@@ -427,73 +427,6 @@ function RecordingRow({
               ✓ Done{onDrive ? ' · Drive ✓' : ''}
             </span>
             {minutesBtn}
-            {recording.summaryFile && (
-              <button
-                className="pp-btn"
-                onClick={() => { void window.ycal.recorderOpenFile(recording.summaryFile!); }}
-                style={{ padding: '2px 10px', fontSize: 12 }}
-              >
-                Notes
-              </button>
-            )}
-            {recording.transcriptFile && (
-              <button
-                className="pp-btn"
-                onClick={() => onOpenTranscript({
-                  transcriptFile: recording.transcriptFile ?? null,
-                  audioFile: recording.audioFile ?? null,
-                  accountId: recording.accountId ?? null,
-                })}
-                style={{ padding: '2px 10px', fontSize: 12 }}
-                title="Read transcript + apply corrections to the glossary"
-              >
-                Transcript
-              </button>
-            )}
-            {recording.audioFile && (
-              <button
-                className="pp-btn"
-                onClick={() => { void window.ycal.recorderOpenFile(recording.audioFile!); }}
-                style={{ padding: '2px 10px', fontSize: 12 }}
-                title="Open the m4a recording"
-              >
-                Audio
-              </button>
-            )}
-            {recording.audioFile && recording.transcriptFile && (
-              <button
-                className="pp-btn"
-                onClick={() => {
-                  void window.ycal.recorderResummarize({
-                    eventId: event.id,
-                    audioFile: recording.audioFile!,
-                    title: event.title,
-                    accountId: recording.accountId,
-                  });
-                }}
-                style={{ padding: '2px 10px', fontSize: 12 }}
-                title="Re-run only the claude summary against the current transcript"
-              >
-                Re-summarize
-              </button>
-            )}
-            {recording.audioFile && (
-              <button
-                className="pp-btn"
-                onClick={() => {
-                  void window.ycal.recorderReprocess({
-                    eventId: event.id,
-                    audioFile: recording.audioFile!,
-                    title: event.title,
-                    accountId: recording.accountId,
-                  });
-                }}
-                style={{ padding: '2px 10px', fontSize: 12 }}
-                title="Re-run whisper + claude with the current model + prompt"
-              >
-                Re-process
-              </button>
-            )}
           </span>
           {recording.warning && (
             <span
@@ -562,82 +495,6 @@ function RecordingRow({
             ✓ Recorded{driveArchive ? ' · Drive ✓' : driveLoading ? ' · ⋯' : ''}
           </span>
           {minutesBtn}
-          {pastRec.summaryFile && (
-            <button
-              className="pp-btn"
-              onClick={() => { void window.ycal.recorderOpenFile(pastRec.summaryFile!); }}
-              style={{ padding: '2px 10px', fontSize: 12 }}
-            >
-              Notes
-            </button>
-          )}
-          {pastRec.transcriptFile && (
-            <button
-              className="pp-btn"
-              onClick={() => onOpenTranscript({
-                transcriptFile: pastRec.transcriptFile,
-                audioFile: pastRec.audioFile,
-                accountId: driveAcct,
-              })}
-              style={{ padding: '2px 10px', fontSize: 12 }}
-              title="Read transcript + apply corrections to the glossary"
-            >
-              Transcript
-            </button>
-          )}
-          {!pastRec.transcriptFile && driveArchive?.hasTranscript && (
-            <button
-              className="pp-btn"
-              onClick={() => onOpenTranscript({
-                transcriptFile: null,
-                audioFile: pastRec.audioFile,
-                accountId: driveAcct,
-              })}
-              style={{ padding: '2px 10px', fontSize: 12 }}
-              title="Read transcript (fetched from Drive)"
-            >
-              Transcript
-            </button>
-          )}
-          <button
-            className="pp-btn"
-            onClick={() => { void window.ycal.recorderOpenFile(pastRec.audioFile); }}
-            style={{ padding: '2px 10px', fontSize: 12 }}
-          >
-            Audio
-          </button>
-          {pastRec.transcriptFile && (
-            <button
-              className="pp-btn"
-              onClick={() => {
-                void window.ycal.recorderResummarize({
-                  eventId: event.id,
-                  audioFile: pastRec.audioFile,
-                  title: event.title,
-                  accountId: driveAcct ?? undefined,
-                });
-              }}
-              style={{ padding: '2px 10px', fontSize: 12 }}
-              title="Re-run only the claude summary against the current transcript"
-            >
-              Re-summarize
-            </button>
-          )}
-          <button
-            className="pp-btn"
-            onClick={() => {
-              void window.ycal.recorderReprocess({
-                eventId: event.id,
-                audioFile: pastRec.audioFile,
-                title: event.title,
-                accountId: driveAcct ?? undefined,
-              });
-            }}
-            style={{ padding: '2px 10px', fontSize: 12 }}
-            title="Re-run whisper + claude with the current model + prompt"
-          >
-            Re-process
-          </button>
         </span>
       </div>
     );
@@ -655,39 +512,6 @@ function RecordingRow({
         <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span title="Pulled from another Mac via Drive">✓ Drive</span>
           {minutesBtn}
-          {driveArchive.hasSummary && (
-            <button
-              className="pp-btn"
-              onClick={() => { void openFromDrive(event.id, acct, 'summary'); }}
-              style={{ padding: '2px 10px', fontSize: 12 }}
-            >
-              Notes
-            </button>
-          )}
-          {driveArchive.hasTranscript && (
-            <button
-              className="pp-btn"
-              onClick={() => onOpenTranscript({
-                transcriptFile: null,
-                audioFile: null,
-                accountId: acct,
-              })}
-              style={{ padding: '2px 10px', fontSize: 12 }}
-              title="Read transcript (fetched from Drive)"
-            >
-              Transcript
-            </button>
-          )}
-          {driveArchive.hasAudio && (
-            <button
-              className="pp-btn"
-              onClick={() => { void openFromDrive(event.id, acct, 'audio'); }}
-              style={{ padding: '2px 10px', fontSize: 12 }}
-              title="Download the m4a from Drive and open it"
-            >
-              Audio
-            </button>
-          )}
         </span>
       </div>
     );
