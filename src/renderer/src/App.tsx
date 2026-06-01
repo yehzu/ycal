@@ -246,42 +246,57 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   }, []);
   useEffect(() => {
     const off = window.ycal.onSettingsChanged((next) => {
-      // Apply every slice the renderer owns. The auto-save effect below
-      // will fire from these state changes — that write is content-
-      // deduped at cloudStore so it round-trips as a no-op rather than
-      // looping us back through the watcher.
-      const ui = { ...DEFAULT_UI, ...next.ui };
-      setShowWeekNums(ui.showWeekNums ?? true);
-      setShowWeather(ui.showWeather ?? true);
-      setUnits(ui.units ?? 'F');
-      setMergeCriteria({ ...DEFAULT_MERGE_CRITERIA, ...(ui.mergeCriteria ?? {}) });
-      // Merge, don't replace — same rationale as store.applyRemoteUi's
-      // calVisible: a sparse/stale push (e.g. iPhone yCal via Drive) must
-      // not drop the per-calendar role assignments this Mac set.
-      setCalRoles((prev) => ({ ...prev, ...ui.calRoles }));
-      setSectionOrder((ui.sectionOrder as SidebarSectionKey[]) ?? DEFAULT_SECTION_ORDER);
-      setHideDisabledCals(ui.hideDisabledCals ?? false);
-      setAutoRolloverPastTasks(ui.autoRolloverPastTasks ?? true);
-      setAutoRecordMeetings(ui.autoRecordMeetings ?? false);
-      setRecordingConfirmBeforeStart(ui.recordingConfirmBeforeStart ?? false);
-      setRecordingTrigger(ui.recordingTrigger ?? 'calendar');
-      setRecordingWhisperModel(ui.recordingWhisperModel ?? 'large-v3-turbo');
-      setRecordingSummaryPrompt(ui.recordingSummaryPrompt ?? '');
-      setRecordingUploadAudio(ui.recordingUploadAudio ?? true);
-      setRecordingVoiceProcessing(ui.recordingVoiceProcessing ?? false);
-      setRecorderDiarize({
-        enabled: ui.recorderDiarize?.enabled ?? false,
-        hfToken: ui.recorderDiarize?.hfToken ?? null,
-      });
-      setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...(ui.loadWindow ?? {}) });
-      setLoadBands({ ...DEFAULT_LOAD_BANDS, ...(ui.loadBands ?? {}) });
-      setCustomTagSuggestions(ui.customTagSuggestions ?? []);
-      setTheme(ui.theme ?? 'system');
-      // Slices owned by the events store (account / calendar visibility,
-      // weather URL) need explicit imperative setters — they're not
-      // react state in App.
-      store.applyRemoteUi(ui);
-      store.applyRemoteWeatherUrl(next.weatherIcsUrl);
+      // Apply only the slices the push ACTUALLY CARRIES. `raw` is the
+      // pushed ui verbatim — a key absent here means the remote didn't
+      // mention it, so we must leave our current value alone. Using
+      // `?? <default>` instead (the old code) reset every omitted scalar
+      // to its default: that's what silently turned OFF auto-record,
+      // flipped recordingVoiceProcessing back off, and reset the trigger
+      // when a sparse settings.json synced in (e.g. the iPhone yCal via
+      // Drive, or a transient mid-sync read). The save effect then wrote
+      // those defaults back to disk. Same bug class as the calVisible
+      // wholesale-replace fixed in 0.8.5 — this is the scalar half.
+      const raw = (next.ui ?? {}) as Partial<UiSettings>;
+      if (raw.showWeekNums !== undefined) setShowWeekNums(raw.showWeekNums);
+      if (raw.showWeather !== undefined) setShowWeather(raw.showWeather);
+      if (raw.units !== undefined) setUnits(raw.units);
+      if (raw.mergeCriteria !== undefined) {
+        setMergeCriteria({ ...DEFAULT_MERGE_CRITERIA, ...raw.mergeCriteria });
+      }
+      // calRoles merges (safe even when omitted: spread of undefined is a no-op).
+      setCalRoles((prev) => ({ ...prev, ...(raw.calRoles ?? {}) }));
+      if (raw.sectionOrder !== undefined) {
+        setSectionOrder(raw.sectionOrder as SidebarSectionKey[]);
+      }
+      if (raw.hideDisabledCals !== undefined) setHideDisabledCals(raw.hideDisabledCals);
+      if (raw.autoRolloverPastTasks !== undefined) setAutoRolloverPastTasks(raw.autoRolloverPastTasks);
+      if (raw.autoRecordMeetings !== undefined) setAutoRecordMeetings(raw.autoRecordMeetings);
+      if (raw.recordingConfirmBeforeStart !== undefined) {
+        setRecordingConfirmBeforeStart(raw.recordingConfirmBeforeStart);
+      }
+      if (raw.recordingTrigger !== undefined) setRecordingTrigger(raw.recordingTrigger);
+      if (raw.recordingWhisperModel !== undefined) setRecordingWhisperModel(raw.recordingWhisperModel);
+      if (raw.recordingSummaryPrompt !== undefined) setRecordingSummaryPrompt(raw.recordingSummaryPrompt);
+      if (raw.recordingUploadAudio !== undefined) setRecordingUploadAudio(raw.recordingUploadAudio);
+      if (raw.recordingVoiceProcessing !== undefined) {
+        setRecordingVoiceProcessing(raw.recordingVoiceProcessing);
+      }
+      if (raw.recorderDiarize !== undefined) {
+        setRecorderDiarize({
+          enabled: raw.recorderDiarize.enabled ?? false,
+          hfToken: raw.recorderDiarize.hfToken ?? null,
+        });
+      }
+      if (raw.loadWindow !== undefined) setLoadWindow({ ...DEFAULT_LOAD_WINDOW, ...raw.loadWindow });
+      if (raw.loadBands !== undefined) setLoadBands({ ...DEFAULT_LOAD_BANDS, ...raw.loadBands });
+      if (raw.customTagSuggestions !== undefined) setCustomTagSuggestions(raw.customTagSuggestions);
+      if (raw.theme !== undefined) setTheme(raw.theme);
+      // Slices owned by the events store (account / calendar visibility) —
+      // applyRemoteUi already merges + guards an empty push. Weather URL is
+      // top-level; only apply when present (null is a valid "cleared" value,
+      // undefined means the push omitted it).
+      store.applyRemoteUi({ ...DEFAULT_UI, ...raw });
+      if (next.weatherIcsUrl !== undefined) store.applyRemoteWeatherUrl(next.weatherIcsUrl);
     });
     return off;
   }, [store]);
