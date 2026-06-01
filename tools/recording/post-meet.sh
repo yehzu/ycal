@@ -146,16 +146,11 @@ if [[ "$channels" -ge 2 ]]; then
   # the transcript reflects who actually spoke. System channel wins;
   # mic-only content (user speaking when others aren't) is preserved.
   if ! python3 - "${mic_json_base}.json" "${sys_json_base}.json" "$transcript" <<'PY' 2>&2; then
-import json, sys, unicodedata
+import json, sys, unicodedata, statistics
 from difflib import SequenceMatcher
 
 mic_path, sys_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
-# Bleed-suppression window: a [Me] segment within this many ms of any
-# [Other] segment whose normalized text is >= DEDUP_THRESHOLD similar
-# is treated as mic crosstalk and dropped. Window covers acoustic
-# propagation (mic-to-speaker distance) + whisper's segmentation jitter.
-DEDUP_WINDOW_MS = 4000
 DEDUP_THRESHOLD = 0.5
 
 def normalize(s):
@@ -180,15 +175,60 @@ def load_segments(path, label):
 mic = load_segments(mic_path, "Me")
 sys_segs = load_segments(sys_path, "Other")
 
-# Bleed suppression. For each [Me] segment, scan nearby [Other] segments
-# (in time) and drop the [Me] if any has high text similarity. We pick
-# the threshold at 0.5 SequenceMatcher ratio — high enough that random
-# brief overlaps don't trigger, low enough that whisper's per-channel
-# divergence on identical audio (different decoder runs hear slightly
-# different words) is still caught.
+# === Channel-offset alignment ============================================
+# The coreaudio-tap helper writes the system channel ~1–1.5s LATE relative to
+# the mic (a tap-startup artifact: ~1s of FIFO-buffered silence is read by
+# ffmpeg before the real audio + SCStream warm-up). Left uncorrected this
+# misorders turn-taking and throws the bleed-suppression window off-center.
+#
+# We recover the offset from the data we already have: when the user isn't on
+# headphones the SAME far-end words land in BOTH channels (mic via acoustic
+# bleed), so a matched [Me]/[Other] pair has sys_off - mic_off ≈ the offset.
+# The median over strong matches is a robust estimate (no audio reprocessing,
+# no numpy). We only trust it with enough matches and within a plausible range;
+# otherwise we leave timing untouched (headphone recordings have no bleed to
+# measure, but also no cross-channel content to misorder).
+SEARCH_MS = 6000
+deltas = []
+sys_sorted = sorted(sys_segs, key=lambda x: x['off'])
+for m in mic:
+    if len(m['norm']) < 4:
+        continue
+    best_dt, best_r = None, 0.0
+    for o in sys_sorted:
+        dt = o['off'] - m['off']
+        if dt < -SEARCH_MS:
+            continue
+        if dt > SEARCH_MS:
+            break
+        if len(o['norm']) < 4:
+            continue
+        r = SequenceMatcher(None, m['norm'], o['norm']).ratio()
+        if r > best_r:
+            best_r, best_dt = r, dt
+    if best_dt is not None and best_r >= 0.7:
+        deltas.append(best_dt)
+
+offset_ms = 0
+if len(deltas) >= 4:
+    cand = statistics.median(deltas)
+    if 200 <= cand <= 4000:
+        offset_ms = int(cand)
+if offset_ms:
+    for o in sys_segs:
+        o['off'] = max(0, o['off'] - offset_ms)
+    sys_sorted = sorted(sys_segs, key=lambda x: x['off'])
+    sys.stderr.write(f"[post-meet] aligned system channel −{offset_ms}ms ({len(deltas)} bleed matches)\n")
+
+# === Bleed suppression ===================================================
+# For each [Me] segment, drop it if a nearby [Other] segment is text-similar
+# (>= DEDUP_THRESHOLD): that's the mic picking up speaker bleed of the others.
+# Window: tight once we've aligned the channels (matched content now sits at
+# ~0 lag); wider as a safety net when we couldn't measure/apply an offset.
+DEDUP_WINDOW_MS = 2000 if offset_ms else 4000
 suppressed = 0
 kept_mic = []
-sys_by_time = sorted(sys_segs, key=lambda x: x['off'])
+sys_by_time = sys_sorted
 for m in mic:
     if len(m['norm']) < 2:
         kept_mic.append(m)  # too short to compare; keep it

@@ -53,6 +53,17 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
     private var running = true
     private let out = FileHandle.standardOutput
 
+    // Health/contract state (shared across sample/control queues + writer thread).
+    // record-meet.sh's watch_tap_health() greps for `restart 10/10` + `dead audio`
+    // to decide the tap is permanently gone and fail the recording loudly, instead
+    // of silently shipping a dead system-audio channel (the SDET-Monthly bug).
+    private let stateLock = NSLock()
+    private let maxRestarts = 10
+    private var restartCount = 0                 // CONSECUTIVE failed restarts; reset when audio flows
+    private var lastAudioAt = Date()             // last time real system samples arrived
+    private var lastDeadLog = Date(timeIntervalSince1970: 0)
+    private var declaredDead = false             // writer has already logged the 10/10 give-up line
+
     func begin() {
         Thread.detachNewThread { [weak self] in self?.writerLoop() }
         Task { await self.startCapture() }
@@ -66,11 +77,32 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
 
     // MARK: – capture setup + restart
 
+    // Race an async op against a timeout. SCShareableContent.current and
+    // startCapture() can WEDGE (e.g. after `application connection interrupted`
+    // when the display has slept) and never return — which is exactly how the
+    // SDET recording hung: the control path stalled while the writer emitted
+    // 29min of silence. A timeout turns the wedge into a throw so we keep
+    // retrying (and recover once the display wakes) instead of hanging forever.
+    private func withTimeout<T>(_ seconds: Double,
+                                _ operation: @escaping () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw NSError(domain: "ycal.tap", code: -2,
+                              userInfo: [NSLocalizedDescriptionKey: "timed out after \(Int(seconds))s"])
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else { throw CancellationError() }
+            return result
+        }
+    }
+
     func startCapture() async {
         do {
-            let content = try await SCShareableContent.current
+            let content = try await withTimeout(8) { try await SCShareableContent.current }
             guard let display = content.displays.first else {
-                elog("no display available — retrying"); scheduleRestart(); return
+                elog("no display available"); scheduleRestart(); return
             }
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let cfg = SCStreamConfiguration()
@@ -88,11 +120,11 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
             let s = SCStream(filter: filter, configuration: cfg, delegate: self)
             try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
             try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-            try await s.startCapture()
+            try await withTimeout(8) { try await s.startCapture() }
             self.stream = s
             elog("capture started")
         } catch {
-            elog("startCapture failed: \(error.localizedDescription) — retrying in 1s")
+            elog("startCapture failed: \(error.localizedDescription)")
             scheduleRestart()
         }
     }
@@ -105,7 +137,23 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
             // SCStream instances across repeated system stops.
             self.stream?.stopCapture { _ in }
             self.stream = nil
-            self.controlQueue.asyncAfter(deadline: .now() + 1.0) {
+
+            self.stateLock.lock()
+            self.restartCount += 1
+            let n = self.restartCount
+            self.stateLock.unlock()
+
+            // Fast first recovery (the screen-share case this rewrite exists for),
+            // then back off if the fault is persistent (e.g. Screen-Recording
+            // permission missing for the helper, or replayd's XPC connection being
+            // repeatedly interrupted — the SDET case, where the stream "starts" but
+            // never delivers a sample). `restart N/10` is the contract string
+            // watch_tap_health() greps; we pin the display at 10/10 so it keeps
+            // matching while we keep retrying (a late recovery still resets us).
+            let shown = min(n, self.maxRestarts)
+            let backoff: Double = n <= 1 ? 1.0 : (n == 2 ? 2.0 : 4.0)
+            elog("restart \(shown)/\(self.maxRestarts) (retry in \(Int(backoff))s)")
+            self.controlQueue.asyncAfter(deadline: .now() + backoff) {
                 self.restartScheduled = false
                 Task { await self.startCapture() }
             }
@@ -159,6 +207,18 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
             ring.append(contentsOf: samples)
             if ring.count > maxRing { ring.removeFirst(ring.count - maxRing) }
             ringLock.unlock()
+
+            // Real audio is flowing → reset the consecutive-failure counter, so a
+            // transient screen-share eviction (which recovers on the next restart)
+            // never marches the counter to 10/10. Only a persistent fault that never
+            // delivers a sample keeps climbing.
+            stateLock.lock()
+            lastAudioAt = Date()
+            let wasFailing = restartCount
+            restartCount = 0
+            declaredDead = false
+            stateLock.unlock()
+            if wasFailing != 0 { elog("audio flowing — restart counter reset") }
         }
     }
 
@@ -168,6 +228,33 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
         let tick = 0.05   // 50ms
         while running {
             Thread.sleep(forTimeInterval: tick)
+
+            // Permanently-broken-capture signal. If we've had at least one failed
+            // restart (restartCount>0) AND no real samples for >3s, log `dead audio`
+            // (throttled). A merely quiet room leaves restartCount at 0, so this
+            // stays silent — it only fires when capture is actually down. The bash
+            // watcher counts these after `restart 10/10` to fail the recording.
+            let now = Date()
+            stateLock.lock()
+            let silentFor = now.timeIntervalSince(lastAudioAt)
+            let restarts = restartCount
+            var emitDead = false
+            var emitGiveup = false
+            if restarts > 0 && silentFor > 3.0 && now.timeIntervalSince(lastDeadLog) > 3.0 {
+                lastDeadLog = now; emitDead = true
+            }
+            // Backstop: capture has produced nothing for 20s+ since a failure —
+            // including the case where startCapture() itself wedged so the restart
+            // counter stopped climbing toward 10/10 on its own. Declare exhaustion
+            // here so watch_tap_health() sees `restart 10/10` and fails the recording
+            // loudly. This thread is independent of the (possibly stuck) control path.
+            if restarts > 0 && silentFor > 20.0 && !declaredDead {
+                declaredDead = true; emitGiveup = true
+            }
+            stateLock.unlock()
+            if emitGiveup { elog("restart \(maxRestarts)/\(maxRestarts) (no system audio for \(Int(silentFor))s — giving up)") }
+            if emitDead { elog("dead audio — no system samples for \(Int(silentFor))s") }
+
             // How many samples SHOULD exist by now, in real time. Emitting
             // to this target — pulling real audio where we have it, padding
             // with silence where we don't — keeps the stream continuous and
