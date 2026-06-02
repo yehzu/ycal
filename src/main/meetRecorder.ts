@@ -1587,13 +1587,39 @@ function notify(title: string, body: string): void {
 // the meeting from a powered Mac, switch mic device, etc.). The
 // notification fires once when we cross the 60s silent threshold —
 // repeated firings would just be spam.
+// Is the pid recorded in <eventId><suffix> still alive? Used by the health
+// monitor's forensic snapshot to tell "a helper process died" apart from "a
+// process is alive but wedged" (e.g. the tap blocked on a full FIFO because
+// ffmpeg's join deadlocked). signal 0 probes liveness without delivering.
+function pidAliveFor(eventId: string, suffix: string): boolean | null {
+  try {
+    const raw = fs.readFileSync(path.join(STATE_DIR, `${eventId}${suffix}`), 'utf8').trim();
+    const pid = Number.parseInt(raw, 10);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  } catch { return null; }
+}
+
+// Last few lines of the tap's own log — the tap now emits a `stats:` heartbeat
+// + `WARNING …` lines from an independent thread (see coreaudio-tap), so this
+// captures WHY the audio stopped at the moment yCal notices the output froze.
+function tapLogTail(eventId: string, lines = 4): string {
+  try {
+    const body = fs.readFileSync(path.join(STATE_DIR, `${eventId}.tap.log`), 'utf8').trimEnd();
+    return body.split('\n').slice(-lines).join(' ⏎ ') || '(empty)';
+  } catch { return '(no tap.log)'; }
+}
+
 function startHealthMonitor(eventId: string): void {
   // Defensive: if a prior monitor wasn't cleared, drop it before
   // installing the new one so we don't leak timers across re-starts.
   stopHealthMonitor(eventId);
   healthSamples.set(eventId, []);
   let warnedOnce = false;
+  let ticks = 0;            // HEALTH_TICK_MS ticks since start (for cadence)
+  let lastFreezeSnapAt = 0; // throttle the forensic snapshot while frozen
   const timer = setInterval(() => {
+    ticks++;
     const status = recordings.get(eventId);
     if (!status || status.state !== 'recording' || !status.audioFile) return;
     let size: number;
@@ -1615,6 +1641,14 @@ function startHealthMonitor(eventId: string): void {
     if (elapsedMs < HEALTH_WINDOW_MS - HEALTH_TICK_MS) return; // not enough history yet
     const deltaBytes = Math.max(0, newest.size - oldest.size);
     const bytesPerSec = deltaBytes / (elapsedMs / 1000);
+
+    // Heartbeat (~every 60s): a wall-clock timeline of output growth +
+    // per-process liveness, so a frozen recording leaves a readable trail in
+    // recorder.log instead of going dark. Cheap; bounded (one line/min).
+    if (ticks % 4 === 0) {
+      rlog(`health(${eventId}) sizeMB=${(newest.size / 1e6).toFixed(1)} bytesPerSec=${Math.round(bytesPerSec)} ffmpegAlive=${pidAliveFor(eventId, '.pid')} tapAlive=${pidAliveFor(eventId, '.tap.pid')}`);
+    }
+
     if (bytesPerSec < SILENT_BPS_THRESHOLD) {
       status.silentSeconds = Math.round(elapsedMs / 1000);
       pushStatus();
@@ -1624,10 +1658,21 @@ function startHealthMonitor(eventId: string): void {
           `${status.title || 'meeting'} — only ${Math.round(bytesPerSec)} B/s in last ${Math.round(elapsedMs / 1000)}s. Check mic / wake the Mac.`);
         rlog(`silentWarning(${eventId}) bytesPerSec=${Math.round(bytesPerSec)} windowSec=${Math.round(elapsedMs / 1000)}`);
       }
+      // Forensic snapshot while the output is frozen (throttled to ~60s).
+      // This is the evidence that was MISSING for the 2026-06-02 freeze:
+      // which process is still alive, and what the tap's own thread last
+      // said (it now logs `WARNING writer BLOCKED …` when ffmpeg stops
+      // draining the FIFO, and `WARNING no real system samples …` on a
+      // silent SCK stall). Together these name the layer that failed.
+      if (Date.now() - lastFreezeSnapAt > 55_000) {
+        lastFreezeSnapAt = Date.now();
+        rlog(`freezeSnapshot(${eventId}) bytesPerSec=${Math.round(bytesPerSec)} sizeMB=${(newest.size / 1e6).toFixed(1)} ffmpegAlive=${pidAliveFor(eventId, '.pid')} tapAlive=${pidAliveFor(eventId, '.tap.pid')} | tap.log: ${tapLogTail(eventId)}`);
+      }
     } else if (status.silentSeconds) {
       // Audio resumed — clear the warning so the UI snaps back to ●.
       status.silentSeconds = undefined;
       pushStatus();
+      rlog(`health(${eventId}) output resumed — bytesPerSec=${Math.round(bytesPerSec)}`);
     }
   }, HEALTH_TICK_MS);
   // Allow the process to exit if this is the only timer left (unit

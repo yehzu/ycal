@@ -64,8 +64,21 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
     private var lastDeadLog = Date(timeIntervalSince1970: 0)
     private var declaredDead = false             // writer has already logged the 10/10 give-up line
 
+    // ── Instrumentation (read by the independent monitorLoop) ─────────────
+    // Added 2026-06-02 after a 100-min meeting froze at 45 min with ZERO log
+    // output — the writer was blocked inside out.write (ffmpeg stopped
+    // draining the FIFO) and the old logging only fired on SCStream errors,
+    // which never came. These let monitorLoop name the failure next time.
+    private var writeInFlight = false            // true while parked in out.write
+    private var lastWriteStartAt = Date()
+    private var maxWriteMs: Double = 0           // slowest write this heartbeat window
+    private var realSamplesWindow = 0            // real system samples this window
+    private var silencePadWindow = 0            // silence samples padded this window
+    private var blockedWarned = false            // throttle the "writer blocked" line
+
     func begin() {
         Thread.detachNewThread { [weak self] in self?.writerLoop() }
+        Thread.detachNewThread { [weak self] in self?.monitorLoop() }
         Task { await self.startCapture() }
     }
 
@@ -273,12 +286,68 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
             }
             ringLock.unlock()
 
+            stateLock.lock(); writeInFlight = true; lastWriteStartAt = Date(); stateLock.unlock()
+            let wstart = Date()
             let ok = chunk.withUnsafeBytes { raw -> Bool in
                 do { try out.write(contentsOf: Data(raw)); return true }
                 catch { return false }       // broken pipe → ffmpeg gone
             }
+            let wms = Date().timeIntervalSince(wstart) * 1000
+            stateLock.lock()
+            writeInFlight = false
+            if wms > maxWriteMs { maxWriteMs = wms }
+            realSamplesWindow += take
+            silencePadWindow += (need - take)
+            stateLock.unlock()
             if !ok { running = false; break }
             emitted += need
+        }
+    }
+
+    // Independent watchdog + heartbeat. Runs on its OWN thread so that even
+    // when the writer is wedged blocking on out.write (ffmpeg stopped draining
+    // the FIFO because its `join` filtergraph deadlocked), we STILL emit a
+    // diagnostic every 15s. This turns "the recording froze and nobody knows
+    // why" into a labelled root cause in the tap log.
+    private func monitorLoop() {
+        let period = 15.0
+        while running {
+            Thread.sleep(forTimeInterval: period)
+            let now = Date()
+            stateLock.lock()
+            let inFlight = writeInFlight
+            let writeAge = now.timeIntervalSince(lastWriteStartAt)
+            let sinceAudio = now.timeIntervalSince(lastAudioAt)
+            let real = realSamplesWindow
+            let sil = silencePadWindow
+            let mw = maxWriteMs
+            let rc = restartCount
+            let alreadyWarned = blockedWarned
+            realSamplesWindow = 0; silencePadWindow = 0; maxWriteMs = 0
+            stateLock.unlock()
+            ringLock.lock(); let rd = ring.count; ringLock.unlock()
+
+            elog("stats: real=\(real) silencePad=\(sil) ring=\(rd) sinceRealAudio=\(Int(sinceAudio))s maxWriteMs=\(Int(mw)) restartCount=\(rc) emitted=\(emitted)")
+
+            // Downstream wedge: the writer is parked inside out.write, so ffmpeg
+            // isn't draining the FIFO — its filtergraph deadlocked (the `join`
+            // hard-sync starves whenever EITHER input, mic OR sys, stops). This
+            // is the 2026-06-02 ACE-meeting freeze signature.
+            if inFlight && writeAge > 5 && !alreadyWarned {
+                elog("WARNING writer BLOCKED on stdout write for \(Int(writeAge))s — ffmpeg not draining FIFO (downstream join wedged? suspect the mic/avfoundation input #1)")
+                stateLock.lock(); blockedWarned = true; stateLock.unlock()
+            } else if !inFlight && alreadyWarned {
+                elog("writer unblocked after stall — FIFO draining again")
+                stateLock.lock(); blockedWarned = false; stateLock.unlock()
+            }
+
+            // Silent SCK stall: real system samples stopped but SCStream never
+            // fired didStopWithError, so restartCount stayed 0 and the existing
+            // restart path never engaged. (A merely quiet room still arrives as
+            // real sample buffers, so >5s with zero real samples is a true stall.)
+            if sinceAudio > 5 && rc == 0 {
+                elog("WARNING no real system samples for \(Int(sinceAudio))s with no SCStream error (silent ScreenCaptureKit stall?)")
+            }
         }
     }
 }
