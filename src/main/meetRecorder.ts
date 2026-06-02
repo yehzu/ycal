@@ -330,8 +330,9 @@ export function stopMeetRecorder(): void {
   // "screen recording" indicator stays lit in the menubar long after yCal
   // is gone, and the orphaned tap holds the system-audio stream, which can
   // starve the NEXT launch's recording down to near-silence. quit means
-  // quit: SIGINT ffmpeg (flushes the moov atom so the .m4a is playable +
-  // reprocessable later) and SIGTERM the tap (releases ScreenCaptureKit).
+  // quit: SIGINT ffmpeg (writes a clean closing fragment; the .m4a is
+  // already valid + reprocessable thanks to the fragmented-mp4 container)
+  // and SIGTERM the tap (releases ScreenCaptureKit).
   // execFileSync because will-quit doesn't await async work.
   stopActiveRecordingsSync();
   mainWindowRef = null;

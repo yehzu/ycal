@@ -92,23 +92,63 @@ first_mic_index() {
     }'
 }
 
-# Background watcher: polls the coreaudio-tap log; if we see the
-# restart counter exhaust (10/10) AND subsequent dead-audio events
-# (i.e., the tap is permanently gone, not just transiently dying), SIGINT
-# ffmpeg so it flushes the moov atom cleanly. The post-stop silence
-# gate in meetRecorder.ts then marks the recording as failed instead of
-# running 5min of whisper on hallucination-bait. Exits when ffmpeg is
-# gone (recording ended for any reason) or when the parent script
-# explicitly SIGTERMs it.
+# Background watcher with two independent triggers, polled every 10s:
+#
+#   1. Tap-log trigger: if coreaudio-tap's log shows the restart counter
+#      exhaust (10/10) AND subsequent dead-audio events (the tap is
+#      permanently gone, not just transiently dying), SIGINT ffmpeg and
+#      write the `tap-exhausted` marker so the post-stop silence gate in
+#      meetRecorder.ts attributes the failure to the tap.
+#
+#   2. Output-freeze watchdog: catches the case the tap-log trigger CANNOT
+#      see — the tap process stays ALIVE and logs nothing, but its
+#      ScreenCaptureKit stream silently stops delivering samples. The
+#      `join` filter (L=mic, R=sys) is a HARD sync: with the sys side
+#      starved and the FIFO never EOF-ing (the keep-alive holds it open),
+#      join blocks and the whole mux deadlocks — the output file stops
+#      growing while ffmpeg burns the rest of the meeting producing nothing.
+#      We lost ~55 min of a 100-min meeting to exactly this (2026-06-02):
+#      tap.log was 108B with no error, output froze at 45 min. So we watch
+#      the output file directly: if it hasn't grown for OUTPUT_FREEZE_SECS
+#      while ffmpeg is alive, the mux is wedged (real audio — even dead
+#      silence — keeps fragmented AAC growing every ~4s, so zero growth for
+#      minutes is definitive), and we end the recording. The fragmented-mp4
+#      container (see the ffmpeg invocation) means everything captured up
+#      to the freeze is already a valid, playable file — NO `tap-exhausted`
+#      marker here, so the gate transcribes it normally.
+#
+# Exits when ffmpeg is gone (recording ended for any reason) or when the
+# parent script explicitly SIGTERMs it.
+OUTPUT_FREEZE_SECS=240
 watch_tap_health() {
   local tap_log="$1"
   local ffmpeg_pid="$2"
   local marker_file="$3"
+  local out_file="$4"
   # Trap so a SIGTERM from stop() exits the loop instead of leaving an
   # orphan polling the log after the recording is gone.
   trap 'exit 0' TERM INT
+  local last_size=-1 last_grow=$SECONDS
   while kill -0 "$ffmpeg_pid" 2>/dev/null; do
     sleep 10
+
+    # ── Trigger 2: output-freeze watchdog ──────────────────────────────
+    if [[ -n "$out_file" && -f "$out_file" ]]; then
+      local sz
+      sz=$(stat -f%z "$out_file" 2>/dev/null || echo 0)
+      if [[ "$sz" -gt "$last_size" ]]; then
+        last_size="$sz"; last_grow=$SECONDS
+      elif (( SECONDS - last_grow >= OUTPUT_FREEZE_SECS )); then
+        echo "[record-meet] output frozen ${OUTPUT_FREEZE_SECS}s (size=${sz}B) — mux wedged (tap likely stalled); ending recording" >&2
+        # No failure marker: the fragmented mp4 is valid up to the freeze.
+        kill -INT "$ffmpeg_pid" 2>/dev/null || true
+        sleep 5;  kill -0 "$ffmpeg_pid" 2>/dev/null && kill -TERM "$ffmpeg_pid" 2>/dev/null || true
+        sleep 5;  kill -0 "$ffmpeg_pid" 2>/dev/null && kill -KILL "$ffmpeg_pid" 2>/dev/null || true
+        exit 0
+      fi
+    fi
+
+    # ── Trigger 1: tap-log exhaustion ──────────────────────────────────
     [[ -f "$tap_log" ]] || continue
     # Has the restart counter exhausted? `restart 10/10` is the LAST
     # retry attempt in coreaudio-tap's loop.
@@ -237,11 +277,26 @@ start() {
   # Resample both inputs to 48 kHz mono first, then `join` into stereo
   # so the AAC encoder gets a clean stereo signal. dropout_transition
   # isn't relevant to `join` (no auto-ducking).
+  #
+  # Container: FRAGMENTED mp4, NOT +faststart. This recording can run for
+  # hours and the process can be killed at any instant — by a wedged
+  # filtergraph (if the system-audio tap stalls, `join` blocks and the
+  # whole pipe deadlocks), by onSystemSuspend, or by a too-fast stop. With
+  # +faststart the moov atom is written ONLY after a clean exit, then a
+  # second relocation pass rewrites the whole file; a kill anywhere in that
+  # window leaves ftyp+free+mdat with NO moov — unplayable, unseekable,
+  # and only recoverable by decode-walking the raw AAC frames. We lost a
+  # 45-minute meeting to exactly this (2026-06-02). Fragmented mp4 writes
+  # an empty_moov up front and flushes self-describing moof+mdat fragments
+  # every ~4s, so the file is valid and plays everything captured up to the
+  # last flush no matter how ffmpeg dies. SIGINT-flush-the-trailer is now
+  # best-effort polish, not a correctness requirement.
   nohup ffmpeg -hide_banner -y \
     -f f32le -ar 16000 -ac 1 -i "$fifo" \
     "${mic_input[@]}" \
     -filter_complex "[0:a]aresample=48000,aformat=channel_layouts=mono[sys];[1:a]aresample=48000,aformat=channel_layouts=mono[mic];[mic][sys]join=inputs=2:channel_layout=stereo[a]" \
-    -map "[a]" -ar 48000 -ac 2 -c:a aac -b:a 192k -movflags +faststart \
+    -map "[a]" -ar 48000 -ac 2 -c:a aac -b:a 192k \
+    -movflags +frag_keyframe+empty_moov+default_base_moof -frag_duration 4000000 \
     "${ts_arg[@]}" \
     "$file" \
     > "${STATE_DIR}/${event_id}.ffmpeg.log" 2>&1 &
@@ -291,7 +346,7 @@ start() {
   # when it surfaces the error in the popover.
   local tap_marker="${STATE_DIR}/${event_id}.tap-exhausted"
   rm -f "$tap_marker"
-  nohup bash -c "$(declare -f watch_tap_health); watch_tap_health '${STATE_DIR}/${event_id}.tap.log' '$pid' '$tap_marker'" \
+  nohup bash -c "$(declare -f watch_tap_health); OUTPUT_FREEZE_SECS=${OUTPUT_FREEZE_SECS:-240}; watch_tap_health '${STATE_DIR}/${event_id}.tap.log' '$pid' '$tap_marker' '$file'" \
     > /dev/null 2>&1 &
   local watch_pid=$!
   echo "$watch_pid" > "${STATE_DIR}/${event_id}.watch.pid"
@@ -320,9 +375,11 @@ stop() {
     return 1
   fi
 
-  # SIGINT ffmpeg first — gives it time to flush the moov atom. Without
-  # that the m4a header is missing and players can't seek (or open at
-  # all). 5s budget; fall back to SIGTERM if it's still around.
+  # SIGINT ffmpeg first — lets it write a clean closing fragment and exit
+  # tidily. With the fragmented-mp4 container the file is ALREADY valid
+  # (moof+mdat fragments flushed every ~4s), so this is polish, not a
+  # correctness requirement — a SIGTERM/SIGKILL still leaves a playable
+  # file. 5s budget; fall back to SIGTERM if it's still around.
   if [[ -f "$pid_file" ]]; then
     local pid; pid="$(cat "$pid_file")"
     if kill -0 "$pid" 2>/dev/null; then
