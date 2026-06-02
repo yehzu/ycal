@@ -59,6 +59,40 @@ const notifiedIds = new Set<string>();
 let mainWindowRef: BrowserWindow | null = null;
 let idleIcon: Electron.NativeImage | null = null;
 const emptyIcon = nativeImage.createEmpty();
+// Mutation-dedupe state. Menu bar managers (Thaw / Bartender / Ice) hook
+// every NSStatusItem change to re-evaluate their layout — so an item that
+// blindly re-sets its title/image/menu on every 60s poll (even when
+// nothing changed) makes the manager churn, which manifests as the item
+// getting "stuck" or jumping slots. We cache the last applied value and
+// only call the setter when it genuinely changes; an idle yCal then
+// touches the status item zero times between real events.
+let lastTitle: string | null = null;
+let lastImageKind: 'idle' | 'empty' | null = null;
+let lastMenuSig: string | null = null;
+
+function applyTitle(title: string): void {
+  if (!tray || lastTitle === title) return;
+  lastTitle = title;
+  tray.setTitle(title);
+}
+
+function applyImage(kind: 'idle' | 'empty'): void {
+  if (!tray || lastImageKind === kind) return;
+  lastImageKind = kind;
+  tray.setImage(kind === 'idle' && idleIcon ? idleIcon : emptyIcon);
+}
+
+// Structural fingerprint of a menu template: labels + type + enabled +
+// checked, recursing into submenus. Click handlers are intentionally
+// excluded — they capture per-refresh event objects that differ by
+// identity but point at the same htmlLink, so skipping a rebuild when the
+// fingerprint matches keeps behaviour identical while avoiding the churn.
+function menuSignature(items: Electron.MenuItemConstructorOptions[]): string {
+  return JSON.stringify(items.map((it) => [
+    it.label ?? '', it.type ?? '', it.enabled ?? true, it.checked ?? false,
+    it.submenu ? menuSignature(it.submenu as Electron.MenuItemConstructorOptions[]) : '',
+  ]));
+}
 // Cached at module load so stop() can SIGTERM in-flight ffmpeg from the
 // tray menu. Resolved lazily to dodge the meetRecorder ↔ tray import
 // cycle that would otherwise need an explicit bus for one function.
@@ -140,6 +174,9 @@ export function stopTray(): void {
   mainWindowRef = null;
   idleIcon = null;
   stopFn = null;
+  lastTitle = null;
+  lastImageKind = null;
+  lastMenuSig = null;
 }
 
 // External hook: call when the user adds/removes an account or toggles
@@ -290,29 +327,36 @@ async function refresh(): Promise<void> {
     // likely to fall off the right edge on a 14" notched display.
     // The leading "●" gives the menubar item enough visual weight to
     // keep its slot.
-    tray.setImage(emptyIcon);
+    applyImage('empty');
     const title = activeRec.title?.trim() || 'Recording';
-    tray.setTitle(` ● ${truncate(title, TITLE_MAX)}`);
+    applyTitle(` ● ${truncate(title, TITLE_MAX)}`);
   } else {
     const next = findCurrentOrNext(events);
     if (next) {
-      tray.setImage(emptyIcon);
-      tray.setTitle(formatTrayLabel(next));
+      applyImage('empty');
+      applyTitle(formatTrayLabel(next));
     } else if (idleIcon) {
-      tray.setImage(idleIcon);
-      tray.setTitle('');
+      applyImage('idle');
+      applyTitle('');
     } else {
       // Icon failed to load (shouldn't happen in a packaged build) — fall
       // back to the original text-only label so the menubar still works.
-      tray.setImage(emptyIcon);
-      tray.setTitle(formatTrayLabel(null));
+      applyImage('empty');
+      applyTitle(formatTrayLabel(null));
     }
   }
-  tray.setContextMenu(buildMenu(events, recordings));
+  const template = buildMenu(events, recordings);
+  const sig = menuSignature(template);
+  if (sig !== lastMenuSig) {
+    lastMenuSig = sig;
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+  }
   scheduleNotifications(events);
 }
 
-function buildMenu(events: CalendarEvent[], recordings: RecordingStatus[]): Menu {
+function buildMenu(
+  events: CalendarEvent[], recordings: RecordingStatus[],
+): Electron.MenuItemConstructorOptions[] {
   const todayKey = new Date().toLocaleDateString();
   const items: Electron.MenuItemConstructorOptions[] = [];
 
@@ -432,7 +476,7 @@ function buildMenu(events: CalendarEvent[], recordings: RecordingStatus[]): Menu
   items.push({ type: 'separator' });
   items.push({ label: 'Open yCal', click: () => focusMainWindow() });
   items.push({ label: 'Quit yCal', role: 'quit' });
-  return Menu.buildFromTemplate(items);
+  return items;
 }
 
 function scheduleNotifications(events: CalendarEvent[]): void {
