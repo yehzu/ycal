@@ -1,6 +1,6 @@
 {
   "name": "ycal",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "description": "An editorial-styled macOS calendar with multi-Google-account support and per-event colors.",
   "main": "out/main/index.js",
   "author": "yCal",
@@ -59,23 +59,43 @@
       {
         "from": "build/tray",
         "to": "tray",
-        "filter": ["*.png"]
+        "filter": [
+          "*.png"
+        ]
       },
       {
         "from": "build/native",
         "to": "native",
-        "filter": ["coreaudio-tap", "voiceproc-mic"]
+        "filter": [
+          "coreaudio-tap",
+          "voiceproc-mic"
+        ]
       },
       {
         "from": "tools/recording",
         "to": "scripts",
-        "filter": ["*.sh", "*.py"]
+        "filter": [
+          "*.sh",
+          "*.py"
+        ]
       }
     ],
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "category": "public.app-category.productivity",
       "icon": "build/icon.icns",

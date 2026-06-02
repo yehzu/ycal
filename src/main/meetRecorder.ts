@@ -26,7 +26,7 @@
 // and push updates on `IPC.RecorderStatusChanged` whenever a recording
 // transitions state.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -275,6 +275,14 @@ function releasePowerSaveBlocker(): void {
 const HEALTH_TICK_MS = 15_000;
 const HEALTH_WINDOW_MS = 60_000;
 const SILENT_BPS_THRESHOLD = 1500;
+// dB-level silence gate. The byte-rate gate above misses recordings that
+// are large (multi-MB, well over SILENT_BPS_THRESHOLD) yet carry only
+// low-level room hiss — whisper then hallucinates a repeated phrase for
+// the whole transcript (verified against the 2026-06-02 Mazu Standup:
+// mean_volume -48.5 dB, 33 MB, "請確認您的電話號碼…" ×377). Real speech
+// averages roughly -20…-30 dB mean; below this floor there is nothing
+// transcribable, so skip whisper + Claude and mark the recording failed.
+const SILENT_MEAN_DB_THRESHOLD = -45;
 const healthTimers = new Map<string, NodeJS.Timeout>();
 const healthSamples = new Map<string, Array<{ atMs: number; size: number }>>();
 
@@ -315,8 +323,17 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
 
 export function stopMeetRecorder(): void {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  // We deliberately leave in-flight ffmpeg processes alone — the user
-  // may be mid-meeting. They'll self-terminate at their `-t` boundary.
+  // Synchronously stop any in-flight recordings before we exit. We used
+  // to leave ffmpeg + coreaudio-tap running ("the user may be mid-meeting,
+  // they'll self-terminate at their -t boundary") — but that orphans a
+  // ScreenCaptureKit tap with no UI left to control it: the macOS purple
+  // "screen recording" indicator stays lit in the menubar long after yCal
+  // is gone, and the orphaned tap holds the system-audio stream, which can
+  // starve the NEXT launch's recording down to near-silence. quit means
+  // quit: SIGINT ffmpeg (flushes the moov atom so the .m4a is playable +
+  // reprocessable later) and SIGTERM the tap (releases ScreenCaptureKit).
+  // execFileSync because will-quit doesn't await async work.
+  stopActiveRecordingsSync();
   mainWindowRef = null;
   if (detectorUnsub) { detectorUnsub(); detectorUnsub = null; }
   stopMeetDetector();
@@ -1229,6 +1246,30 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
   }
 }
 
+// Synchronous tap-killer for app shutdown. Runs `record-meet.sh stop`
+// for every in-flight recording and BLOCKS until each finishes, so the
+// coreaudio-tap (and its ScreenCaptureKit session) is gone before the
+// process exits. No post-processing — the finalized .m4a stays on disk
+// for the user to reprocess from the Notes view later.
+function stopActiveRecordingsSync(): void {
+  const active = [...recordings.values()].filter((s) => s.state === 'recording');
+  if (active.length === 0) return;
+  const env = buildScriptEnv();
+  for (const s of active) {
+    rlog(`stopActiveRecordingsSync(${s.eventId}) — app quitting, killing tap`);
+    try {
+      // 8s is generous: stop() gives ffmpeg a 5s SIGINT→SIGTERM budget to
+      // flush, then SIGTERMs the tap. We don't want to hang quit forever
+      // if a child wedges, so cap it and move on.
+      spawnSync(RECORD_SH, ['stop', s.eventId], {
+        stdio: 'ignore', env, timeout: 8_000,
+      });
+    } catch (e) {
+      console.error('[yCal recorder] sync stop on quit failed', s.eventId, e);
+    }
+  }
+}
+
 async function stopRecording(eventId: string, reason = 'unspecified'): Promise<void> {
   const status = recordings.get(eventId);
   if (!status) {
@@ -1328,6 +1369,27 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
         );
         return;
       }
+    }
+    // dB-level silence gate. Byte-rate passed (file is large) but the
+    // audio may still be only low-level hiss — whisper would hallucinate
+    // a repeated phrase across the whole transcript. Measure mean
+    // loudness and bail before burning whisper + Claude on noise. Skip
+    // for very short clips where volumedetect is unreliable; fail-open
+    // when ffmpeg can't give us a reading.
+    if (elapsedMs > 60_000) {
+      const meanDb = meanVolumeDb(audioFile);
+      if (meanDb !== null && meanDb < SILENT_MEAN_DB_THRESHOLD) {
+        rlog(`silenceGateDb(${eventId}) meanVolumeDb=${meanDb} threshold=${SILENT_MEAN_DB_THRESHOLD} → marking failed`);
+        status.state = 'failed';
+        status.error = `Recording captured only low-level noise (mean ${meanDb} dB, floor ${SILENT_MEAN_DB_THRESHOLD} dB) — yCal received almost no audio even though the room sounded fine. Likely the system-audio tap or the selected mic input didn't engage. Audio file kept at ${audioFile}.`;
+        pushStatus();
+        notify(
+          'yCal · recording was silent',
+          `${status.title || 'meeting'} — yCal captured no usable audio (mean ${meanDb} dB). File kept locally, not transcribed.`,
+        );
+        return;
+      }
+      rlog(`silenceGateDb(${eventId}) meanVolumeDb=${meanDb === null ? 'unknown' : meanDb} → passing through`);
     }
   } catch { /* stat failed — fall through and let postProcess decide */ }
 
@@ -1593,34 +1655,63 @@ const HOMEBREW_BIN_DIRS = [
   '/usr/local/sbin',
 ];
 
+// Build the env every record-meet.sh / post-meet.sh invocation runs with.
+// Pin YCAL_COREAUDIO_TAP to the bundled binary so the script always uses
+// the version that ships with this yCal release, even if the user has an
+// older copy floating around in ~/.ycal/bin. Callers can tack on more env
+// via envExtras (e.g. a per-call YCAL_SUMMARY_PROMPT pointing at the
+// user's customised prompt).
+function buildScriptEnv(envExtras?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const bundledTap = resolveBundled('native', 'coreaudio-tap');
+  const bundledVpio = resolveBundled('native', 'voiceproc-mic');
+  return {
+    ...process.env,
+    ...(bundledTap ? { YCAL_COREAUDIO_TAP: bundledTap } : {}),
+    ...(bundledVpio ? { YCAL_VPIO_BIN: bundledVpio } : {}),
+    ...(envExtras ?? {}),
+    PATH: [
+      ...HOMEBREW_BIN_DIRS,
+      process.env.PATH ?? '',
+      // User's actual shell PATH (discovered via `zsh -ilc echo $PATH`
+      // at startup). Lets the script find `claude` and friends when
+      // they're installed somewhere weird like
+      // /Applications/cmux.app/Contents/Resources/bin.
+      getUserShellPath() ?? '',
+    ].filter(Boolean).join(':'),
+  };
+}
+
+// Measure a recording's mean loudness via ffmpeg's volumedetect filter.
+// Synchronous + bounded: one fast pass over the m4a (decode-only, no
+// re-encode, -f null), well under realtime. Returns the mean_volume in
+// dBFS, or null if ffmpeg is missing / the parse fails (caller then
+// falls through and lets postProcess run, i.e. fail-open — we'd rather
+// transcribe a borderline file than wrongly drop a real meeting).
+function meanVolumeDb(file: string): number | null {
+  try {
+    const res = spawnSync(
+      'ffmpeg',
+      ['-hide_banner', '-nostats', '-i', file, '-map', '0:a:0',
+        '-af', 'volumedetect', '-f', 'null', '-'],
+      { env: buildScriptEnv(), encoding: 'utf8', timeout: 120_000 },
+    );
+    const text = `${res.stderr ?? ''}`;
+    const m = text.match(/mean_volume:\s*(-?\d+(?:\.\d+)?) dB/);
+    if (!m) return null;
+    const db = parseFloat(m[1]);
+    return Number.isFinite(db) ? db : null;
+  } catch {
+    return null;
+  }
+}
+
 function execScript(
   argv: string[],
   opts: { timeoutMs?: number; envExtras?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const [cmd, ...args] = argv;
-    // Pin YCAL_COREAUDIO_TAP to the bundled binary so the script always
-    // uses the version that ships with this yCal release, even if the
-    // user has an older copy floating around in ~/.ycal/bin. Callers can
-    // tack on more env via opts.envExtras (e.g. a per-call
-    // YCAL_SUMMARY_PROMPT pointing at the user's customised prompt).
-    const bundledTap = resolveBundled('native', 'coreaudio-tap');
-    const bundledVpio = resolveBundled('native', 'voiceproc-mic');
-    const env = {
-      ...process.env,
-      ...(bundledTap ? { YCAL_COREAUDIO_TAP: bundledTap } : {}),
-      ...(bundledVpio ? { YCAL_VPIO_BIN: bundledVpio } : {}),
-      ...(opts.envExtras ?? {}),
-      PATH: [
-        ...HOMEBREW_BIN_DIRS,
-        process.env.PATH ?? '',
-        // User's actual shell PATH (discovered via `zsh -ilc echo $PATH`
-        // at startup). Lets the script find `claude` and friends when
-        // they're installed somewhere weird like
-        // /Applications/cmux.app/Contents/Resources/bin.
-        getUserShellPath() ?? '',
-      ].filter(Boolean).join(':'),
-    };
+    const env = buildScriptEnv(opts.envExtras);
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     let stdout = '';
     let stderr = '';
