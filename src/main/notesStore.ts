@@ -47,8 +47,9 @@ import {
   fetchMeetingNoteSidecar,
   findAccountForArchive,
   readCachedMeta,
+  deleteMeetingArchive,
 } from './meetingArchive';
-import { listRecentRecordings } from './meetRecorder';
+import { deleteLocalRecording, listRecentRecordings } from './meetRecorder';
 
 const OVERLAY_FILE = 'meeting-notes.json';
 
@@ -474,6 +475,49 @@ export function setNoteOverlay(eventId: string, overlay: NoteOverlay): NotesOver
   };
   writeJson(OVERLAY_FILE, next);
   return next;
+}
+
+// Permanently delete one meeting note across every layer that feeds the
+// Notes list, so a deleted (or garbage) recording actually disappears and
+// stays gone:
+//   1. local recording files in ~/Recordings/yCal + its in-memory status
+//   2. the Drive appdata archive + the local meeting-cache
+//   3. the correction overlay entry in meeting-notes.json
+// Step 1 refuses while the recording is still in flight (returns an
+// error). Steps 2-3 are best-effort — if Drive is offline the local copy
+// is still removed and the row won't come back from the cache.
+export async function deleteNote(
+  eventId: string, accountId?: string | null,
+): Promise<{ ok: boolean; removed: number; driveDeleted: number; error?: string }> {
+  const local = deleteLocalRecording(eventId);
+  if (!local.ok) {
+    return { ok: false, removed: 0, driveDeleted: 0, error: local.error };
+  }
+
+  let driveDeleted = 0;
+  let error: string | undefined;
+  try {
+    const res = await deleteMeetingArchive(eventId, accountId ?? null);
+    driveDeleted = res.driveDeleted;
+    error = res.error;
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+  }
+
+  // Drop the correction overlay so a re-record of the same event id starts
+  // clean (and the deleted note doesn't linger as a phantom overlay).
+  try {
+    const file = getNotesOverlayFile();
+    if (file.notes[eventId]) {
+      const notes = { ...file.notes };
+      delete notes[eventId];
+      writeJson(OVERLAY_FILE, { version: 1, notes, updatedAt: Date.now() });
+    }
+  } catch (e) {
+    if (!error) error = e instanceof Error ? e.message : String(e);
+  }
+
+  return { ok: true, removed: local.removed, driveDeleted, error };
 }
 
 // Build a full structured note for one event. Reads local files first,

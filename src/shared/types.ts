@@ -835,6 +835,9 @@ export const IPC = {
   NotesGetOverlay: 'ycal:notesGetOverlay',
   NotesSetOverlay: 'ycal:notesSetOverlay',
   NotesOverlayChanged: 'ycal:notesOverlayChanged',  // main → renderer push
+  // Permanently delete one meeting note: local recording files, the
+  // meeting-cache, the Drive appdata copy, and the correction overlay.
+  NotesDelete: 'ycal:notesDelete',
 } as const;
 
 // Lightweight wire shape for the renderer / CLI to know which artifacts

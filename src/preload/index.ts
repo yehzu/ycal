@@ -293,6 +293,11 @@ const api = {
     payload: { eventId: string; overlay: NoteOverlay },
   ): Promise<Result<{ file: NotesOverlayFile }>> =>
     ipcRenderer.invoke(IPC.NotesSetOverlay, payload),
+  // Permanently delete a note (local files + Drive copy + overlay).
+  notesDelete: (
+    payload: { eventId: string; accountId?: string | null },
+  ): Promise<Result<{ removed: number; driveDeleted: number }>> =>
+    ipcRenderer.invoke(IPC.NotesDelete, payload),
   onNotesOverlayChanged: (handler: (next: NotesOverlayFile) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, payload: NotesOverlayFile): void =>
       handler(payload);

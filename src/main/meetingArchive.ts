@@ -498,6 +498,43 @@ export async function fetchMeetingNoteSidecar(
   }
 }
 
+// Permanently delete a meeting's entire archive: every `meet__<eventId>.*`
+// file in the account's appdata (audio / transcript / summary / meta /
+// glossary / note sidecars) plus the local meeting-cache directory. The
+// cache is always cleared (so the note stops showing even offline); Drive
+// deletion is best-effort. accountId is optional — when absent we resolve
+// the owning account first. A prefix match (`meet__<safe>.`) is used rather
+// than parseName so the glossary + note sidecars are caught too; the
+// trailing `.` prevents a shorter id from matching a longer one's files.
+export async function deleteMeetingArchive(
+  eventId: string,
+  accountId?: string | null,
+): Promise<{ driveDeleted: number; error?: string }> {
+  try { fs.rmSync(cacheDir(eventId), { recursive: true, force: true }); } catch { /* best-effort */ }
+
+  let acct = accountId ?? null;
+  if (!acct) {
+    try { acct = await findAccountForArchive(eventId); } catch { /* offline / none */ }
+  }
+  if (!acct) return { driveDeleted: 0 };
+
+  const safe = safeEventId(eventId);
+  const prefix = `${PREFIX}${safe}.`;
+  try {
+    const api = await apiFor(acct);
+    const files = await api.list();
+    let driveDeleted = 0;
+    for (const f of files) {
+      if (!f.id) continue;
+      if (!f.name.startsWith(prefix)) continue;
+      try { await api.delete(f.id); driveDeleted += 1; } catch { /* skip one, keep going */ }
+    }
+    return { driveDeleted };
+  } catch (e) {
+    return { driveDeleted: 0, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // Resolve which account holds the archive for a given event id. Walks
 // each account's appdata listing once, returns the first account whose
 // listing contains a meet__<safeId>.* entry. Used by the CLI when the

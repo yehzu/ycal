@@ -130,6 +130,27 @@
   letter-spacing: 0.06em;
 }
 
+.nt-card-wrap { position: relative; }
+.nt-card-del {
+  position: absolute;
+  top: 9px; right: 10px;
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  appearance: none;
+  background: var(--paper);
+  border: 0.5px solid var(--rule);
+  border-radius: 3px;
+  color: var(--ink-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms, border-color 120ms;
+}
+.nt-card-wrap:hover .nt-card-del { opacity: 1; }
+.nt-card-del:hover {
+  color: oklch(0.55 0.18 25);
+  border-color: oklch(0.6 0.15 25);
+  background: var(--paper-2);
+}
 .nt-card {
   display: block;
   width: 100%;
@@ -384,6 +405,8 @@
 .nt-btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .nt-btn.primary:hover { background: var(--ink-soft); }
 .nt-btn.is-done { background: color-mix(in srgb, oklch(0.55 0.10 150) 14%, var(--paper)); border-color: oklch(0.55 0.10 150); color: oklch(0.42 0.10 150); }
+.nt-btn.nt-btn-danger { color: oklch(0.5 0.16 25); border-color: var(--rule); }
+.nt-btn.nt-btn-danger:hover { background: color-mix(in srgb, oklch(0.55 0.18 25) 12%, var(--paper)); border-color: oklch(0.6 0.15 25); color: oklch(0.48 0.18 25); }
 
 /* ── Audio scrubber ── */
 .nt-scrub {

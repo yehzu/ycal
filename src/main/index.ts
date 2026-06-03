@@ -66,7 +66,7 @@ import {
 } from './glossary';
 import { parseGlossary, type ImportFormat } from './glossaryImport';
 import {
-  getNote, getNotesOverlayFile, listNotes, listNotesLocal, setNoteOverlay,
+  deleteNote, getNote, getNotesOverlayFile, listNotes, listNotesLocal, setNoteOverlay,
 } from './notesStore';
 import type {
   EventGlossary, GlossaryEntry, GlossaryFile, MeetingArchiveSummary,
@@ -835,6 +835,18 @@ function registerIpc() {
     try {
       const file = setNoteOverlay(payload.eventId, payload.overlay);
       return { ok: true as const, file };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.NotesDelete, async (
+    _e, payload: { eventId: string; accountId?: string | null },
+  ) => {
+    try {
+      const res = await deleteNote(payload.eventId, payload.accountId ?? null);
+      return res.ok
+        ? { ok: true as const, removed: res.removed, driveDeleted: res.driveDeleted }
+        : { ok: false as const, error: res.error ?? 'delete failed' };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }

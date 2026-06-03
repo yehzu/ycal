@@ -24,6 +24,7 @@ export interface NotesStore {
   ensureNote: (eventId: string, accountId?: string | null) => Promise<void>;
   reloadNote: (eventId: string, accountId?: string | null) => Promise<void>;
   patchOverlay: (eventId: string, fn: (cur: NoteOverlay) => NoteOverlay) => void;
+  deleteNote: (eventId: string, accountId?: string | null) => Promise<{ ok: boolean; error?: string }>;
 }
 
 export function useMeetingNotes(): NotesStore {
@@ -106,8 +107,27 @@ export function useMeetingNotes(): NotesStore {
     });
   }, []);
 
+  const deleteNote = useCallback(async (eventId: string, accountId?: string | null) => {
+    const res = await window.ycal.notesDelete({ eventId, accountId: accountId ?? null });
+    if (!res.ok) return { ok: false as const, error: res.error };
+    // Drop it locally right away so the list/selection update without a
+    // round-trip, then reconcile against main (Drive may lag).
+    setSummaries((prev) => prev.filter((s) => s.id !== eventId));
+    setBases((prev) => {
+      if (!(eventId in prev)) return prev;
+      const next = { ...prev }; delete next[eventId]; return next;
+    });
+    setOverlay((prev) => {
+      if (!(eventId in prev.notes)) return prev;
+      const notes = { ...prev.notes }; delete notes[eventId];
+      return { version: 1, notes, updatedAt: Date.now() };
+    });
+    void refreshList();
+    return { ok: true as const };
+  }, [refreshList]);
+
   return {
     loading, error, summaries, overlay, bases,
-    refreshList, ensureNote, reloadNote, patchOverlay,
+    refreshList, ensureNote, reloadNote, patchOverlay, deleteNote,
   };
 }

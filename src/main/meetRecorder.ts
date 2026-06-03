@@ -481,6 +481,40 @@ export function recordingsDir(): string {
     || path.join(os.homedir(), 'Recordings', 'yCal');
 }
 
+// Permanently delete a finished recording's local files — the .m4a plus
+// every sibling (.transcript.txt, .summary.md, .note.json, .context.json,
+// .extra-context.txt, .summary.prompt.txt, .summary.log, the .diarized /
+// .broken-noindex leftovers, …) — and drop its in-memory status row so it
+// vanishes from the popover/list immediately. Refuses while the recording
+// is still live so we never yank a file out from under ffmpeg. Files are
+// matched by the eventId encoded after the final `__` in the filename
+// (the same slice listRecentRecordings uses), so multiple takes of the
+// same event are all removed.
+export function deleteLocalRecording(
+  eventId: string,
+): { ok: boolean; removed: number; error?: string } {
+  const cur = recordings.get(eventId);
+  if (cur && (cur.state === 'recording' || cur.state === 'processing' || cur.state === 'uploading')) {
+    return { ok: false, removed: 0, error: 'This recording is still being processed — wait for it to finish, then delete.' };
+  }
+  let removed = 0;
+  const dir = recordingsDir();
+  let entries: string[] = [];
+  try { entries = fs.readdirSync(dir); } catch { /* dir missing — nothing local */ }
+  for (const name of entries) {
+    const sep = name.lastIndexOf('__');
+    if (sep < 0) continue;
+    // Everything after the final `__`, up to the first `.`, is the eventId
+    // (recurring-instance suffixes use `_`, not `.`, so this is exact).
+    const fileEventId = name.slice(sep + 2).split('.')[0];
+    if (fileEventId !== eventId) continue;
+    try { fs.unlinkSync(path.join(dir, name)); removed += 1; } catch { /* skip unreadable */ }
+  }
+  if (recordings.delete(eventId)) pushStatus();
+  skipped.delete(eventId);
+  return { ok: true, removed };
+}
+
 // Guard for IPC.RecorderOpenFile: only allow paths that resolve inside
 // ~/Recordings/yCal so a compromised renderer can't trick main into
 // opening /etc/passwd or similar. Returns the absolute path on success

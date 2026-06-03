@@ -378,6 +378,23 @@ export function NotesView({
 
   const base = selectedId ? store.bases[selectedId] : null;
 
+  // Permanently delete a recording (local files + Drive + overlay), after a
+  // confirm. Selection self-heals via the "keep selection valid" effect once
+  // the deleted row leaves store.summaries.
+  const deleteStore = store.deleteNote;
+  const handleDelete = useCallback(async (
+    id: string, accountId: string | null | undefined, title: string,
+  ): Promise<void> => {
+    const ok = window.confirm(
+      `Delete “${title || 'this recording'}”?\n\n`
+      + 'This permanently removes the recording, transcript, summary and your '
+      + "edits — on this Mac and from Drive. It can't be undone.",
+    );
+    if (!ok) return;
+    const res = await deleteStore(id, accountId ?? null);
+    if (!res.ok) window.alert('Could not delete: ' + (res.error ?? 'unknown error'));
+  }, [deleteStore]);
+
   return (
     <div className="notes-view" data-screen-label="Meeting Notes">
       <NotesList
@@ -388,6 +405,7 @@ export function NotesView({
         query={query} setQuery={setQuery}
         filter={filter} setFilter={setFilter}
         selectedId={selectedId} onSelect={onSelectId}
+        onDelete={handleDelete}
         loading={store.loading}
       />
       {base ? (
@@ -400,6 +418,7 @@ export function NotesView({
           glossary={glossary}
           savedTick={savedTick}
           flash={flash}
+          onDelete={handleDelete}
         />
       ) : selSummary ? (
         <div className="nt-doc"><div className="nt-doc-empty">
@@ -421,7 +440,7 @@ export function NotesView({
 // ── left list ─────────────────────────────────────────────────────────────
 function NotesList({
   summaries, overlay, recById, counts, query, setQuery, filter, setFilter,
-  selectedId, onSelect, loading,
+  selectedId, onSelect, onDelete, loading,
 }: {
   summaries: MeetingNoteSummary[];
   overlay: { notes: Record<string, NoteOverlay> };
@@ -430,6 +449,7 @@ function NotesList({
   query: string; setQuery: (v: string) => void;
   filter: 'all' | 'open' | 'corrected'; setFilter: (v: 'all' | 'open' | 'corrected') => void;
   selectedId: string | null; onSelect: (id: string) => void;
+  onDelete: (id: string, accountId: string | null | undefined, title: string) => void;
   loading: boolean;
 }) {
   const busyOf = (id: string): boolean => {
@@ -487,6 +507,7 @@ function NotesList({
               <NoteCard
                 key={n.id} note={n} ov={overlay.notes[n.id]} busy={busyOf(n.id)}
                 active={n.id === selectedId} onClick={() => onSelect(n.id)}
+                onDelete={() => onDelete(n.id, n.accountId, overlay.notes[n.id]?.title ?? n.title)}
               />
             ))}
           </div>
@@ -497,8 +518,8 @@ function NotesList({
 }
 
 function NoteCard({
-  note, ov, busy, active, onClick,
-}: { note: MeetingNoteSummary; ov: NoteOverlay | undefined; busy: boolean; active: boolean; onClick: () => void }) {
+  note, ov, busy, active, onClick, onDelete,
+}: { note: MeetingNoteSummary; ov: NoteOverlay | undefined; busy: boolean; active: boolean; onClick: () => void; onDelete: () => void }) {
   const status = effectiveStatus(note, ov);
   const st = NT_STATUS[status];
   const pend = effectivePending(note, ov);
@@ -506,6 +527,7 @@ function NoteCard({
   const start = note.startedAt ? formatTime(new Date(note.startedAt)) : null;
   const initials = note.speakerInitials;
   return (
+    <div className={'nt-card-wrap' + (active ? ' active' : '')}>
     <button
       className={'nt-card' + (active ? ' active' : '')}
       onClick={onClick}
@@ -536,12 +558,25 @@ function NoteCard({
         )}
       </div>
     </button>
+      {!busy && (
+        <button
+          className="nt-card-del"
+          title="Delete this recording"
+          aria-label="Delete recording"
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+            <path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8" />
+          </svg>
+        </button>
+      )}
+    </div>
   );
 }
 
 // ── right document ──────────────────────────────────────────────────────
 function NoteDoc({
-  base, overlay, recStatus, patchOverlay, glossary, savedTick, flash,
+  base, overlay, recStatus, patchOverlay, glossary, savedTick, flash, onDelete,
 }: {
   base: MeetingNote;
   overlay: NoteOverlay | undefined;
@@ -550,6 +585,7 @@ function NoteDoc({
   glossary: GlossaryStore;
   savedTick: number;
   flash: () => void;
+  onDelete: (id: string, accountId: string | null | undefined, title: string) => void;
 }) {
   const note = useMemo(() => effectiveNote(base, overlay), [base, overlay]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -943,6 +979,8 @@ function NoteDoc({
               : 'Auto-transcribed'}</span>}
           <span className={'nt-saved' + (showSaved ? ' show' : '')}><span className="pulse" />Saved</span>
           <div className="nt-status-actions">
+            <button className="nt-btn nt-btn-danger" title="Delete this recording permanently"
+              onClick={() => onDelete(base.id, base.accountId, note.title)}>Delete</button>
             {note.status !== 'corrected'
               ? <button className="nt-btn primary" onClick={() => setField('status', 'corrected')}>Mark corrected</button>
               : <button className="nt-btn is-done" onClick={() => setField('status', 'review')}>✓ Corrected — reopen</button>}
