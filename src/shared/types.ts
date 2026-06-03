@@ -406,6 +406,13 @@ export interface RecordingStatus {
   // 44-min file post-meeting. Set only while state === 'recording'.
   silentSeconds?: number;
   error?: string;
+  // True when the user started this recording themselves (popover/tray)
+  // rather than the auto-recorder. Manual recordings are the user's to
+  // run: the active-Meet detector must NOT auto-stop them (in-room or
+  // Zoom meetings have no Google Meet room to detect) and the scheduled
+  // end-time stop is skipped — only a manual stop or the long safety cap
+  // ends them.
+  manual?: boolean;
   // Non-fatal warning attached after processing. Today this flags the case
   // where speaker separation was enabled but produced no [SPKn] labels
   // (diarization silently failed) — the recording itself is fine, the
@@ -1012,6 +1019,10 @@ export interface NoteOverlay {
   correctedBy?: string | null;
   noteAt?: number;                          // baseline note generation time
   transcriptTouchedAt?: number;             // last manual transcript/term edit
+  // Free-text context the user supplies for the AI (who was in the room,
+  // acronyms, what to focus on). Persisted here so it survives and is fed
+  // into the summary prompt on every reprocess. Empty/absent = none.
+  reprocessContext?: string;
   updatedAt?: number;
 }
 

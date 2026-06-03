@@ -27,6 +27,10 @@
 #                          ONLY the claude summarization step against the
 #                          existing <base>.transcript.txt. Fails if the
 #                          transcript is missing.
+#   YCAL_EXTRA_CONTEXT     path to a text file of user-supplied context
+#                          (names, acronyms, what to emphasise). Appended to
+#                          the __CONTEXT__ block in the summary prompt.
+#                          Optional.
 
 set -euo pipefail
 
@@ -524,6 +528,20 @@ lines.append("")
 with open(out_path, "w", encoding="utf-8") as f:
     f.write("\n".join(lines))
 PY
+fi
+
+# Append the user's free-text context (Notes view → "Reprocess with
+# context"). It's authoritative for the names / acronyms / priorities the
+# audio and the calendar invite couldn't convey, so it goes into the same
+# __CONTEXT__ block. Independent of whether a context.json existed.
+if [[ -n "${YCAL_EXTRA_CONTEXT:-}" && -s "${YCAL_EXTRA_CONTEXT}" ]]; then
+  {
+    echo ""
+    echo "Additional context from the user (authoritative — prefer it for names, acronyms, decisions, and what to emphasise):"
+    cat "$YCAL_EXTRA_CONTEXT"
+    echo ""
+  } >> "$context_block_file"
+  echo "[post-meet] folded user extra-context ($(wc -c <"$YCAL_EXTRA_CONTEXT") bytes)" >&2
 fi
 
 # Hand-fold the template — simpler than escaping shell-special chars in the

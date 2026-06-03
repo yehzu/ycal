@@ -86,6 +86,34 @@ function stripHtml(html: string): string {
   return d.textContent || '';
 }
 
+// Render a lightweight subset of inline markdown (**bold**, __bold__,
+// `code`) to safe HTML for the editorial note body (summary / decisions /
+// actions). The LLM emits **bold** in these fields; without this they'd
+// show the literal asterisks. Everything is HTML-escaped first — only our
+// own <strong>/<code> markup is injected.
+function mdInline(s: string): string {
+  const esc = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return esc
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+?)__/g, '<strong>$1</strong>');
+}
+
+// Inverse of mdInline: turn a committed contentEditable fragment back into
+// the markdown text we store, so bold survives an edit (and a later
+// reprocess, which re-emits markdown). Bold/code round-trip; any other
+// rich formatting the browser injected is flattened to plain text.
+function htmlToInline(html: string): string {
+  const s = html
+    .replace(/<\/(strong|b)>/gi, '**').replace(/<(strong|b)(\s[^>]*)?>/gi, '**')
+    .replace(/<\/code>/gi, '`').replace(/<code(\s[^>]*)?>/gi, '`')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '');
+  const dec = document.createElement('textarea');
+  dec.innerHTML = s;
+  return dec.value.replace(/\*\*\s*\*\*/g, '').trim();
+}
+
 // Unwrap any <span class="nt-lc"> whose text matches a heard variant,
 // dropping in the correction. Returns a {segId: html} patch of changed lines.
 function ntApplyToSegments(segments: EffSegment[], list: Fix[]): Record<string, string> {
@@ -156,6 +184,19 @@ interface EffNote extends Omit<MeetingNote, 'segments' | 'speakers'> {
   segments: EffSegment[];
   resolvedTermIds: string[];
   transcriptTouchedAt: number | null;
+  reprocessContext: string;
+}
+
+// An empty overlay array must NOT override a populated base. The bug it
+// guards against: a term-fix applied while the note was still processing
+// (base summary/decisions/actions empty) used to persist `[]` into the
+// overlay; once the summary landed in the base, `e.summary ?? base.summary`
+// returned the stale `[]` and the whole note read as empty. Treating an
+// empty override as "no edit" both repairs those notes and is the intuitive
+// rule (the user can still edit individual points away). The write side
+// (applyFixes / applyManualFix) also stops persisting empty arrays.
+function pickArr<T>(over: T[] | undefined, base: T[]): T[] {
+  return over && over.length ? over : base;
 }
 
 function effectiveNote(base: MeetingNote, ov: NoteOverlay | undefined): EffNote {
@@ -177,15 +218,16 @@ function effectiveNote(base: MeetingNote, ov: NoteOverlay | undefined): EffNote 
     ...base,
     title: e.title ?? base.title,
     status: e.status ?? base.status,
-    summary: e.summary ?? base.summary,
-    decisions: e.decisions ?? base.decisions,
-    actions: e.actions ?? base.actions,
+    summary: pickArr(e.summary, base.summary),
+    decisions: pickArr(e.decisions, base.decisions),
+    actions: pickArr(e.actions, base.actions),
     speakers,
     segments,
     terms: base.terms,
     resolvedTermIds: e.resolvedTermIds ?? [],
     noteAt: e.noteAt ?? base.noteAt,
     transcriptTouchedAt: e.transcriptTouchedAt ?? null,
+    reprocessContext: e.reprocessContext ?? '',
     correctedBy: e.correctedBy ?? base.correctedBy,
   };
 }
@@ -615,12 +657,15 @@ function NoteDoc({
   // ── term fixes (instant, local — rewrites the overlay) ──
   const applyFixes = (list: Fix[]): void => {
     if (!list.length) return;
-    const summary = note.summary.map((s) => ntReplaceAll(s, list));
-    const decisions = note.decisions.map((s) => ntReplaceAll(s, list));
-    const actions = note.actions.map((a) => ({ ...a, text: ntReplaceAll(a.text, list) }));
     const segPatch = ntApplyToSegments(note.segments, list);
     P((c) => ({
-      ...c, summary, decisions, actions,
+      ...c,
+      // Only persist note-body arrays when they have content — writing an
+      // empty array while the note is still processing would clobber the
+      // base summary once it lands (see pickArr / effectiveNote).
+      ...(note.summary.length ? { summary: note.summary.map((s) => ntReplaceAll(s, list)) } : {}),
+      ...(note.decisions.length ? { decisions: note.decisions.map((s) => ntReplaceAll(s, list)) } : {}),
+      ...(note.actions.length ? { actions: note.actions.map((a) => ({ ...a, text: ntReplaceAll(a.text, list) })) } : {}),
       segHtml: { ...(c.segHtml || {}), ...segPatch },
       resolvedTermIds: Array.from(new Set([
         ...(c.resolvedTermIds || []),
@@ -673,15 +718,22 @@ function NoteDoc({
   }, [reproc]);
 
   const reprocBlocked = !base.audioFile;
-  const kickReprocess = async (kind: 'note' | 'transcript' | 'all'): Promise<void> => {
+  const kickReprocess = async (
+    kind: 'note' | 'transcript' | 'all', contextOverride?: string,
+  ): Promise<void> => {
     if (!base.audioFile) {
       window.alert('No local audio on this Mac — open this meeting on the Mac that recorded it to reprocess.');
       return;
     }
     setReproc({ kind });
+    // The user's extra context (overlay) is fed to the summary prompt on
+    // every reprocess path. Pass an explicit override to dodge the
+    // setState race when "Reprocess with this context" saves + runs in one
+    // click.
+    const extraContext = (contextOverride ?? note.reprocessContext).trim() || undefined;
     const payload = {
       eventId: base.id, audioFile: base.audioFile, title: note.title,
-      accountId: base.accountId ?? undefined,
+      accountId: base.accountId ?? undefined, extraContext,
     };
     const res = kind === 'note'
       ? await window.ycal.recorderResummarize(payload)
@@ -756,12 +808,12 @@ function NoteDoc({
   // text nodes), independent of the flagged-term list.
   const applyManualFix = (token: string, correct: string): void => {
     const list: Fix[] = [{ heard: token, correct }];
-    const summary = note.summary.map((s) => ntReplaceAll(s, list));
-    const decisions = note.decisions.map((s) => ntReplaceAll(s, list));
-    const actions = note.actions.map((a) => ({ ...a, text: ntReplaceAll(a.text, list) }));
     const segPatch = ntReplaceTextInSegments(note.segments, token, correct);
     P((c) => ({
-      ...c, summary, decisions, actions,
+      ...c,
+      ...(note.summary.length ? { summary: note.summary.map((s) => ntReplaceAll(s, list)) } : {}),
+      ...(note.decisions.length ? { decisions: note.decisions.map((s) => ntReplaceAll(s, list)) } : {}),
+      ...(note.actions.length ? { actions: note.actions.map((a) => ({ ...a, text: ntReplaceAll(a.text, list) })) } : {}),
       segHtml: { ...(c.segHtml || {}), ...segPatch },
       transcriptTouchedAt: Date.now(),
     }));
@@ -905,6 +957,15 @@ function NoteDoc({
           openDict={() => { setDictPrefill(null); setDictOpen(true); }}
         />
 
+        {/* context the model couldn't get from the audio → reprocess */}
+        <ContextBlock
+          value={note.reprocessContext}
+          blocked={reprocBlocked}
+          busy={!!(busy || reproc)}
+          onSave={(v) => setField('reprocessContext', v)}
+          onReprocess={(ctx) => void kickReprocess('note', ctx)}
+        />
+
         {/* scrubber + the actual audio element (hidden; styled by Scrubber) */}
         <audio
           ref={audioRef}
@@ -960,8 +1021,8 @@ function NoteDoc({
             {note.summary.map((s, i) => (
               <li key={i} className="nt-bullet">
                 <span className="mk">—</span>
-                <Editable className="tx" text={s} placeholder="Summary point…"
-                  onCommit={(v) => { const t = v.trim(); t ? setListItem('summary', i, t) : removeListItem('summary', i); }} />
+                <Editable className="tx" html={mdInline(s)} placeholder="Summary point…"
+                  onCommit={(v) => { const t = htmlToInline(v); t ? setListItem('summary', i, t) : removeListItem('summary', i); }} />
                 <button className="del" title="Remove" onClick={() => removeListItem('summary', i)}>×</button>
               </li>
             ))}
@@ -981,8 +1042,8 @@ function NoteDoc({
             {note.decisions.map((s, i) => (
               <li key={i} className="nt-bullet">
                 <span className="mk">{String(i + 1).padStart(2, '0')}</span>
-                <Editable className="tx" text={s} placeholder="Decision…"
-                  onCommit={(v) => { const t = v.trim(); t ? setListItem('decisions', i, t) : removeListItem('decisions', i); }} />
+                <Editable className="tx" html={mdInline(s)} placeholder="Decision…"
+                  onCommit={(v) => { const t = htmlToInline(v); t ? setListItem('decisions', i, t) : removeListItem('decisions', i); }} />
                 <button className="del" title="Remove" onClick={() => removeListItem('decisions', i)}>×</button>
               </li>
             ))}
@@ -1003,8 +1064,8 @@ function NoteDoc({
               <li key={a.id} className={'nt-action' + (a.done ? ' done' : '')}>
                 <button className={'nt-checkbox' + (a.done ? ' on' : '')} aria-label="Toggle done"
                   onClick={() => setActions(note.actions.map((x) => x.id === a.id ? { ...x, done: !x.done } : x))} />
-                <Editable className="tx" text={a.text} placeholder="Action…"
-                  onCommit={(v) => { const t = v.trim(); setActions(t ? note.actions.map((x) => x.id === a.id ? { ...x, text: t } : x) : note.actions.filter((x) => x.id !== a.id)); }} />
+                <Editable className="tx" html={mdInline(a.text)} placeholder="Action…"
+                  onCommit={(v) => { const t = htmlToInline(v); setActions(t ? note.actions.map((x) => x.id === a.id ? { ...x, text: t } : x) : note.actions.filter((x) => x.id !== a.id)); }} />
                 <button className="nt-owner" title="Reassign"
                   onClick={() => {
                     const opts = ['', ...note.speakers.map((s) => s.name.split(' ')[0])];
@@ -1150,6 +1211,55 @@ function FixPopover({
         <button className="nt-btn sm" onClick={onClose}>Cancel</button>
         <button className="nt-btn primary sm" disabled={!draft.trim()} onClick={() => onSave(draft.trim(), scopeGlobal)}>Save &amp; fix</button>
       </div>
+    </div>
+  );
+}
+
+// ── AI context for reprocessing ─────────────────────────────────────────────
+// A place to give the model the context it couldn't get from the audio —
+// who was in the room, what acronyms mean, what to focus on — then
+// regenerate the note. Persisted in the note overlay (so it survives and is
+// reused by every later reprocess) and fed into the summary prompt.
+function ContextBlock({
+  value, blocked, busy, onSave, onReprocess,
+}: {
+  value: string; blocked: boolean; busy: boolean;
+  onSave: (v: string) => void; onReprocess: (ctx: string) => void;
+}) {
+  const [open, setOpen] = useState(!!value.trim());
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+  const dirty = draft.trim() !== value.trim();
+  return (
+    <div className="nt-context">
+      <button className="nt-context-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className={'chev' + (open ? ' open' : '')}>▸</span>
+        <span className="lbl">Context for the AI</span>
+        <span className="hint">{value.trim()
+          ? 'Saved — included every time you reprocess'
+          : 'Add who was there, acronyms, what to focus on — then reprocess the note'}</span>
+      </button>
+      {open && (
+        <div className="nt-context-body">
+          <textarea
+            className="nt-context-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => { if (dirty) onSave(draft); }}
+            rows={4}
+            placeholder={'e.g. This was the TW all-hands. “Rhapsody” = our AI dev pipeline; “Builders” = the four-tier program. Focus the summary on EPD decisions and any action items for my team.'}
+          />
+          <div className="nt-context-actions">
+            <span className="nt-context-note">Regenerates the summary, decisions &amp; actions from the transcript with this context. Your manual edits are preserved.</span>
+            <button
+              className="nt-btn primary"
+              disabled={blocked || busy}
+              title={blocked ? 'No local audio on this Mac.' : ''}
+              onClick={() => { onSave(draft); onReprocess(draft); }}
+            >{busy ? 'Reprocessing…' : 'Reprocess note with context'}</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

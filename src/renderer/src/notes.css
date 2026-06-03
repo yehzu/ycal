@@ -560,6 +560,16 @@
   padding: 2px 6px;
   margin: -2px -6px;
 }
+/* Inline markdown rendered in note bodies (**bold**, `code`). */
+.nt-bullet .tx strong, .nt-action .tx strong { font-weight: 700; color: var(--ink); }
+.nt-bullet .tx code, .nt-action .tx code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--paper-2);
+  border: 0.5px solid var(--rule-soft);
+  border-radius: 2px;
+  padding: 0 4px;
+}
 .nt-bullet .del {
   appearance: none; background: transparent; border: 0;
   font-family: var(--serif-body); font-size: 13px; color: var(--ink-faint);
@@ -1100,6 +1110,81 @@ mark.nt-hl {
   flex: 1;
 }
 .nt-stale .tx strong { color: var(--ink); font-weight: 600; }
+
+/* AI context for reprocessing */
+.nt-context {
+  margin: 14px 0 4px;
+  border: 0.5px solid var(--rule);
+  background: var(--paper-2);
+}
+.nt-context-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 9px 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.nt-context-toggle:hover .lbl { color: var(--ink); }
+.nt-context-toggle .chev {
+  font-size: 10px;
+  color: var(--ink-mute);
+  transition: transform 140ms ease;
+  transform: translateY(-1px);
+}
+.nt-context-toggle .chev.open { transform: rotate(90deg) translateX(-1px); }
+.nt-context-toggle .lbl {
+  font-family: var(--serif-body);
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ink-mute);
+}
+.nt-context-toggle .hint {
+  margin-left: auto;
+  font-family: var(--serif-body);
+  font-style: italic;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.nt-context-body {
+  padding: 0 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.nt-context-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 64px;
+  font-family: var(--serif-body);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--paper);
+  border: 0.5px solid var(--rule);
+  padding: 9px 11px;
+  outline: none;
+}
+.nt-context-input:focus { border-color: var(--ink-mute); }
+.nt-context-input::placeholder { color: var(--ink-faint); font-style: italic; }
+.nt-context-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: space-between;
+}
+.nt-context-note {
+  font-family: var(--serif-body);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--ink-faint);
+  line-height: 1.4;
+}
 
 /* transcript disclosure */
 .nt-trans-disclosure {

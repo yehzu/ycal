@@ -81,6 +81,12 @@ const ACTIVE_MEET_COOLDOWN_MS = 3 * 60_000;
 // OVERRUN_MAX_MS so a forgotten tab can't run forever.
 const OVERRUN_EXTEND_MS = 15 * 60_000;
 const OVERRUN_MAX_MS = 60 * 60_000;
+// Safety cap for a MANUAL recording. The user starts these by hand (an
+// in-room conversation, a Zoom call) so yCal never auto-stops them on a
+// schedule or on Meet-presence — only a manual stop or this hard ffmpeg
+// `-t` ceiling ends them, so a forgotten recording can't run the mic
+// forever.
+const MANUAL_MAX_SECS = 3 * 60 * 60;
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -551,7 +557,7 @@ export async function startRecordingManual(event: CalendarEvent): Promise<void> 
   // the active-Meet detector can retry this room before the user leaves.
   const manualCode = extractMeetCode(event.meetUrl);
   if (manualCode) failedMeetCodes.delete(manualCode);
-  await startRecording(event);
+  await startRecording(event, { manual: true });
 }
 
 export async function stopRecordingManual(eventId: string): Promise<void> {
@@ -573,6 +579,7 @@ export async function reprocessRecording(
   audioFile: string,
   title: string,
   accountId?: string,
+  extraContext?: string,
 ): Promise<void> {
   if (!fs.existsSync(audioFile)) {
     throw new Error(`audio file missing: ${audioFile}`);
@@ -600,7 +607,7 @@ export async function reprocessRecording(
   };
   recordings.set(eventId, status);
   pushStatus();
-  await postProcess(eventId, safe, title, accountId);
+  await postProcess(eventId, safe, title, accountId, false, extraContext);
 }
 
 // Re-run ONLY the claude summarization step against the existing
@@ -613,6 +620,7 @@ export async function resummarizeRecording(
   audioFile: string,
   title: string,
   accountId?: string,
+  extraContext?: string,
 ): Promise<void> {
   if (!fs.existsSync(audioFile)) {
     throw new Error(`audio file missing: ${audioFile}`);
@@ -637,7 +645,7 @@ export async function resummarizeRecording(
   };
   recordings.set(eventId, status);
   pushStatus();
-  await postProcess(eventId, safe, title, accountId, true);
+  await postProcess(eventId, safe, title, accountId, true, extraContext);
 }
 
 // ── Recovery ────────────────────────────────────────────────────────────
@@ -682,6 +690,7 @@ function recoverInFlightRecordings(): void {
     let startedAt = Date.now();
     let endsAt: number | undefined;
     let accountId: string | undefined;
+    let manual = false;
     try {
       const meta = JSON.parse(fs.readFileSync(path.join(STATE_DIR, `${eventId}.meta.json`), 'utf8'));
       if (typeof meta.title === 'string' && meta.title.trim()) title = meta.title;
@@ -690,6 +699,7 @@ function recoverInFlightRecordings(): void {
       if (typeof meta.accountId === 'string' && meta.accountId.trim()) {
         accountId = meta.accountId;
       }
+      if (meta.manual === true) manual = true;
     } catch { /* meta missing on pre-recovery builds — keep defaults */ }
     if (!endsAt && audioFile) {
       try {
@@ -707,6 +717,7 @@ function recoverInFlightRecordings(): void {
       endsAt,
       audioFile,
       accountId,
+      manual: manual || undefined,
     };
     recordings.set(eventId, status);
     console.log(`[yCal recorder] adopted in-flight recording ${eventId} (pid ${pid})`);
@@ -721,10 +732,12 @@ async function tick(): Promise<void> {
 
   const ui = getUiSettings();
   if (!ui.autoRecordMeetings) {
-    // Setting may have been toggled off mid-meeting — stop anything
-    // that's still recording so we honor the user's intent immediately.
+    // Setting may have been toggled off mid-meeting — stop anything the
+    // AUTO recorder started so we honor the user's intent immediately.
+    // Manual recordings are independent of this toggle (the user can
+    // record by hand with auto-record off), so leave those running.
     for (const [id, s] of recordings) {
-      if (s.state === 'recording') void stopRecording(id, 'autoRecord-toggled-off');
+      if (s.state === 'recording' && !s.manual) void stopRecording(id, 'autoRecord-toggled-off');
     }
     // Also drop any pending-confirm entries: the user disabled the
     // feature, so we shouldn't keep "deferred-recording" state for
@@ -745,6 +758,10 @@ async function tick(): Promise<void> {
   // the mic forever.
   for (const [id, s] of recordings) {
     if (s.state !== 'recording') continue;
+    // Manual recordings are user-driven — never auto-stop them at the
+    // event's scheduled end. The long ffmpeg `-t` cap (MANUAL_MAX_SECS) is
+    // the only automatic ceiling; otherwise the user stops them by hand.
+    if (s.manual) continue;
     if (s.endsAt == null || now < s.endsAt) continue;
 
     if (ui.recordingTrigger === 'activeMeet' && s.meetCode) {
@@ -885,6 +902,13 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     let stoppedAny = false;
     for (const [id, s] of recordings) {
       if (s.state !== 'recording') continue;
+      // A manual recording (in-room talk, Zoom call) has no Google Meet
+      // room for the detector to see — losing the global Meet signal does
+      // NOT mean the user's recording should end. Leave it to the user.
+      if (s.manual) {
+        rlog(`inMeet=false ignored for ${id} — manual recording, user-controlled`);
+        continue;
+      }
 
       if (s.meetCode) {
         const stillOpen = await probeMeetCodeOpen(s.meetCode);
@@ -1136,7 +1160,11 @@ function writeRecordingContext(
   fs.writeFileSync(contextPath, JSON.stringify(body, null, 2));
 }
 
-async function startRecording(ev: CalendarEvent): Promise<void> {
+async function startRecording(
+  ev: CalendarEvent,
+  opts: { manual?: boolean } = {},
+): Promise<void> {
+  const manual = opts.manual === true;
   const endsAt = Date.parse(ev.end);
   // Active-Meet detection can hand us an event that's already 30+ min past
   // its scheduled end (the user left the Meet tab open). Without clamping,
@@ -1147,10 +1175,16 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
   // the scheduled end.
   const remainingMs = Number.isFinite(endsAt) ? endsAt - Date.now() : 0;
   const MIN_RUNWAY_SECS = 30 * 60;
-  const maxSecs = Math.max(
-    Math.ceil((remainingMs + STOP_SLACK_MS) / 1000),
-    MIN_RUNWAY_SECS,
-  );
+  // Manual recordings aren't tied to the schedule (the user runs them by
+  // hand), so give them the long safety cap rather than event-duration +
+  // slack — otherwise an in-room chat that overruns its calendar block, or
+  // a manual start on an already-ended event, would self-terminate early.
+  const maxSecs = manual
+    ? MANUAL_MAX_SECS
+    : Math.max(
+        Math.ceil((remainingMs + STOP_SLACK_MS) / 1000),
+        MIN_RUNWAY_SECS,
+      );
 
   const meetCode = extractMeetCode(ev.meetUrl) ?? undefined;
   const status: RecordingStatus = {
@@ -1162,9 +1196,10 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
     originalEndsAt: Number.isFinite(endsAt) ? endsAt : undefined,
     accountId: ev.accountId || undefined,
     meetCode,
+    manual: manual || undefined,
   };
   recordings.set(ev.id, status);
-  rlog(`startRecording(${ev.id}) title="${ev.title}" endsAt=${Number.isFinite(endsAt) ? new Date(endsAt).toISOString() : 'null'} maxSecs=${maxSecs} meetCode=${meetCode ?? 'none'} accountId=${ev.accountId || 'none'}`);
+  rlog(`startRecording(${ev.id}) title="${ev.title}" manual=${manual} endsAt=${Number.isFinite(endsAt) ? new Date(endsAt).toISOString() : 'null'} maxSecs=${maxSecs} meetCode=${meetCode ?? 'none'} accountId=${ev.accountId || 'none'}`);
   // Clear cooldown — explicit start (manual or automatic) means this
   // is the recording we want, not a stale-tab echo.
   lastActiveMeetStopAt = 0;
@@ -1180,6 +1215,7 @@ async function startRecording(ev: CalendarEvent): Promise<void> {
       startedAt: status.startedAt,
       endsAt,
       accountId: ev.accountId || null,
+      manual,
     }));
   } catch (e) {
     console.error('[yCal recorder] failed to write meta sidecar', e);
@@ -1403,6 +1439,7 @@ async function postProcess(
   title: string,
   accountId: string | undefined,
   summaryOnly = false,
+  extraContext?: string,
 ): Promise<void> {
   notify(summaryOnly ? 'yCal · re-summarizing' : 'yCal · transcribing', title);
   // Glossary runtime files (whisper prompt + transcript substitutions)
@@ -1411,6 +1448,19 @@ async function postProcess(
   // the finally block can hit them all.
   let glossaryRuntime: ReturnType<typeof buildRuntimeFiles> | null = null;
   let promptFile: string | undefined;
+  // User-supplied context (Notes view → "Reprocess with context"). Written
+  // next to the audio so post-meet.sh can fold it into the summary prompt's
+  // __CONTEXT__ block. Persisted (not temp) so a later re-run reuses it
+  // even if the user didn't re-type it; overwritten/cleared each run to
+  // match the latest overlay value.
+  const extraContextFile = `${audioFile.replace(/\.m4a$/, '')}.extra-context.txt`;
+  try {
+    const trimmed = (extraContext ?? '').trim();
+    if (trimmed) fs.writeFileSync(extraContextFile, trimmed);
+    else if (fs.existsSync(extraContextFile)) fs.unlinkSync(extraContextFile);
+  } catch (e) {
+    console.error('[yCal recorder] failed to write extra-context file', e);
+  }
   try {
     // Resolve the effective glossary (global ∪ per-event) for this
     // recording and materialise the three sidecar files post-meet.sh
@@ -1453,6 +1503,11 @@ async function postProcess(
       envExtras.YCAL_TRANSCRIPT_FILTER = glossaryRuntime.filterFile;
     }
     if (summaryOnly) envExtras.YCAL_SUMMARY_ONLY = '1';
+    // Hand the user's extra context to post-meet.sh; it's appended to the
+    // __CONTEXT__ block fed to claude. Only set when there's content on disk.
+    if (fs.existsSync(extraContextFile) && fs.statSync(extraContextFile).size > 0) {
+      envExtras.YCAL_EXTRA_CONTEXT = extraContextFile;
+    }
     // Speaker diarization toggle. When the user has enabled it in
     // Settings → Recording AND set their HF token AND the venv is
     // installed, hand post-meet.sh everything it needs to splice

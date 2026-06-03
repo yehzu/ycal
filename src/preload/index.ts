@@ -207,11 +207,11 @@ const api = {
   recorderRevealFile: (path: string): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderRevealFile, path),
   recorderReprocess: (
-    payload: { eventId: string; audioFile: string; title: string; accountId?: string },
+    payload: { eventId: string; audioFile: string; title: string; accountId?: string; extraContext?: string },
   ): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderReprocess, payload),
   recorderResummarize: (
-    payload: { eventId: string; audioFile: string; title: string; accountId?: string },
+    payload: { eventId: string; audioFile: string; title: string; accountId?: string; extraContext?: string },
   ): Promise<Result<{}>> =>
     ipcRenderer.invoke(IPC.RecorderResummarize, payload),
   recorderGetPeople: (): Promise<{ ok: true; body: string } | { ok: false; error: string }> =>
