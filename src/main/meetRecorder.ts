@@ -85,8 +85,13 @@ const OVERRUN_MAX_MS = 60 * 60_000;
 // in-room conversation, a Zoom call) so yCal never auto-stops them on a
 // schedule or on Meet-presence — only a manual stop or this hard ffmpeg
 // `-t` ceiling ends them, so a forgotten recording can't run the mic
-// forever.
-const MANUAL_MAX_SECS = 3 * 60 * 60;
+// forever. 6h (not 3h): the repo owner records multi-hour "Troika cum Yeh"
+// sessions that ran right up against a 3h cap — ffmpeg self-terminated at
+// the 3h mark mid-meeting (2026-06-05), the user re-recorded a short tail,
+// and that throwaway clip overwrote the full capture's archive. A longer
+// ceiling lets a genuinely-long meeting record in one piece; the silence
+// health-monitor still flags a forgotten-open mic.
+const MANUAL_MAX_SECS = 6 * 60 * 60;
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1467,6 +1472,28 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
   void postProcess(eventId, audioFile, status.title, status.accountId);
 }
 
+// post-meet.sh runs whisper TWICE (stereo: a mic pass + a system pass),
+// then optional pyannote diarization, then a claude summary — every stage
+// scales with the recording's length. A fixed 30-min ceiling is fine for a
+// 30-min meeting but far too short for a multi-hour one: a 3-hour stereo
+// recording's two whisper passes alone run well past 30 min, so post-meet.sh
+// got SIGTERM'd mid-transcribe and the recording was marked "failed"
+// (2026-06-05 "Troika cum Yeh" — a ~3h, 222 MB capture). Scale the budget to
+// the audio duration, estimated from file size at our 192 kbps AAC bitrate so
+// it also works when reprocessing an arbitrary file. 30-min floor for short
+// meetings; 5-hour cap so a genuinely-hung job still gets reaped.
+const POST_AAC_BYTES_PER_SEC = 24_000;          // 192 kbps stereo AAC ≈ 24 kB/s
+const POST_TIMEOUT_FLOOR_MS = 30 * 60_000;
+const POST_TIMEOUT_CAP_MS = 5 * 60 * 60_000;
+function postProcessTimeoutMs(audioFile: string): number {
+  let durSec = 0;
+  try { durSec = fs.statSync(audioFile).size / POST_AAC_BYTES_PER_SEC; }
+  catch { /* stat failed → fall back to the floor */ }
+  // ~2× realtime covers two whisper passes + diarization + claude with margin.
+  const scaled = durSec * 2 * 1000;
+  return Math.min(POST_TIMEOUT_CAP_MS, Math.max(POST_TIMEOUT_FLOOR_MS, scaled));
+}
+
 async function postProcess(
   eventId: string,
   audioFile: string,
@@ -1555,8 +1582,10 @@ async function postProcess(
       envExtras.YCAL_DIARIZE_PY = DIARIZE_PY;
       envExtras.YCAL_DIARIZE_VENV_PY = getDiarizeVenvPython();
     }
+    const postTimeoutMs = postProcessTimeoutMs(audioFile);
+    rlog(`postProcess(${eventId}) timeoutMin=${Math.round(postTimeoutMs / 60_000)} summaryOnly=${summaryOnly} audioBytes=${(() => { try { return fs.statSync(audioFile).size; } catch { return 0; } })()}`);
     const stdout = await execScript([POST_SH, audioFile, title], {
-      timeoutMs: 30 * 60_000,
+      timeoutMs: postTimeoutMs,
       envExtras: Object.keys(envExtras).length > 0 ? envExtras : undefined,
     });
     const summary = stdout.trim() || audioFile.replace(/\.m4a$/, '.summary.md');

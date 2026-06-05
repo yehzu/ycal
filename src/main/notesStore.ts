@@ -435,7 +435,16 @@ interface NoteSources {
 
 function localSourcesFor(eventId: string): NoteSources | null {
   const recents = listRecentRecordings(500);
-  const rec = recents.find((r) => r.eventId === eventId);
+  // Pick the LARGEST recording for this event, not the most-recently-
+  // modified one. When a meeting was recorded twice under the same event id
+  // — e.g. a long capture whose post-process timed out, followed by a short
+  // throwaway re-record — the short clip must NOT shadow the real one.
+  // Largest audio == the actual meeting (2026-06-05 "Troika cum Yeh": a
+  // 4-min, 4 MB re-record was hiding a ~3h, 222 MB capture, so opening the
+  // note showed an almost-empty document).
+  const rec = recents
+    .filter((r) => r.eventId === eventId)
+    .sort((a, b) => b.sizeBytes - a.sizeBytes)[0];
   if (!rec) return null;
   const noteFile = rec.audioFile.replace(/\.m4a$/, '.note.json');
   const { startedAt, title } = parseBaseName(rec.baseName);
@@ -672,11 +681,19 @@ const sortByStart = (a: MeetingNoteSummary, b: MeetingNoteSummary): number =>
 // Local recordings on this Mac → summary map. Pure disk reads, no network.
 function buildLocalNotes(): Map<string, MeetingNoteSummary> {
   const byEvent = new Map<string, MeetingNoteSummary>();
+  // Track the winning audio size per event so the list row mirrors the
+  // largest-wins rule in localSourcesFor — otherwise a short throwaway
+  // re-record could supply the row while the opened note shows the full
+  // capture (or vice-versa), an inconsistency that read as "no recording".
+  const winnerSize = new Map<string, number>();
   const entries = getGlossary().entries;
   let recents: ReturnType<typeof listRecentRecordings> = [];
   try { recents = listRecentRecordings(500); } catch { /* none */ }
   for (const r of recents) {
     if (!r.eventId) continue;
+    const prev = winnerSize.get(r.eventId);
+    if (prev !== undefined && prev >= r.sizeBytes) continue;
+    winnerSize.set(r.eventId, r.sizeBytes);
     const { startedAt, title } = parseBaseName(r.baseName);
     const meta = readCachedMeta(r.eventId);
     // Filename stamp first (immutable); meta can be clobbered by reprocess.
