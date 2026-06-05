@@ -1104,12 +1104,11 @@ function NoteDoc({
                   onClick={() => setActions(note.actions.map((x) => x.id === a.id ? { ...x, done: !x.done } : x))} />
                 <Editable className="tx" html={mdInline(a.text)} placeholder="Action…"
                   onCommit={(v) => { const t = htmlToInline(v); setActions(t ? note.actions.map((x) => x.id === a.id ? { ...x, text: t } : x) : note.actions.filter((x) => x.id !== a.id)); }} />
-                <button className="nt-owner" title="Reassign"
-                  onClick={() => {
-                    const opts = ['', ...note.speakers.map((s) => s.name.split(' ')[0])];
-                    const idx = opts.indexOf(a.owner || '');
-                    setActions(note.actions.map((x) => x.id === a.id ? { ...x, owner: opts[(idx + 1) % opts.length] } : x));
-                  }}>{a.owner || 'unassigned'}</button>
+                <Editable className="nt-owner" text={a.owner || ''} placeholder="unassigned" singleLine
+                  onCommit={(v) => {
+                    const o = v.replace(/\s+/g, ' ').trim();
+                    setActions(note.actions.map((x) => x.id === a.id ? { ...x, owner: o || null } : x));
+                  }} />
                 <button className="del" title="Remove" onClick={() => setActions(note.actions.filter((x) => x.id !== a.id))}>×</button>
               </li>
             ))}

@@ -663,9 +663,25 @@
   color: var(--ink-soft);
   white-space: nowrap;
   align-self: center;
-  cursor: pointer;
+  /* Free-form assignee: the owner is now an inline contentEditable pill, not
+     a cycle button. Type any name (an attendee not in the speaker roster, a
+     team, "me", …); blank commits back to the "unassigned" placeholder. */
+  cursor: text;
+  min-width: 3.5em;
+  text-align: center;
 }
 .nt-owner:hover { border-color: var(--ink); }
+/* Override the editorial body's focus treatment ([data-nt-edit]:focus paints
+   a vertical ink bar 10px to the LEFT — right for a full-width paragraph,
+   wrong for a small right-aligned pill). Keep it a clean bordered pill. */
+.nt-owner:focus {
+  background: var(--paper);
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--rule-soft);
+  font-style: normal;
+  color: var(--ink);
+  text-align: left;
+}
 .nt-action .del {
   appearance: none; background: transparent; border: 0;
   font-size: 13px; color: var(--ink-faint); cursor: pointer;
