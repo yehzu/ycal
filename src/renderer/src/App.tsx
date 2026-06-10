@@ -551,7 +551,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       const target = ev.target as HTMLElement | null;
-      if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
+      if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return;
       // Cmd/Ctrl+, opens Settings — handle before the modifier early-return.
       if ((ev.metaKey || ev.ctrlKey) && ev.key === ',' && !ev.altKey && !ev.shiftKey) {
         ev.preventDefault();

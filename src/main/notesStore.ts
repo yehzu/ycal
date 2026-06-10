@@ -281,6 +281,30 @@ function splitProse(body: string): string[] {
   return (sentences || [joined]).map((s) => s.trim()).filter(Boolean);
 }
 
+// Parse a decisions section that may be bullet-list OR markdown table.
+// Table rows → "decision — explanation" or just "decision".
+function parseDecisionsBody(body: string): string[] {
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.some((l) => /^\|[\s:|-]+\|/.test(l))) return splitBullets(body);
+  const rows: string[] = [];
+  for (const line of lines) {
+    if (!line.startsWith('|')) {
+      const m = line.match(/^(?:[-*•]|\d+[.)])\s+(.*)$/);
+      if (m) rows.push(m[1].trim());
+      continue;
+    }
+    const cells = line.split('|').map((c) => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
+    if (!cells.length) continue;
+    if (cells.every((c) => /^:?-+:?$/.test(c) || !c)) continue; // separator row
+    if (/^(決策|decision|decisions)$/i.test(cells[0])) continue; // header row
+    const decision = cells[0];
+    const explanation = cells[1] && cells[1] !== '—' && cells[1] !== '-' ? cells[1] : '';
+    if (!decision) continue;
+    rows.push(explanation ? `${decision} — ${explanation}` : decision);
+  }
+  return rows.length > 0 ? rows : splitBullets(body);
+}
+
 function parseActionsTable(body: string): Array<{ text: string; owner: string | null }> {
   const rows: Array<{ text: string; owner: string | null }> = [];
   for (const raw of body.split(/\r?\n/)) {
@@ -332,7 +356,7 @@ function parseSummaryMarkdown(md: string): ParsedSummary {
     if (/tl;?dr|summary|摘要|重點/.test(h)) {
       out.summary.push(...splitProse(s.body));
     } else if (/decision|決議|決定/.test(h)) {
-      out.decisions.push(...splitBullets(s.body));
+      out.decisions.push(...parseDecisionsBody(s.body));
     } else if (/action|action items|待辦|行動/.test(h)) {
       out.actions.push(...parseActionsTable(s.body));
     } else if (/open question|未解|懸而|open issue/.test(h)) {
@@ -579,7 +603,7 @@ export async function getNote(
 
   if (noteJson) {
     summary = (noteJson.summary || []).filter(Boolean);
-    decisions = (noteJson.decisions || []).filter(Boolean);
+    decisions = (noteJson.decisions || []).filter(Boolean).flatMap((s) => parseDecisionsBody(s));
     actionsRaw = (noteJson.actions || [])
       .map((a) => ({ text: (a.text || '').trim(), owner: a.owner || null }))
       .filter((a) => a.text);
