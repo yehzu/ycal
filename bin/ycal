@@ -83,9 +83,15 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
 }
 
 function deliver(res) {
-  if (res.stdout) process.stdout.write(res.stdout);
+  const code = typeof res.code === 'number' ? res.code : 0;
   if (res.stderr) process.stderr.write(res.stderr);
-  process.exit(typeof res.code === 'number' ? res.code : 0);
+  // Wait for stdout to drain before exiting — process.exit() with a large
+  // piped stdout (> ~64KB) would truncate the output otherwise.
+  if (res.stdout) {
+    process.stdout.write(res.stdout, () => process.exit(code));
+  } else {
+    process.exit(code);
+  }
 }
 
 function sleep(ms) {
