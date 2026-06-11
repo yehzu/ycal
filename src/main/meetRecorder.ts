@@ -1587,6 +1587,7 @@ async function postProcess(
     const stdout = await execScript([POST_SH, audioFile, title], {
       timeoutMs: postTimeoutMs,
       envExtras: Object.keys(envExtras).length > 0 ? envExtras : undefined,
+      cwd: path.dirname(audioFile),
     });
     const summary = stdout.trim() || audioFile.replace(/\.m4a$/, '.summary.md');
     const transcript = audioFile.replace(/\.m4a$/, '.transcript.txt');
@@ -1871,12 +1872,12 @@ function meanVolumeDb(file: string): number | null {
 
 function execScript(
   argv: string[],
-  opts: { timeoutMs?: number; envExtras?: NodeJS.ProcessEnv } = {},
+  opts: { timeoutMs?: number; envExtras?: NodeJS.ProcessEnv; cwd?: string } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const [cmd, ...args] = argv;
     const env = buildScriptEnv(opts.envExtras);
-    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env, ...(opts.cwd ? { cwd: opts.cwd } : {}) });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
