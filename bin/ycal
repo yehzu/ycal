@@ -5,9 +5,9 @@
 // Flow:
 //   1. Try to connect to ~/Library/Application Support/yCal/cli.sock.
 //      If it answers → print response → exit. (~50ms, no dock activity.)
-//   2. If the GUI isn't running, launch yCal.app via `open -a`, poll the
-//      socket for up to 15s, then drive it once it's up. The GUI window
-//      shows up — once. Subsequent calls go straight through path 1.
+//   2. If the GUI isn't running, launch yCal.app via `open -g -a` (no focus
+//      steal), poll the socket for up to 15s, then drive it once it's up.
+//      Subsequent calls go straight through path 1.
 //   3. If yCal.app isn't installed, fail with code 2.
 //
 // Pure Node, no Electron import — that's what keeps the dock quiet.
@@ -114,7 +114,11 @@ async function main() {
     process.exit(2);
   }
   process.stderr.write('yCal not running — launching…\n');
-  const proc = spawn('/usr/bin/open', ['-a', APP_PATH], {
+  // -g: launch without bringing yCal to the foreground. CLI calls often come
+  // from background agents/scripts; stealing focus from whatever the user is
+  // doing is never what they want. Also matters when the GUI *is* running but
+  // the socket didn't answer in time — plain `open -a` would activate it.
+  const proc = spawn('/usr/bin/open', ['-g', '-a', APP_PATH], {
     stdio: 'ignore',
     detached: true,
   });
