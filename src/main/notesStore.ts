@@ -274,11 +274,33 @@ function splitBullets(body: string): string[] {
 }
 
 // TL;DR is prose; split into sentence-ish bullets for the editorial list.
+// Sentence boundaries: a CJK terminator (。！？) always closes a sentence,
+// but an ASCII `.!?` only does when followed by whitespace or end-of-text.
+// Otherwise a period inside an email or domain — `jack.yeh`,
+// `GoFreight.cn/.co` — shatters one sentence across several bullets (the
+// "weird line breaks" bug). The old regex (`[^.!?。！？]+[.!?。！？]+`) split on
+// every dot indiscriminately.
 function splitProse(body: string): string[] {
   const joined = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join(' ');
   if (!joined) return [];
-  const sentences = joined.match(/[^.!?。！？]+[.!?。！？]+|\S.+$/g);
-  return (sentences || [joined]).map((s) => s.trim()).filter(Boolean);
+  const out: string[] = [];
+  let buf = '';
+  for (let i = 0; i < joined.length; i++) {
+    const ch = joined[i];
+    buf += ch;
+    const cjkEnd = ch === '。' || ch === '！' || ch === '？';
+    const next = joined[i + 1];
+    const asciiEnd =
+      (ch === '.' || ch === '!' || ch === '?') && (next === undefined || /\s/.test(next));
+    if (cjkEnd || asciiEnd) {
+      const s = buf.trim();
+      if (s) out.push(s);
+      buf = '';
+    }
+  }
+  const tail = buf.trim();
+  if (tail) out.push(tail);
+  return out;
 }
 
 // Parse a decisions section that may be bullet-list OR markdown table.

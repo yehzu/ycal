@@ -157,6 +157,11 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 | `ycal next [N]` | Next N upcoming events (default 5). |
 | `ycal find <query>` | Search events `-7d` to `+90d`. |
 | `ycal weather` | Forecast from the configured weather iCal feed. |
+| `ycal recordings` | List archived meeting recordings (Drive appdata). `--limit <n>`. |
+| `ycal transcript <event-id>` | Raw transcript text. Or `--query "<title>"`. |
+| `ycal summary <event-id>` | Raw summary artifact (Markdown note). Or `--query "<title>"`. |
+| `ycal note <event-id>` | **Structured** meeting note for AI use (summary / decisions / actions / open questions / follow-ups / speakers / terms). JSON by default. `--include-transcript` folds in timed lines. Or `--query "<title>"`. |
+| `ycal audio <event-id>` | Local cache path to the `.m4a` (no binary inlined). Or `--query "<title>"`. |
 | `ycal --help` | Full reference. |
 
 ### Flags
@@ -249,6 +254,13 @@ ycal find "1:1" --from -30d --to today --format text
 
 # Just one calendar, declined included:
 ycal events --calendar primary@gmail.com --include-declined
+
+# Pull a meeting's structured note (summary/decisions/actions) for an AI follow-up:
+ycal note --query "Q3 DevOps" | llm -m claude-opus-4-8 \
+  "Draft a Slack update from these minutes and list each action item with its owner."
+
+# The whole note as Markdown, transcript included:
+ycal note <event-id> --include-transcript --format markdown
 ```
 
 ### Exit codes

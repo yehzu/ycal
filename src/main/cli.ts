@@ -30,6 +30,7 @@ import { getUiSettings } from './settings';
 import {
   fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
 } from './meetingArchive';
+import { getNote, listNotes } from './notesStore';
 import { dedupEvents } from '@shared/dedup';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import fs from 'node:fs';
@@ -39,6 +40,7 @@ import type {
   CalendarEvent,
   CalRolePersisted,
   MeetingArtifactKind,
+  MeetingNote,
   UiSettings,
 } from '@shared/types';
 
@@ -1009,6 +1011,138 @@ async function cmdMeetingArtifact(
   return 0;
 }
 
+// The structured meeting note — summary / decisions / actions / open
+// questions / follow-ups / speakers / terms-to-confirm — built the same way
+// the Notes GUI builds it (notesStore.getNote: note.json → parsed summary.md
+// → transcript-only, local-first then Drive). This is the AI-friendly
+// surface: one JSON object an LLM can reason over, distinct from `summary`
+// (which prints the raw markdown artifact) and `transcript` (raw text).
+function segPlainText(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .trim();
+}
+
+function renderNoteMarkdown(note: MeetingNote): string {
+  const when = note.startedAt ? new Date(note.startedAt).toLocaleString() : note.date;
+  const lines: string[] = [`# ${note.title}`, `_${when} · ${Math.round(note.durationSec / 60)} min_`];
+  const sec = (h: string, items: string[]): void => {
+    if (items.length) lines.push('', `## ${h}`, ...items.map((s) => `- ${s}`));
+  };
+  sec('Summary', note.summary);
+  sec('Decisions', note.decisions);
+  if (note.actions.length) {
+    lines.push('', '## Action items', ...note.actions.map(
+      (a) => `- [${a.done ? 'x' : ' '}] ${a.owner ? `**${a.owner}** — ` : ''}${a.text}`));
+  }
+  sec('Open questions', note.openQuestions);
+  sec('Follow-ups', note.followups);
+  sec('Speakers', note.speakers.map((s) => `${s.name}${s.role ? ` _(${s.role})_` : ''}`));
+  sec('Terms to confirm', note.terms.map((t) => `${t.heard}${t.suggestion ? ` → ${t.suggestion}` : ''}`));
+  return lines.join('\n');
+}
+
+function renderNoteText(note: MeetingNote): string {
+  const when = note.startedAt ? new Date(note.startedAt).toLocaleString() : note.date;
+  const out: string[] = [note.title, `${when} · ${Math.round(note.durationSec / 60)} min`];
+  const sec = (h: string, items: string[]): void => {
+    if (!items.length) return;
+    out.push('', h.toUpperCase());
+    items.forEach((s) => out.push('  • ' + s));
+  };
+  sec('Summary', note.summary);
+  sec('Decisions', note.decisions);
+  sec('Action items', note.actions.map(
+    (a) => `${a.owner ? a.owner + ': ' : ''}${a.text}${a.done ? ' ✓' : ''}`));
+  sec('Open questions', note.openQuestions);
+  sec('Follow-ups', note.followups);
+  sec('Speakers', note.speakers.map((s) => s.name + (s.role ? ` (${s.role})` : '')));
+  sec('Terms to confirm', note.terms.map((t) => t.heard + (t.suggestion ? ` → ${t.suggestion}` : '')));
+  return out.join('\n');
+}
+
+async function cmdNote(args: ParsedArgs, io: CliIo): Promise<number> {
+  ensureConfigured();
+  ensureAccounts();
+  const idArg = args.positional[0];
+  const query = typeof args.flags.query === 'string' ? args.flags.query : undefined;
+  const includeTranscript = !!args.flags['include-transcript'];
+
+  // Resolve (eventId, accountId). Exact id: resolve the owning Drive account
+  // directly (getNote also reads local-first). --query: match against titles
+  // across local ∪ Drive notes; an ambiguous match is an error.
+  let eventId: string;
+  let accountId: string | null = null;
+  if (idArg && !query) {
+    eventId = idArg;
+    accountId = await findAccountForArchive(idArg).catch(() => null);
+  } else if (query) {
+    const q = query.toLowerCase();
+    const matches = (await listNotes()).filter((n) => n.title.toLowerCase().includes(q));
+    if (matches.length === 0) {
+      throw new CliError(
+        `no recording matched query "${query}" — try \`ycal recordings\` to list available notes.`,
+      );
+    }
+    if (matches.length > 1) {
+      const list = matches.slice(0, 10).map((m) => `  ${m.eventId}  ${m.title}`).join('\n');
+      throw new CliError(`${matches.length} notes matched — disambiguate by full event id:\n${list}`);
+    }
+    eventId = matches[0].eventId;
+    accountId = matches[0].accountId;
+  } else {
+    throw new CliError('usage: ycal note <event-id> | --query "<title-substring>"');
+  }
+
+  const note = await getNote(eventId, accountId);
+  if (!note.hasSummary && !note.hasTranscript && !note.hasAudio) {
+    throw new CliError(
+      `no recording found for event id ${eventId} — try \`ycal recordings\` to list available notes.`,
+    );
+  }
+
+  const speakerName = new Map(note.speakers.map((s) => [s.id, s.name]));
+  const format = getFormat(args);
+  emit(
+    {
+      command: 'note',
+      eventId: note.eventId,
+      accountId: note.accountId,
+      title: note.title,
+      date: note.date,
+      startedAt: note.startedAt ? new Date(note.startedAt).toISOString() : null,
+      durationMinutes: Math.round(note.durationSec / 60),
+      source: note.source,
+      has: { audio: note.hasAudio, transcript: note.hasTranscript, summary: note.hasSummary },
+      summary: note.summary,
+      decisions: note.decisions,
+      actions: note.actions.map((a) => ({ text: a.text, owner: a.owner, done: a.done })),
+      openQuestions: note.openQuestions,
+      followups: note.followups,
+      speakers: note.speakers.map((s) => ({ name: s.name, label: s.label, role: s.role })),
+      termsToConfirm: note.terms.map((t) => ({ heard: t.heard, suggestion: t.suggestion, type: t.type })),
+      ...(includeTranscript
+        ? {
+            transcript: note.segments.map((g) => ({
+              t: g.t,
+              speaker: speakerName.get(g.speakerId) ?? g.speakerId,
+              text: segPlainText(g.html),
+            })),
+          }
+        : {}),
+    },
+    format,
+    () => (format === 'markdown' ? renderNoteMarkdown(note) : renderNoteText(note)),
+    io,
+  );
+  return 0;
+}
+
 function helpText(version: string): string {
   return `yCal CLI ${version} — read your Google Calendar from the terminal.
 
@@ -1041,8 +1175,14 @@ COMMANDS
                             Flags: --limit <n>
   transcript <event-id>     Print the transcript for one recording.
                             Or: --query "<title-substring>"  (must be unique)
-  summary    <event-id>     Print the summary (Markdown meeting note).
+  summary    <event-id>     Print the raw summary artifact (Markdown note).
                             Or: --query "<title-substring>"
+  note       <event-id>     Print the STRUCTURED meeting note for AI use:
+                            summary / decisions / actions / open questions /
+                            follow-ups / speakers / terms-to-confirm. JSON by
+                            default. Reads local-first, then Drive.
+                            Or: --query "<title-substring>"
+                            Flag: --include-transcript (fold in timed lines)
   audio      <event-id>     Print the local cache path to the .m4a (does
                             NOT inline binary content). Or --query "...".
 
@@ -1080,6 +1220,8 @@ EXAMPLES
   ycal week --include-read-only          # planning: see read-only calendars too
   ycal recordings --limit 10             # archived meeting notes on Drive
   ycal summary --query "weekly sync"     # latest matching meeting note
+  ycal note --query "Q3 DevOps"          # structured note (JSON) for AI use
+  ycal note abcd1234 --include-transcript --format markdown
   ycal transcript abcd1234_20260520T...  # exact event id from recordings list
 
 JSON OUTPUT
@@ -1154,6 +1296,8 @@ export async function runCli(
         return await cmdMeetingArtifact(args, 'transcript', io);
       case 'summary':
         return await cmdMeetingArtifact(args, 'summary', io);
+      case 'note':
+        return await cmdNote(args, io);
       case 'audio':
         return await cmdMeetingArtifact(args, 'audio', io);
       default:
