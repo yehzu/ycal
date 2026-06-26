@@ -158,11 +158,11 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     };
   }, [apiKeySet, refresh]);
 
-  // Cross-device sync: when iCloud delivers a tasks-schedule.json edit
-  // from another Mac, replace the local overlay wholesale. We DON'T
-  // round-trip via persistLocal — the file already has the new state,
-  // and persistLocal would write back (cloudStore would dedupe but
-  // it's still a wasted call).
+  // Cross-device sync: main already merged the remote edit into the
+  // authoritative overlay (per-key LWW) and is pushing us the result, so we
+  // just mirror it into our in-memory copy. We don't echo it back — main
+  // owns the on-disk state and the clocks/tombstones. The renderer only
+  // needs the live slices for rendering.
   useEffect(() => {
     const off = window.ycal.onTasksLocalChanged((next) => {
       setLocal({
@@ -235,29 +235,31 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
 
   // ── Local mutations (scheduling / done) ─────────────────────────────
 
-  const persistLocal = useCallback(async (next: Partial<TasksLocalState>) => {
-    const merged: TasksLocalState = {
-      scheduled: next.scheduled ?? local.scheduled,
-      doneOn: next.doneOn ?? local.doneOn,
-      cache: next.cache ?? local.cache,
-      cacheAt: next.cacheAt ?? local.cacheAt,
-      completed: next.completed !== undefined ? next.completed : local.completed,
-    };
-    setLocal(merged);
-    await window.ycal.tasksSetLocal(merged);
-  }, [local]);
-
+  // Mutations go through per-entry ops (main stamps the merge clocks). We
+  // still update the in-memory overlay optimistically for instant UI, then
+  // reconcile with the authoritative state main returns — which carries the
+  // clocks/tombstones so a later cross-device merge resolves correctly.
   const scheduleTask = useCallback(async (taskId: string, date: string, start: string) => {
-    const nextScheduled = { ...local.scheduled, [taskId]: { date, start } };
-    await persistLocal({ scheduled: nextScheduled });
-  }, [local.scheduled, persistLocal]);
+    setLocal((prev) => ({
+      ...prev,
+      scheduled: { ...prev.scheduled, [taskId]: { date, start } },
+    }));
+    const res = await window.ycal.tasksApplyOps([{ kind: 'schedule', id: taskId, date, start }]);
+    if (res.ok) setLocal(res.state);
+    else setError(res.error);
+  }, []);
 
   const unscheduleTask = useCallback(async (taskId: string) => {
     if (!(taskId in local.scheduled)) return;
-    const nextScheduled = { ...local.scheduled };
-    delete nextScheduled[taskId];
-    await persistLocal({ scheduled: nextScheduled });
-  }, [local.scheduled, persistLocal]);
+    setLocal((prev) => {
+      const scheduled = { ...prev.scheduled };
+      delete scheduled[taskId];
+      return { ...prev, scheduled };
+    });
+    const res = await window.ycal.tasksApplyOps([{ kind: 'unschedule', id: taskId }]);
+    if (res.ok) setLocal(res.state);
+    else setError(res.error);
+  }, [local.scheduled]);
 
   const toggleDone = useCallback(async (taskId: string) => {
     const todayStr = fmtDate(today);
@@ -266,21 +268,25 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
       // Reopen: clear local marker AND drop the kept snapshot — once the
       // task is active again the upstream provider becomes the source of
       // truth, and we don't want the old chip ghosting next to it.
-      const nextDone = { ...local.doneOn };
-      delete nextDone[taskId];
-      const nextCompleted = { ...(local.completed ?? {}) };
-      const completedSnapshot = nextCompleted[taskId];
-      delete nextCompleted[taskId];
-      await persistLocal({ doneOn: nextDone, completed: nextCompleted });
+      const completedSnapshot = local.completed?.[taskId];
+      setLocal((prev) => {
+        const doneOn = { ...prev.doneOn };
+        delete doneOn[taskId];
+        const completed = { ...(prev.completed ?? {}) };
+        delete completed[taskId];
+        return { ...prev, doneOn, completed };
+      });
+      const applied = await window.ycal.tasksApplyOps([{ kind: 'reopen', id: taskId }]);
+      if (applied.ok) setLocal(applied.state);
       const res = await window.ycal.tasksReopen(taskId);
       if (!res.ok) {
-        // Roll back on failure so the UI doesn't lie.
-        const rollbackCompleted = { ...nextCompleted };
-        if (completedSnapshot) rollbackCompleted[taskId] = completedSnapshot;
-        await persistLocal({
-          doneOn: { ...nextDone, [taskId]: existed },
-          completed: rollbackCompleted,
-        });
+        // Roll back on failure so the UI doesn't lie — re-close with the
+        // snapshot we had.
+        const rolled = await window.ycal.tasksApplyOps([{
+          kind: 'close', id: taskId, completedOn: existed,
+          snapshot: completedSnapshot?.snapshot ?? null,
+        }]);
+        if (rolled.ok) setLocal(rolled.state);
         setError(res.error);
       } else {
         await refresh();
@@ -291,28 +297,27 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     // from the active list, this is what feeds the calendar grid chip
     // for the next 30 days.
     const live = tasks.find((t) => t.id === taskId);
-    const nextDone = { ...local.doneOn, [taskId]: todayStr };
-    const prevCompleted = local.completed ?? {};
-    const nextCompleted = { ...prevCompleted };
-    if (live) {
-      nextCompleted[taskId] = {
-        snapshot: { ...live, scheduledAt: null, comments: [] },
-        completedOn: todayStr,
-      };
-    }
-    await persistLocal({ doneOn: nextDone, completed: nextCompleted });
+    const snapshot = live ? { ...live, scheduledAt: null, comments: [] } : null;
+    setLocal((prev) => ({
+      ...prev,
+      doneOn: { ...prev.doneOn, [taskId]: todayStr },
+      completed: snapshot
+        ? { ...(prev.completed ?? {}), [taskId]: { snapshot, completedOn: todayStr } }
+        : prev.completed,
+    }));
+    const applied = await window.ycal.tasksApplyOps([{
+      kind: 'close', id: taskId, completedOn: todayStr, snapshot,
+    }]);
+    if (applied.ok) setLocal(applied.state);
     const res = await window.ycal.tasksClose(taskId);
     if (!res.ok) {
-      const rollbackDone = { ...nextDone };
-      delete rollbackDone[taskId];
-      const rollbackCompleted = { ...nextCompleted };
-      delete rollbackCompleted[taskId];
-      await persistLocal({ doneOn: rollbackDone, completed: rollbackCompleted });
+      const rolled = await window.ycal.tasksApplyOps([{ kind: 'reopen', id: taskId }]);
+      if (rolled.ok) setLocal(rolled.state);
       setError(res.error);
     } else {
       await refresh();
     }
-  }, [local.doneOn, local.completed, tasks, persistLocal, refresh, today]);
+  }, [local.doneOn, local.completed, tasks, refresh, today]);
 
   const addComment = useCallback(async (taskId: string, text: string): Promise<TaskComment | null> => {
     const res = await window.ycal.tasksAddComment(taskId, text);

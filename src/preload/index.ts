@@ -28,6 +28,7 @@ import type {
   RhythmData,
   SettingsPushPayload,
   TaskComment,
+  TaskOverlayOp,
   TaskFetchResult,
   TaskProviderId,
   TaskProviderInfo,
@@ -94,6 +95,10 @@ const api = {
   tasksGetLocal: (): Promise<TasksLocalState> => ipcRenderer.invoke(IPC.TasksGetLocal),
   tasksSetLocal: (patch: Partial<TasksLocalState>): Promise<Result<{ state: TasksLocalState }>> =>
     ipcRenderer.invoke(IPC.TasksSetLocal, patch),
+  // Per-entry schedule/done mutations. Main stamps merge clocks so a stale
+  // device can't silently revert another's entries on sync.
+  tasksApplyOps: (ops: TaskOverlayOp[]): Promise<Result<{ state: TasksLocalState }>> =>
+    ipcRenderer.invoke(IPC.TasksApplyOps, ops),
 
   // Day rhythm — wake/sleep with per-day overrides.
   rhythmGet: (): Promise<RhythmData> => ipcRenderer.invoke(IPC.RhythmGet),

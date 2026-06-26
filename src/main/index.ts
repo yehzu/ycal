@@ -46,7 +46,7 @@ import {
   getActiveProvider, getActiveProviderInfo, listProviders, revealMarkdownFile,
   setActiveProvider,
 } from './taskProviders';
-import { getTasksLocal, setTasksLocal } from './tasksStore';
+import { applyTaskOps, getTasksLocal, ingestRemoteOverlay, setTasksLocal } from './tasksStore';
 import {
   diagnoseDetection, getMeetSignal, listRecentRecordings, listRecordings,
   recordingsDir, reprocessRecording, resummarizeRecording, safeRecordingPath, startMeetRecorder,
@@ -492,6 +492,14 @@ function registerIpc() {
   ipcMain.handle(IPC.TasksSetLocal, (_e, patch) => {
     try {
       const next = setTasksLocal(patch);
+      return { ok: true as const, state: next };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.TasksApplyOps, (_e, ops) => {
+    try {
+      const next = applyTaskOps(ops);
       return { ok: true as const, state: next };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
@@ -1027,10 +1035,17 @@ function startCloudSync(win: BrowserWindow): void {
           if (!isParseableJsonObject(body)) return;
           win.webContents.send(IPC.RhythmChanged, getRhythm());
           break;
-        case 'tasks-schedule.json':
+        case 'tasks-schedule.json': {
           if (!isParseableJsonObject(body)) return;
-          win.webContents.send(IPC.TasksLocalChanged, getTasksLocal());
+          // iCloud just replaced the file underneath us. Merge it against
+          // our in-memory authoritative copy (per-key LWW) instead of
+          // trusting it wholesale — a stale peer blob would otherwise
+          // revert entries it never knew about. ingestRemoteOverlay writes
+          // the recovered union back to disk, which re-propagates it.
+          const { state } = ingestRemoteOverlay(body);
+          win.webContents.send(IPC.TasksLocalChanged, state);
           break;
+        }
         case 'tasks.md':
           // No payload — renderer just calls tasks.refresh() if the
           // markdown provider is currently active.

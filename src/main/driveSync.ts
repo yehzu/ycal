@@ -23,6 +23,7 @@ import { getAccount } from './tokenStore';
 import {
   CLOUD_FILES, onCloudFileChange, onCloudFileWrite, readRaw, writeJson, writeText,
 } from './cloudStore';
+import { ingestRemoteOverlay } from './tasksStore';
 import {
   getDriveSyncAccountId, getDriveSyncEnabled,
   setDriveSyncAccountId, setDriveSyncEnabled,
@@ -170,6 +171,18 @@ async function pullAll(): Promise<void> {
       if (!body) continue;
       if (lastSeen.get(f) === body) continue;
       lastSeen.set(f, body);
+      // The task overlay is merged per-entry, NEVER overwritten: a stale
+      // peer blob would otherwise revert schedule/done entries this device
+      // made since the peer's snapshot (the data-loss bug). ingestRemote
+      // Overlay folds the remote into our authoritative state and writes
+      // the union back to disk. If our union is ahead of what the peer
+      // sent, push it so the peer converges too.
+      if (f === 'tasks-schedule.json') {
+        const { state, changed } = ingestRemoteOverlay(body);
+        // pushFile dedupes on lastSeen + guards empty bodies.
+        if (changed) schedulePush(f, JSON.stringify(state, null, 2));
+        continue;
+      }
       // Write through cloudStore so its own lastSeen + the cross-device
       // watcher push to the renderer fire normally. cloudStore.writeJson
       // dedupes by content so this no-ops if the body equals what's

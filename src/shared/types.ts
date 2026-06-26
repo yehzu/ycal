@@ -586,7 +586,28 @@ export interface TasksLocalState {
   // We keep these for ~30 days post-completion (see COMPLETED_RETAIN_DAYS),
   // pruning lazily on each write.
   completed?: Record<string, { snapshot: TaskItem; completedOn: string }>;
+  // ── Cross-device merge metadata (additive; absent on pre-0.8.20 files) ──
+  // The overlay is synced by iCloud Drive AND Google Drive appdata, both
+  // last-write-wins at FILE granularity. A stale peer that rewrote the
+  // whole blob used to revert every per-entry change another device had
+  // made since (the "checked todos vanished, only Monday survived" bug).
+  // To make merges per-entry, each tracked key carries a logical clock and
+  // deletions leave a tombstone, so combining two versions is an
+  // LWW-element-set union instead of a blind overwrite. Keys are
+  // `"<map>:<taskId>"` where <map> ∈ scheduled | doneOn | completed.
+  clocks?: Record<string, number>;      // key → epoch-ms of last local set
+  tombstones?: Record<string, number>;  // key → epoch-ms of deletion
 }
+
+// A single intent against the schedule/done overlay. The renderer sends
+// these (instead of writing whole maps) so main is the sole authority that
+// stamps merge clocks/tombstones — a stale full-map write can no longer
+// silently revert another device's entries. See tasksStore.applyOps.
+export type TaskOverlayOp =
+  | { kind: 'schedule'; id: string; date: string; start: string }
+  | { kind: 'unschedule'; id: string }
+  | { kind: 'close'; id: string; completedOn: string; snapshot: TaskItem | null }
+  | { kind: 'reopen'; id: string };
 
 // Project node from the provider. Todoist supports nested projects up to
 // ~4 levels; we model the tree as a flat list with parentId pointers so the
@@ -730,7 +751,9 @@ export const IPC = {
   WindowClose: 'ycal:windowClose',
   WindowResize: 'ycal:windowResize',
   TasksGetLocal: 'ycal:tasksGetLocal',     // schedule + done overlay (cloud)
-  TasksSetLocal: 'ycal:tasksSetLocal',
+  TasksSetLocal: 'ycal:tasksSetLocal',     // cache/cacheAt only (internal)
+  TasksApplyOps: 'ycal:tasksApplyOps',     // per-entry schedule/done mutations
+
   TasksRevealStorage: 'ycal:tasksRevealStorage',  // markdown provider only
   // Day rhythm
   RhythmGet: 'ycal:rhythmGet',
