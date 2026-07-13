@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { TaskItem } from '@shared/types';
 import { DOW_SHORT, MONTH_SHORT, fmtDate, formatTime } from '../dates';
 import { renderInlineCode } from '../inlineCode';
+import { renderInlineMarkdown } from '../inlineMarkdown';
 
 interface Props {
   task: TaskItem | null;
@@ -119,7 +120,7 @@ export function TaskSheet({
           {desc ? (
             <div className="ts-desc">
               {desc.split('\n').map((line, i) => (
-                <p key={i}>{line ? renderInlineCode(line) : ' '}</p>
+                <p key={i}>{line ? renderInlineMarkdown(line) : ' '}</p>
               ))}
             </div>
           ) : (

@@ -4641,6 +4641,17 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 .ts-desc p { margin: 0 0 8px; }
 .ts-desc p:last-child { margin-bottom: 0; }
+.ts-desc strong { font-weight: 650; }
+.ts-desc em { font-style: italic; }
+.ts-desc a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 0.5px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  word-break: break-word;
+}
+.ts-desc a:hover { color: var(--cal); }
 .ts-desc-empty {
   appearance: none;
   background: transparent;
