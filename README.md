@@ -95,6 +95,14 @@ Add more accounts via the **+** in the account stack. Each account's calendars a
 - Calendar list per account, with each calendar's user-customized color
 - Events for the visible month range, fetched in parallel across calendars
 - **Per-event color overrides** resolved through Google's `/colors` endpoint
+- **Color-preserving Apple Calendar mirror.** Settings → Sync can select an
+  iCloud EventKit source and manually reconcile yCal's unified, deduplicated
+  event set into one `yCal · #RRGGBB` calendar per resolved event color. The
+  mirror covers the past 30 through next 366 days; a partial Google refresh
+  aborts before any Apple-side write or delete. An isolated `yCal · Test`
+  fixture remains available for EventKit diagnostics. Google working-location
+  chips (Office/Home/custom location) stay in yCal and are not mirrored; OOO
+  events remain included.
 - Month / Week / Day views with column-sweep layout for overlapping events
 - Tiny / short / regular event rendering modes (so 15-min events don't crash into each other)
 - Mini-month sidebar with event-day dots
@@ -285,6 +293,8 @@ ycal note <event-id> --include-transcript --format markdown
 ## What's not built (yet)
 
 - Creating / editing / deleting events (read-only for now; the scopes are restricted to `*.readonly`)
+- Automatic/background yCal → Apple Calendar mirroring. Color-preserving
+  reconciliation is currently an explicit **Sync yCal now** action.
 - Real-time push notifications via Google's webhook channels
 - Offline cache / persistent event storage between launches
 - Recurring-event editing UI

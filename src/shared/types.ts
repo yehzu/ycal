@@ -713,6 +713,45 @@ export interface DriveSyncStatus {
   lastPulledAt: number | null;
 }
 
+// EventKit bridge status for the Apple Calendar mirror. The first shipped
+// slice is deliberately a spike: it proves yCal can create a colored calendar
+// in an iCloud source before the real unified-event reconciler is enabled.
+export type AppleCalendarAuthorization =
+  | 'notDetermined' | 'restricted' | 'denied'
+  | 'authorized' | 'fullAccess' | 'writeOnly' | 'unknown';
+
+export interface AppleCalendarSource {
+  id: string;
+  title: string;
+  type: string;
+  isICloudCandidate: boolean;
+}
+
+export interface AppleCalendarStatus {
+  supported: boolean;
+  authorization: AppleCalendarAuthorization;
+  sources: AppleCalendarSource[];
+  testCalendarSourceIds: string[];
+}
+
+export interface AppleCalendarMutation {
+  status: AppleCalendarStatus;
+  calendarIdentifier: string | null;
+  eventIdentifier: string | null;
+}
+
+export interface AppleCalendarSyncResult {
+  status: AppleCalendarStatus;
+  rangeStart: string;
+  rangeEnd: string;
+  sourceEventCount: number;
+  calendarsCreated: number;
+  eventsCreated: number;
+  eventsUpdated: number;
+  eventsMoved: number;
+  eventsDeleted: number;
+}
+
 // IPC channel names — typed once, shared.
 export const IPC = {
   AddAccount: 'ycal:addAccount',
@@ -772,6 +811,13 @@ export const IPC = {
   DriveSyncPushNow: 'ycal:driveSyncPushNow',
   DriveSyncPullNow: 'ycal:driveSyncPullNow',
   DriveSyncStatusChanged: 'ycal:driveSyncStatusChanged',  // main → renderer push
+  // Apple Calendar EventKit bridge. These channels only manage the explicit
+  // yCal · Test spike until the unified-event mirror reconciler is added.
+  AppleCalendarProbe: 'ycal:appleCalendarProbe',
+  AppleCalendarRequestAccess: 'ycal:appleCalendarRequestAccess',
+  AppleCalendarCreateSpike: 'ycal:appleCalendarCreateSpike',
+  AppleCalendarRemoveSpike: 'ycal:appleCalendarRemoveSpike',
+  AppleCalendarSyncNow: 'ycal:appleCalendarSyncNow',
   // Cross-device sync — main → renderer pushes when a synced file changes
   // on disk (typically because iCloud Drive just delivered an edit from
   // another Mac). Payload is the new state for the affected slice; the

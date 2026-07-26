@@ -22,6 +22,7 @@ src/
 │   ├── tokenStore.ts     safeStorage-backed accounts.json (Keychain on macOS)
 │   ├── config.ts         Loads oauth-client.json from userData
 │   ├── calendar.ts       Google Calendar API client + event shaping
+│   ├── appleCalendar.ts  Canonical yCal event set → EventKit/iCloud mirror
 │   ├── settings.ts       UI settings + weather URL + active task provider id (cloud-routed)
 │   ├── device.ts         Per-device prefs (cloudStorage pref only — userData)
 │   ├── weather.ts        iCal-format weather feed parser + cache
@@ -86,6 +87,17 @@ bin/ycal         Plain-Node CLI client (no Electron import — talks to socket)
 10. **Live-sync (no app restart needed) is the watcher's job.** `cloudStore.startCloudWatcher()` polls every CLOUD_FILES entry every 1.5s via `fs.watchFile` (poll-based, deliberate — `fs.watch`/FSEvents is unreliable for iCloud Drive's sync-down replacements). When a file's body differs from the per-filename `lastSeen` map (maintained on every read AND every write), the watcher pushes the relevant slice to the renderer over IPC: `SettingsChanged`, `RhythmChanged`, `TasksLocalChanged`, `TasksProviderDataChanged`. The renderer applies idempotently. Loop prevention: cloudStore's `writeJson`/`writeText` short-circuit when the new body equals `lastSeen`, so a renderer that auto-saves after applying a remote update produces no disk write — the round-trip ends at the dedupe gate. `tasksStore.setTasksLocal` ALSO dedupes ignoring `cacheAt` so the per-Mac 5-min Todoist poll doesn't churn the schedule file just to bump a timestamp.
 
 11. **The task overlay is merged per-entry, NEVER overwritten wholesale.** `tasks-schedule.json` is synced by TWO last-write-wins channels at once (iCloud Drive + Drive appdata). A stale peer that rewrote the whole blob used to silently revert every schedule/done entry another device added since its snapshot — the "checked todos vanished, only Monday survived" data-loss bug. The fix lives entirely in `tasksStore.ts`: (a) every tracked key (`scheduled`/`doneOn`/`completed`) carries a logical clock and deletes leave a tombstone, so combining two versions is a per-key LWW-element-set union (`mergeOverlay`) — see also `clocks`/`tombstones` on `TasksLocalState`; (b) the renderer no longer writes whole maps — it sends `TaskOverlayOp`s via `tasksApplyOps` and MAIN is the sole stamper of clocks, so a stale full-map write can't revert a key it hadn't heard about; (c) main keeps an in-memory `authoritative` copy, and `ingestRemoteOverlay` (called from the iCloud watcher case AND the Drive `pullAll`) merges any incoming body against it and **writes the recovered union back to disk** so disk + peers converge instead of adopting the stale snapshot. `cache`/`cacheAt` are deliberately device-local — `mergeOverlay` always keeps the local side's cache so a peer's 5-min Todoist poll can't churn the file across the network. Legacy (pre-merge) entries are treated as clock 0: they survive against a peer that simply lacks the key, but lose to any timestamped change.
+12. **Apple Calendar is a derived mirror; yCal stays canonical.** The EventKit
+    bridge consumes the same active-account + visible-calendar set as the
+    renderer, then applies shared `dedupEvents()` before writing. It may mutate
+    only exact `yCal · #RRGGBB` calendars in the selected iCloud source and
+    exact events carrying a `ycal-mirror://event/<sha256>` marker. A partial
+    Google fetch aborts before the helper runs, so missing remote data can
+    never become mass deletion. Apple-side edits are not authoritative.
+    EventKit requires positive durations: zero/negative source intervals are
+    mirrored as one minute (timed) or one day (all-day), never dropped.
+    Google `workingLocation` entries are intentionally excluded from the
+    mirror; `outOfOffice` events remain included.
 
 ## Common commands
 

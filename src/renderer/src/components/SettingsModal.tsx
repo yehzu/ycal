@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  AccountSummary, AttendeeSuggestion, CalendarSummary, CloudStorageInfo,
+  AccountSummary, AppleCalendarStatus, AttendeeSuggestion, CalendarSummary, CloudStorageInfo,
   DriveSyncStatus, GlossaryCategory, GlossaryEntry,
   LoadBands, LoadWindowSettings,
   MergeCriteria, RecentRecording, RecorderSetupProgress, RecorderSetupStatus,
@@ -1452,7 +1452,193 @@ function PrefsSync({
           </>
         )}
       </div>
+
+      <AppleCalendarSpikeSettings />
     </>
+  );
+}
+
+function AppleCalendarSpikeSettings() {
+  const [status, setStatus] = useState<AppleCalendarStatus | null>(null);
+  const [sourceId, setSourceId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const iCloudSources = useMemo(
+    () => status?.sources.filter((source) => source.isICloudCandidate) ?? [],
+    [status],
+  );
+
+  const applyStatus = useCallback((next: AppleCalendarStatus) => {
+    setStatus(next);
+    setSourceId((current) => {
+      if (current && next.sources.some((source) => source.id === current)) return current;
+      return next.sources.find((source) => source.isICloudCandidate)?.id ?? '';
+    });
+  }, []);
+
+  const probe = useCallback(async () => {
+    setError(null);
+    const result = await window.ycal.appleCalendarProbe();
+    if (result.ok) applyStatus(result.status);
+    else setError(result.error);
+  }, [applyStatus]);
+
+  useEffect(() => {
+    void probe();
+  }, [probe]);
+
+  const run = useCallback(async (
+    action: 'access' | 'create' | 'remove' | 'sync',
+  ) => {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      if (action === 'access') {
+        const result = await window.ycal.appleCalendarRequestAccess();
+        if (!result.ok) throw new Error(result.error);
+        applyStatus(result.status);
+        setMessage('Calendar access granted. Select the iCloud source below.');
+        return;
+      }
+      if (!sourceId) throw new Error('No iCloud calendar source is selected.');
+      if (action === 'sync') {
+        const result = await window.ycal.appleCalendarSyncNow(sourceId);
+        if (!result.ok) throw new Error(result.error);
+        applyStatus(result.result.status);
+        setMessage(
+          `Mirrored ${result.result.sourceEventCount} unified events: ` +
+          `${result.result.eventsCreated} created, ` +
+          `${result.result.eventsUpdated} updated, ` +
+          `${result.result.eventsMoved} color moves, ` +
+          `${result.result.eventsDeleted} stale copies removed, ` +
+          `${result.result.calendarsCreated} color calendars created.`,
+        );
+        return;
+      }
+      const result = action === 'create'
+        ? await window.ycal.appleCalendarCreateSpike(sourceId)
+        : await window.ycal.appleCalendarRemoveSpike(sourceId);
+      if (!result.ok) throw new Error(result.error);
+      applyStatus(result.mutation.status);
+      setMessage(action === 'create'
+        ? 'Created “yCal · Test” and one test event. Check Apple Calendar and another iCloud device.'
+        : 'Removed “yCal · Test” and its test event.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [applyStatus, sourceId]);
+
+  const authorized = status?.authorization === 'fullAccess'
+    || status?.authorization === 'authorized';
+  const hasTestCalendar = !!sourceId
+    && !!status?.testCalendarSourceIds.includes(sourceId);
+
+  return (
+    <div className="pref-section">
+      <h3 className="pref-h">Apple Calendar mirror</h3>
+      <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
+        yCal&apos;s unified, deduplicated view across all enabled Google
+        accounts and visible calendars is the source of truth. Sync creates
+        one iCloud calendar per resolved event color and reconciles mirror
+        copies for the past 30 through next 366 days. Apple-side edits are
+        overwritten on the next sync. Working-location chips such as Office
+        and Home stay in yCal and are not mirrored.
+      </p>
+
+      <PrefRow
+        label="Calendar access"
+        hint="Full access is required to create, update, and safely remove yCal-managed calendars."
+      >
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            className="pref-btn"
+            onClick={() => void run('access')}
+            disabled={busy || !status?.supported}
+          >
+            {authorized ? 'REFRESH ACCESS' : 'GRANT ACCESS'}
+          </button>
+          <span className="pref-row-hint">
+            {status ? status.authorization : 'Checking…'}
+          </span>
+        </div>
+      </PrefRow>
+
+      {authorized && (
+        <>
+          <PrefRow
+            label="iCloud source"
+            hint="Only an iCloud source will make the test calendar appear on your other Apple devices."
+          >
+            <select
+              className="pref-select"
+              value={sourceId}
+              onChange={(e) => {
+                setSourceId(e.target.value);
+                setMessage(null);
+                setError(null);
+              }}
+              disabled={busy}
+            >
+              <option value="">— select iCloud source —</option>
+              {iCloudSources.map((source) => (
+                <option key={source.id} value={source.id}>
+                  {source.title} · {source.type}
+                </option>
+              ))}
+            </select>
+          </PrefRow>
+
+          <PrefRow
+            label="Sync unified events"
+            hint="A partial Google refresh never writes or deletes mirror events."
+          >
+            <button
+              className="pref-btn"
+              onClick={() => void run('sync')}
+              disabled={busy || !sourceId}
+            >
+              {busy ? 'SYNCING…' : 'SYNC YCAL NOW'}
+            </button>
+          </PrefRow>
+
+          <PrefRow
+            label="Diagnostic fixture"
+            hint="Keeps the isolated yCal · Test calendar available for EventKit troubleshooting."
+          >
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="pref-btn"
+                onClick={() => void run('create')}
+                disabled={busy || !sourceId}
+              >
+                {busy ? 'WORKING…' : hasTestCalendar ? 'UPDATE TEST' : 'CREATE TEST'}
+              </button>
+              <button
+                className="pref-btn"
+                onClick={() => void run('remove')}
+                disabled={busy || !hasTestCalendar}
+              >
+                REMOVE TEST
+              </button>
+            </div>
+          </PrefRow>
+        </>
+      )}
+
+      {authorized && iCloudSources.length === 0 && (
+        <div className="pref-note">
+          No iCloud EventKit source was found. Confirm iCloud Calendar is
+          enabled in System Settings, then refresh access.
+        </div>
+      )}
+      {message && <div className="pref-note">{message}</div>}
+      {error && <div className="pref-note" style={{ color: '#d50000' }}>{error}</div>}
+    </div>
   );
 }
 

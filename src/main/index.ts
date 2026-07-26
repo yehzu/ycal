@@ -43,6 +43,10 @@ import {
   startDriveSync,
 } from './driveSync';
 import {
+  createAppleCalendarSpike, probeAppleCalendar, removeAppleCalendarSpike,
+  requestAppleCalendarAccess, syncAppleCalendarMirror,
+} from './appleCalendar';
+import {
   getActiveProvider, getActiveProviderInfo, listProviders, revealMarkdownFile,
   setActiveProvider,
 } from './taskProviders';
@@ -564,6 +568,52 @@ function registerIpc() {
     try {
       await driveSyncPullAllNow();
       return { ok: true as const, status: driveSyncGetStatus() };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Apple Calendar EventKit spike ────────────────────────────────
+  ipcMain.handle(IPC.AppleCalendarProbe, async () => {
+    try {
+      return { ok: true as const, status: await probeAppleCalendar() };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.AppleCalendarRequestAccess, async () => {
+    try {
+      return { ok: true as const, status: await requestAppleCalendarAccess() };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.AppleCalendarCreateSpike, async (_e, sourceId: string) => {
+    try {
+      return {
+        ok: true as const,
+        mutation: await createAppleCalendarSpike(sourceId),
+      };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.AppleCalendarRemoveSpike, async (_e, sourceId: string) => {
+    try {
+      return {
+        ok: true as const,
+        mutation: await removeAppleCalendarSpike(sourceId),
+      };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.AppleCalendarSyncNow, async (_e, sourceId: string) => {
+    try {
+      return {
+        ok: true as const,
+        result: await syncAppleCalendarMirror(sourceId),
+      };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }

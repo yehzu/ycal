@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '@shared/types';
 import type {
   AccountSummary,
+  AppleCalendarMutation,
+  AppleCalendarSyncResult,
+  AppleCalendarStatus,
   AttendeeSuggestion,
   CalendarSummary,
   CalendarEvent,
@@ -132,6 +135,25 @@ const api = {
     ipcRenderer.on(IPC.DriveSyncStatusChanged, listener);
     return () => ipcRenderer.removeListener(IPC.DriveSyncStatusChanged, listener);
   },
+
+  // Apple Calendar EventKit spike. This proves the iCloud calendar path before
+  // the real yCal-unified-event mirror is allowed to write anything.
+  appleCalendarProbe: (): Promise<Result<{ status: AppleCalendarStatus }>> =>
+    ipcRenderer.invoke(IPC.AppleCalendarProbe),
+  appleCalendarRequestAccess: (): Promise<Result<{ status: AppleCalendarStatus }>> =>
+    ipcRenderer.invoke(IPC.AppleCalendarRequestAccess),
+  appleCalendarCreateSpike: (
+    sourceId: string,
+  ): Promise<Result<{ mutation: AppleCalendarMutation }>> =>
+    ipcRenderer.invoke(IPC.AppleCalendarCreateSpike, sourceId),
+  appleCalendarRemoveSpike: (
+    sourceId: string,
+  ): Promise<Result<{ mutation: AppleCalendarMutation }>> =>
+    ipcRenderer.invoke(IPC.AppleCalendarRemoveSpike, sourceId),
+  appleCalendarSyncNow: (
+    sourceId: string,
+  ): Promise<Result<{ result: AppleCalendarSyncResult }>> =>
+    ipcRenderer.invoke(IPC.AppleCalendarSyncNow, sourceId),
 
   // Cross-device push events. Each subscribes to a main → renderer push
   // channel and returns an unsubscribe fn. Fires when iCloud Drive
