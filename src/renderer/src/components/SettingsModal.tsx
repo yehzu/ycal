@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  AccountSummary, AppleCalendarStatus, AttendeeSuggestion, CalendarSummary, CloudStorageInfo,
+  AccountSummary, AppleCalendarAutoStatus, AppleCalendarStatus,
+  AttendeeSuggestion, CalendarSummary, CloudStorageInfo,
   DriveSyncStatus, GlossaryCategory, GlossaryEntry,
   LoadBands, LoadWindowSettings,
   MergeCriteria, RecentRecording, RecorderSetupProgress, RecorderSetupStatus,
@@ -1460,6 +1461,7 @@ function PrefsSync({
 
 function AppleCalendarSpikeSettings() {
   const [status, setStatus] = useState<AppleCalendarStatus | null>(null);
+  const [autoStatus, setAutoStatus] = useState<AppleCalendarAutoStatus | null>(null);
   const [sourceId, setSourceId] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -1487,7 +1489,28 @@ function AppleCalendarSpikeSettings() {
 
   useEffect(() => {
     void probe();
+    void window.ycal.appleCalendarAutoGetStatus().then((next) => {
+      setAutoStatus(next);
+      if (next.sourceId) setSourceId(next.sourceId);
+    });
+    return window.ycal.onAppleCalendarAutoStatusChanged(setAutoStatus);
   }, [probe]);
+
+  const configureAuto = useCallback(async (
+    enabled: boolean,
+    nextSourceId = sourceId,
+  ) => {
+    setError(null);
+    if (enabled && !nextSourceId) {
+      setError('Select an iCloud calendar source before enabling automatic sync.');
+      return;
+    }
+    const next = await window.ycal.appleCalendarAutoConfigure(
+      enabled,
+      nextSourceId || null,
+    );
+    setAutoStatus(next);
+  }, [sourceId]);
 
   const run = useCallback(async (
     action: 'access' | 'create' | 'remove' | 'sync',
@@ -1547,7 +1570,8 @@ function AppleCalendarSpikeSettings() {
         one iCloud calendar per resolved event color and reconciles mirror
         copies for the past 30 through next 366 days. Apple-side edits are
         overwritten on the next sync. Working-location chips such as Office
-        and Home stay in yCal and are not mirrored.
+        and Home stay in yCal and are not mirrored. Calendars classified as
+        read-only/subscribed are excluded.
       </p>
 
       <PrefRow
@@ -1578,7 +1602,9 @@ function AppleCalendarSpikeSettings() {
               className="pref-select"
               value={sourceId}
               onChange={(e) => {
-                setSourceId(e.target.value);
+                const nextSource = e.target.value;
+                setSourceId(nextSource);
+                void configureAuto(autoStatus?.enabled ?? false, nextSource);
                 setMessage(null);
                 setError(null);
               }}
@@ -1592,6 +1618,32 @@ function AppleCalendarSpikeSettings() {
               ))}
             </select>
           </PrefRow>
+
+          <PrefRow
+            label="Automatic sync"
+            hint="Runs on launch, when yCal returns to the foreground, and every 5 minutes while this Mac is running."
+          >
+            <PrefSwitch
+              value={autoStatus?.enabled ?? false}
+              onChange={(enabled) => void configureAuto(enabled)}
+            />
+          </PrefRow>
+
+          {autoStatus?.enabled && (
+            <PrefRow label="Auto-sync status">
+              <span className="pref-row-hint">
+                {autoStatus.state === 'syncing' && 'Syncing…'}
+                {autoStatus.state === 'idle' && (
+                  autoStatus.lastSyncAt
+                    ? `Last sync ${formatRelativeTime(autoStatus.lastSyncAt)}`
+                    : 'Waiting for first sync…'
+                )}
+                {autoStatus.state === 'error' && (
+                  <span style={{ color: '#d50000' }}>{autoStatus.lastError}</span>
+                )}
+              </span>
+            </PrefRow>
+          )}
 
           <PrefRow
             label="Sync unified events"

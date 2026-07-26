@@ -98,6 +98,11 @@ bin/ycal         Plain-Node CLI client (no Electron import — talks to socket)
     mirrored as one minute (timed) or one day (all-day), never dropped.
     Google `workingLocation` entries are intentionally excluded from the
     mirror; `outOfOffice` events remain included.
+    Calendars whose persisted yCal role is `subscribed` are excluded before
+    dedup; the same event can still survive through a normal-role source.
+    Auto-sync is per-device (`device.json` source + enabled flag), runs on
+    launch/focus/every five minutes, and uses the same complete-refresh safety
+    gate as manual sync. It is polling, not Google webhook push.
 
 ## Common commands
 

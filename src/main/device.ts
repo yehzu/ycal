@@ -24,6 +24,11 @@ interface DeviceState {
   /// both Mac↔Mac (iCloud) and Mac↔iPhone (Drive) sync.
   driveSyncEnabled?: boolean;
   driveSyncAccountId?: string | null;
+  /// Apple Calendar mirroring is intentionally per-device: one Mac should be
+  /// the background writer while every Apple device consumes the iCloud
+  /// calendars. `appleMirrorSourceId` is the selected EventKit iCloud source.
+  appleMirrorEnabled?: boolean;
+  appleMirrorSourceId?: string | null;
   /// Per-device meeting-capture config. Lives here (NOT in cloud-routed
   /// settings.json) because the right answer differs per machine: a Mac
   /// mini with a Yeti + speakers wants echo-cancellation ON, while an
@@ -40,6 +45,8 @@ const DEFAULTS: DeviceState = {
   cloudStorage: 'local',
   driveSyncEnabled: false,
   driveSyncAccountId: null,
+  appleMirrorEnabled: false,
+  appleMirrorSourceId: null,
   captureMic: null,
   captureVoiceProcessing: undefined,
 };
@@ -56,6 +63,9 @@ function read(): DeviceState {
       driveSyncEnabled: !!parsed.driveSyncEnabled,
       driveSyncAccountId: typeof parsed.driveSyncAccountId === 'string'
         ? parsed.driveSyncAccountId : null,
+      appleMirrorEnabled: !!parsed.appleMirrorEnabled,
+      appleMirrorSourceId: typeof parsed.appleMirrorSourceId === 'string'
+        ? parsed.appleMirrorSourceId : null,
       captureMic: typeof parsed.captureMic === 'string' && parsed.captureMic
         ? parsed.captureMic : null,
       captureVoiceProcessing: typeof parsed.captureVoiceProcessing === 'boolean'
@@ -100,6 +110,26 @@ export function setDriveSyncAccountId(accountId: string | null): void {
   const cur = read();
   if ((cur.driveSyncAccountId ?? null) === accountId) return;
   write({ ...cur, driveSyncAccountId: accountId });
+}
+
+export function getAppleMirrorEnabled(): boolean {
+  return read().appleMirrorEnabled === true;
+}
+
+export function setAppleMirrorEnabled(enabled: boolean): void {
+  const cur = read();
+  if (cur.appleMirrorEnabled === enabled) return;
+  write({ ...cur, appleMirrorEnabled: enabled });
+}
+
+export function getAppleMirrorSourceId(): string | null {
+  return read().appleMirrorSourceId ?? null;
+}
+
+export function setAppleMirrorSourceId(sourceId: string | null): void {
+  const cur = read();
+  if ((cur.appleMirrorSourceId ?? null) === sourceId) return;
+  write({ ...cur, appleMirrorSourceId: sourceId });
 }
 
 // ── Per-device capture config ──────────────────────────────────────────

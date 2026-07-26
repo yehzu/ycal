@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -8,12 +8,17 @@ import { promisify } from 'node:util';
 import { dedupEvents } from '@shared/dedup';
 import type {
   AppleCalendarMutation,
+  AppleCalendarAutoStatus,
   AppleCalendarSyncResult,
   AppleCalendarStatus,
   CalendarEvent,
 } from '@shared/types';
-import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
+import { DEFAULT_MERGE_CRITERIA, IPC } from '@shared/types';
 import { listAllCalendars, listEvents } from './calendar';
+import {
+  getAppleMirrorEnabled, getAppleMirrorSourceId,
+  setAppleMirrorEnabled, setAppleMirrorSourceId,
+} from './device';
 import { getUiSettings } from './settings';
 
 const execFileAsync = promisify(execFile);
@@ -156,7 +161,11 @@ async function canonicalMirrorEvents(
   const ui = getUiSettings();
   const targets = calendars.filter((calendar) => {
     if (ui.accountsActive[calendar.accountId] === false) return false;
-    return ui.calVisible[calKey(calendar.accountId, calendar.id)] ?? calendar.selected;
+    const key = calKey(calendar.accountId, calendar.id);
+    if (!(ui.calVisible[key] ?? calendar.selected)) return false;
+    // Match yCal's "read-only/subscribed" role, not Google's accessRole:
+    // users explicitly classify feeds they don't want in their agenda/mirror.
+    return (ui.calRoles[key] ?? 'normal') !== 'subscribed';
   });
   if (targets.length === 0) {
     throw new Error(
@@ -270,4 +279,114 @@ export async function syncAppleCalendarMirror(
     }),
   };
   return runMirrorHelper(sourceId, payload);
+}
+
+// ── Per-device background mirror scheduling ──────────────────────────
+
+const AUTO_INTERVAL_MS = 5 * 60 * 1000;
+const AUTO_MIN_GAP_MS = 30 * 1000;
+let autoInterval: NodeJS.Timeout | null = null;
+let autoDebounce: NodeJS.Timeout | null = null;
+let autoInFlight = false;
+let autoLastSyncAt: number | null = null;
+let autoLastError: string | null = null;
+let autoState: AppleCalendarAutoStatus['state'] = 'idle';
+let autoNextSyncAt: number | null = null;
+
+export function getAppleCalendarAutoStatus(): AppleCalendarAutoStatus {
+  return {
+    enabled: getAppleMirrorEnabled(),
+    sourceId: getAppleMirrorSourceId(),
+    state: autoState,
+    lastSyncAt: autoLastSyncAt,
+    nextSyncAt: autoNextSyncAt,
+    lastError: autoLastError,
+  };
+}
+
+function emitAutoStatus(): void {
+  const status = getAppleCalendarAutoStatus();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC.AppleCalendarAutoStatusChanged, status);
+    }
+  }
+}
+
+async function runAutoSync(): Promise<void> {
+  const enabled = getAppleMirrorEnabled();
+  const sourceId = getAppleMirrorSourceId();
+  if (!enabled || !sourceId || autoInFlight) return;
+  if (autoLastSyncAt && Date.now() - autoLastSyncAt < AUTO_MIN_GAP_MS) {
+    autoNextSyncAt = autoLastSyncAt + AUTO_MIN_GAP_MS;
+    emitAutoStatus();
+    return;
+  }
+
+  autoInFlight = true;
+  autoState = 'syncing';
+  autoLastError = null;
+  autoNextSyncAt = null;
+  emitAutoStatus();
+  try {
+    await syncAppleCalendarMirror(sourceId);
+    autoLastSyncAt = Date.now();
+    autoState = 'idle';
+  } catch (error) {
+    autoState = 'error';
+    autoLastError = error instanceof Error ? error.message : String(error);
+    console.error('[yCal Apple mirror] background sync failed:', error);
+  } finally {
+    autoInFlight = false;
+    autoNextSyncAt = Date.now() + AUTO_INTERVAL_MS;
+    emitAutoStatus();
+  }
+}
+
+export function scheduleAppleCalendarAutoSync(delayMs = 1500): void {
+  if (!getAppleMirrorEnabled() || !getAppleMirrorSourceId()) return;
+  if (autoDebounce) clearTimeout(autoDebounce);
+  autoNextSyncAt = Date.now() + delayMs;
+  emitAutoStatus();
+  autoDebounce = setTimeout(() => {
+    autoDebounce = null;
+    void runAutoSync();
+  }, delayMs);
+}
+
+export function configureAppleCalendarAutoSync(
+  enabled: boolean,
+  sourceId: string | null,
+): AppleCalendarAutoStatus {
+  const normalizedSource = sourceId && sourceId.trim() ? sourceId.trim() : null;
+  setAppleMirrorSourceId(normalizedSource);
+  setAppleMirrorEnabled(enabled && !!normalizedSource);
+  autoLastError = null;
+  autoState = 'idle';
+  if (getAppleMirrorEnabled()) {
+    scheduleAppleCalendarAutoSync(250);
+  } else {
+    if (autoDebounce) clearTimeout(autoDebounce);
+    autoDebounce = null;
+    autoNextSyncAt = null;
+    emitAutoStatus();
+  }
+  return getAppleCalendarAutoStatus();
+}
+
+export function startAppleCalendarAutoSync(): void {
+  if (autoInterval) return;
+  autoInterval = setInterval(() => {
+    scheduleAppleCalendarAutoSync(0);
+  }, AUTO_INTERVAL_MS);
+  if (getAppleMirrorEnabled() && getAppleMirrorSourceId()) {
+    scheduleAppleCalendarAutoSync(10_000);
+  }
+}
+
+export function stopAppleCalendarAutoSync(): void {
+  if (autoInterval) clearInterval(autoInterval);
+  if (autoDebounce) clearTimeout(autoDebounce);
+  autoInterval = null;
+  autoDebounce = null;
 }

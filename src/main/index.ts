@@ -43,8 +43,11 @@ import {
   startDriveSync,
 } from './driveSync';
 import {
+  configureAppleCalendarAutoSync,
   createAppleCalendarSpike, probeAppleCalendar, removeAppleCalendarSpike,
-  requestAppleCalendarAccess, syncAppleCalendarMirror,
+  requestAppleCalendarAccess, scheduleAppleCalendarAutoSync,
+  startAppleCalendarAutoSync, stopAppleCalendarAutoSync,
+  syncAppleCalendarMirror, getAppleCalendarAutoStatus,
 } from './appleCalendar';
 import {
   getActiveProvider, getActiveProviderInfo, listProviders, revealMarkdownFile,
@@ -283,6 +286,7 @@ function registerIpc() {
       invalidateCalendarCache();
       invalidateEventsCache();
       refreshTraySoon();
+      scheduleAppleCalendarAutoSync();
       return {
         ok: true as const,
         account: {
@@ -303,6 +307,7 @@ function registerIpc() {
     invalidateCalendarCache();
     invalidateEventsCache();
     refreshTraySoon();
+    scheduleAppleCalendarAutoSync();
     return { ok: true as const };
   });
 
@@ -360,6 +365,7 @@ function registerIpc() {
   ipcMain.handle(IPC.SetUiSettings, (_e, patch) => {
     try {
       setUiSettings(patch);
+      scheduleAppleCalendarAutoSync();
       return { ok: true as const };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
@@ -618,6 +624,11 @@ function registerIpc() {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+  ipcMain.handle(IPC.AppleCalendarAutoGetStatus, () =>
+    getAppleCalendarAutoStatus());
+  ipcMain.handle(IPC.AppleCalendarAutoConfigure, (
+    _e, enabled: boolean, sourceId: string | null,
+  ) => configureAppleCalendarAutoSync(!!enabled, sourceId ?? null));
 
   // ── Meeting auto-recorder (src/main/meetRecorder.ts) ─────────────
   ipcMain.handle(IPC.RecorderList, () => listRecordings());
@@ -1040,6 +1051,13 @@ if (isCliInvocation(process.argv)) {
       try { startDriveSync(win); } catch (e) {
         console.error('[yCal] drive sync setup failed', e);
       }
+      try { startAppleCalendarAutoSync(); } catch (e) {
+        console.error('[yCal] Apple Calendar auto-sync setup failed', e);
+      }
+    });
+
+    app.on('browser-window-focus', () => {
+      scheduleAppleCalendarAutoSync(500);
     });
 
     app.on('activate', () => {
@@ -1055,6 +1073,7 @@ if (isCliInvocation(process.argv)) {
     globalShortcut.unregisterAll();
     stopTray();
     stopMeetRecorder();
+    stopAppleCalendarAutoSync();
   });
 }
 
@@ -1079,6 +1098,7 @@ function startCloudSync(win: BrowserWindow): void {
           const snap = getSettingsSnapshotStrict();
           if (!snap) return;
           win.webContents.send(IPC.SettingsChanged, snap);
+          scheduleAppleCalendarAutoSync();
           break;
         }
         case 'rhythm.json':

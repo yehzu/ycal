@@ -3,6 +3,7 @@ import { IPC } from '@shared/types';
 import type {
   AccountSummary,
   AppleCalendarMutation,
+  AppleCalendarAutoStatus,
   AppleCalendarSyncResult,
   AppleCalendarStatus,
   AttendeeSuggestion,
@@ -154,6 +155,23 @@ const api = {
     sourceId: string,
   ): Promise<Result<{ result: AppleCalendarSyncResult }>> =>
     ipcRenderer.invoke(IPC.AppleCalendarSyncNow, sourceId),
+  appleCalendarAutoGetStatus: (): Promise<AppleCalendarAutoStatus> =>
+    ipcRenderer.invoke(IPC.AppleCalendarAutoGetStatus),
+  appleCalendarAutoConfigure: (
+    enabled: boolean,
+    sourceId: string | null,
+  ): Promise<AppleCalendarAutoStatus> =>
+    ipcRenderer.invoke(IPC.AppleCalendarAutoConfigure, enabled, sourceId),
+  onAppleCalendarAutoStatusChanged: (
+    handler: (status: AppleCalendarAutoStatus) => void,
+  ): (() => void) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      status: AppleCalendarAutoStatus,
+    ): void => handler(status);
+    ipcRenderer.on(IPC.AppleCalendarAutoStatusChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.AppleCalendarAutoStatusChanged, listener);
+  },
 
   // Cross-device push events. Each subscribes to a main → renderer push
   // channel and returns an unsubscribe fn. Fires when iCloud Drive

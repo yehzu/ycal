@@ -752,6 +752,15 @@ export interface AppleCalendarSyncResult {
   eventsDeleted: number;
 }
 
+export interface AppleCalendarAutoStatus {
+  enabled: boolean;
+  sourceId: string | null;
+  state: 'idle' | 'syncing' | 'error';
+  lastSyncAt: number | null;
+  nextSyncAt: number | null;
+  lastError: string | null;
+}
+
 // IPC channel names — typed once, shared.
 export const IPC = {
   AddAccount: 'ycal:addAccount',
@@ -818,6 +827,9 @@ export const IPC = {
   AppleCalendarCreateSpike: 'ycal:appleCalendarCreateSpike',
   AppleCalendarRemoveSpike: 'ycal:appleCalendarRemoveSpike',
   AppleCalendarSyncNow: 'ycal:appleCalendarSyncNow',
+  AppleCalendarAutoGetStatus: 'ycal:appleCalendarAutoGetStatus',
+  AppleCalendarAutoConfigure: 'ycal:appleCalendarAutoConfigure',
+  AppleCalendarAutoStatusChanged: 'ycal:appleCalendarAutoStatusChanged',
   // Cross-device sync — main → renderer pushes when a synced file changes
   // on disk (typically because iCloud Drive just delivered an edit from
   // another Mac). Payload is the new state for the affected slice; the

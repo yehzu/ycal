@@ -102,7 +102,9 @@ Add more accounts via the **+** in the account stack. Each account's calendars a
   aborts before any Apple-side write or delete. An isolated `yCal · Test`
   fixture remains available for EventKit diagnostics. Google working-location
   chips (Office/Home/custom location) stay in yCal and are not mirrored; OOO
-  events remain included.
+  events remain included. Calendars classified in yCal as read-only/subscribed
+  are excluded. Optional per-device auto-sync runs at launch, on foreground,
+  and every five minutes.
 - Month / Week / Day views with column-sweep layout for overlapping events
 - Tiny / short / regular event rendering modes (so 15-min events don't crash into each other)
 - Mini-month sidebar with event-day dots
@@ -293,8 +295,9 @@ ycal note <event-id> --include-transcript --format markdown
 ## What's not built (yet)
 
 - Creating / editing / deleting events (read-only for now; the scopes are restricted to `*.readonly`)
-- Automatic/background yCal → Apple Calendar mirroring. Color-preserving
-  reconciliation is currently an explicit **Sync yCal now** action.
+- Google webhook/push-driven Apple Calendar mirroring. Background sync polls
+  on launch/focus/every five minutes rather than receiving instant Google
+  change notifications.
 - Real-time push notifications via Google's webhook channels
 - Offline cache / persistent event storage between launches
 - Recurring-event editing UI
