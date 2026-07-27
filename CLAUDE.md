@@ -96,6 +96,9 @@ bin/ycal         Plain-Node CLI client (no Electron import — talks to socket)
     never become mass deletion. Apple-side edits are not authoritative.
     EventKit requires positive durations: zero/negative source intervals are
     mirrored as one minute (timed) or one day (all-day), never dropped.
+    Google all-day ends are exclusive, but Calendar.app renders the date
+    containing EventKit's end as part of the ribbon; the mirror moves only
+    all-day end boundaries one second inward so Apple shows the same days.
     Google `workingLocation` entries are intentionally excluded from the
     mirror; `outOfOffice` events remain included.
     Calendars whose persisted yCal role is `subscribed` are excluded before

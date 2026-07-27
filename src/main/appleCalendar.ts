@@ -129,18 +129,35 @@ function mirrorTimes(event: CalendarEvent): { startMs: number; endMs: number } {
       `Apple Calendar sync stopped because “${event.title}” has an invalid start or end time.`,
     );
   }
-  if (sourceEndMs > startMs) return { startMs, endMs: sourceEndMs };
+
+  if (sourceEndMs > startMs) {
+    // Google all-day end dates are exclusive, while Calendar.app includes the
+    // date containing EventKit's endDate when it draws an all-day ribbon.
+    // Move the Apple-only boundary just inside Google's half-open interval so
+    // a Google Jul 19–21 event remains visibly Jul 19–20 in Apple Calendar.
+    // Timed events retain their exact end instant.
+    const endMs = event.allDay ? sourceEndMs - 1000 : sourceEndMs;
+    if (endMs > startMs) return { startMs, endMs };
+  }
 
   // Google can contain zero-duration "instant" entries. yCal can render
   // those, but EventKit requires a positive interval. Preserve the event
-  // instead of dropping the whole sync: one day for all-day, one minute for
-  // timed entries. Negative source durations use the same defensive repair.
-  const minimumDurationMs = event.allDay ? 24 * 60 * 60 * 1000 : 60 * 1000;
+  // instead of dropping the whole sync: through the final second of the
+  // start day for all-day, one minute for timed entries. Negative or
+  // implausibly short source durations use the same defensive repair.
+  let repairedEndMs: number;
+  if (event.allDay) {
+    const nextDay = new Date(startMs);
+    nextDay.setDate(nextDay.getDate() + 1);
+    repairedEndMs = nextDay.getTime() - 1000;
+  } else {
+    repairedEndMs = startMs + 60 * 1000;
+  }
   console.warn(
     `[yCal Apple mirror] repaired non-positive duration for ${event.id} ` +
     `(${event.title}): ${event.start} → ${event.end}`,
   );
-  return { startMs, endMs: startMs + minimumDurationMs };
+  return { startMs, endMs: repairedEndMs };
 }
 
 function mirrorWindow(): { start: Date; end: Date } {
