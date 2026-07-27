@@ -99,6 +99,9 @@ bin/ycal         Plain-Node CLI client (no Electron import — talks to socket)
     Google all-day ends are exclusive, but Calendar.app renders the date
     containing EventKit's end as part of the ribbon; the mirror moves only
     all-day end boundaries one second inward so Apple shows the same days.
+    Google descriptions are HTML, but EventKit notes are plain text: mirror
+    notes must pass through shared `htmlToPlainText()`, preserving block
+    breaks and visible link destinations rather than exposing raw tags.
     Google `workingLocation` entries are intentionally excluded from the
     mirror; `outOfOffice` events remain included.
     Calendars whose persisted yCal role is `subscribed` are excluded before

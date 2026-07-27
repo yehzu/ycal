@@ -32,6 +32,7 @@ import {
 } from './meetingArchive';
 import { getNote, listNotes } from './notesStore';
 import { dedupEvents } from '@shared/dedup';
+import { htmlToPlainText } from '@shared/htmlText';
 import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
 import fs from 'node:fs';
 import type {
@@ -257,26 +258,6 @@ function parseDate(input: string, edge: 'start' | 'end'): Date {
 
 // ---------- Helpers ----------
 
-function stripHtml(s: string | null): string | null {
-  if (!s) return null;
-  const cleaned = s
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p\s*>/gi, '\n\n')
-    .replace(/<li[^>]*>/gi, '• ')
-    .replace(/<\/li\s*>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  return cleaned || null;
-}
-
 function durationMinutes(startIso: string, endIso: string, allDay: boolean): number {
   if (allDay) {
     // All-day events: end is exclusive; report as whole days × 1440 for clarity.
@@ -327,7 +308,7 @@ function shapeEvent(ev: CalendarEvent, look: CalendarLookup): PublicEvent {
     allDay: ev.allDay,
     duration_minutes: durationMinutes(ev.start, ev.end, ev.allDay),
     location: ev.location ?? null,
-    description: stripHtml(ev.description),
+    description: htmlToPlainText(ev.description),
     rsvp: ev.rsvp,
     status: ev.status,
     eventType: ev.eventType,

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { dedupEvents } from '@shared/dedup';
+import { htmlToPlainText } from '@shared/htmlText';
 import type {
   AppleCalendarMutation,
   AppleCalendarAutoStatus,
@@ -115,7 +116,8 @@ function normalizeColor(color: string): string {
 
 function mirrorNotes(event: CalendarEvent): string | null {
   const parts: string[] = [];
-  if (event.description?.trim()) parts.push(event.description.trim());
+  const description = htmlToPlainText(event.description);
+  if (description) parts.push(description);
   if (event.meetUrl) parts.push(`Video call: https://${event.meetUrl}`);
   if (event.htmlLink) parts.push(`Google Calendar: ${event.htmlLink}`);
   return parts.length > 0 ? parts.join('\n\n') : null;
