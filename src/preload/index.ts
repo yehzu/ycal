@@ -196,11 +196,11 @@ const api = {
     return () => ipcRenderer.removeListener(IPC.TasksLocalChanged, listener);
   },
   onTasksProviderDataChanged: (
-    handler: (info: { providerId: TaskProviderId }) => void,
+    handler: (info: { providerId: TaskProviderId; activeChanged?: boolean }) => void,
   ): (() => void) => {
     const listener = (
       _e: Electron.IpcRendererEvent,
-      payload: { providerId: TaskProviderId },
+      payload: { providerId: TaskProviderId; activeChanged?: boolean },
     ): void => handler(payload);
     ipcRenderer.on(IPC.TasksProviderDataChanged, listener);
     return () => ipcRenderer.removeListener(IPC.TasksProviderDataChanged, listener);

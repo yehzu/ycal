@@ -639,6 +639,10 @@ export interface TaskAddInput {
 // Result of a Todoist fetch — note it returns ALL tasks regardless of
 // whether they're complete; renderer filters via the `done` flag.
 export interface TaskFetchResult {
+  // Filled by main at the IPC boundary. Providers themselves may omit it.
+  // The renderer uses it to discard a slow response from the provider that
+  // was active before the user switched.
+  providerId?: TaskProviderId;
   tasks: TaskItem[];
   // Project tree (flat list with parentId). The renderer walks this to
   // render nested folds. Includes every project the user has, even empty

@@ -32,6 +32,7 @@ import {
 } from './rhythm';
 import {
   CLOUD_FILES, getStorageInfo, migrateMissingToCloud, onCloudFileChange,
+  onCloudFileWrite,
   setStorage, startCloudWatcher,
 } from './cloudStore';
 import {
@@ -404,10 +405,11 @@ function registerIpc() {
     }
   });
   ipcMain.handle(IPC.TasksList, async () => {
+    const provider = getActiveProvider();
     try {
-      const result = await getActiveProvider().listTasks();
+      const result = await provider.listTasks();
       setTasksLocal({ cache: result.tasks, cacheAt: new Date().toISOString() });
-      return { ok: true as const, ...result };
+      return { ok: true as const, ...result, providerId: provider.id };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
@@ -1084,6 +1086,19 @@ if (isCliInvocation(process.argv)) {
 // don't echo back as fake remote events.
 function startCloudSync(win: BrowserWindow): void {
   startCloudWatcher();
+  // Drive pulls write through cloudStore and update its dedupe snapshot
+  // immediately, so the poll watcher correctly ignores that same body.
+  // Listen to writes for this tiny active-provider file to still live-apply
+  // a provider choice arriving through Drive (and to update other windows
+  // after a local selection).
+  onCloudFileWrite((filename, body) => {
+    if (filename !== 'task-provider.json' || win.isDestroyed()) return;
+    if (!isParseableJsonObject(body)) return;
+    win.webContents.send(IPC.TasksProviderDataChanged, {
+      providerId: getTaskProviderId(),
+      activeChanged: true,
+    });
+  });
   onCloudFileChange((filename, body) => {
     if (win.isDestroyed()) return;
     try {
@@ -1121,6 +1136,13 @@ function startCloudSync(win: BrowserWindow): void {
           // markdown provider is currently active.
           win.webContents.send(IPC.TasksProviderDataChanged, {
             providerId: 'markdown',
+          });
+          break;
+        case 'task-provider.json':
+          if (!isParseableJsonObject(body)) return;
+          win.webContents.send(IPC.TasksProviderDataChanged, {
+            providerId: getTaskProviderId(),
+            activeChanged: true,
           });
           break;
         case 'glossary.json':

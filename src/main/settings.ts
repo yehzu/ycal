@@ -1,9 +1,9 @@
 // yCal — settings.json (now cloud-routed).
 //
-// Holds UI preferences, calendar visibility, weather URL, and the active
-// task provider id. The file lives wherever cloudStore points us — userData
-// on a "Local" device, iCloud Drive on a synced one — so the same prefs
-// follow the user across Macs.
+// Holds UI preferences, calendar visibility, weather URL, plus the legacy
+// active task-provider field used for one-shot migration. Current provider
+// selection lives in the separately cloud-routed `task-provider.json` so
+// older yCal builds cannot normalize a provider id they don't understand.
 //
 // What does NOT live here:
 //   * `cloudStorage` itself — that lives in `device.json` (per-device) so
@@ -18,6 +18,7 @@ import { adoptLegacyCloudPref } from './device';
 import { readJsonStrict, writeJson } from './cloudStore';
 
 const FILE = 'settings.json';
+const TASK_PROVIDER_FILE = 'task-provider.json';
 
 interface Settings {
   weatherIcsUrl: string | null;
@@ -55,6 +56,7 @@ interface RawSettings extends Partial<Settings> {
 }
 
 let migratedLegacyCloudPref = false;
+let lastTaskProviderId: TaskProviderId | null = null;
 
 // `corrupt` is true when the file existed but couldn't be parsed (iCloud
 // Drive sometimes briefly serves a 0-byte placeholder during sync). All
@@ -203,7 +205,25 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
 }
 
 export function getTaskProviderId(): TaskProviderId {
-  return read().settings.taskProviderId;
+  const result = readJsonStrict<{ id?: unknown }>(TASK_PROVIDER_FILE);
+  const id = result.data?.id;
+  if (id === 'todoist' || id === 'markdown' || id === 'things') {
+    lastTaskProviderId = id;
+    return id;
+  }
+  // A transient iCloud placeholder must not bounce a running provider.
+  if (result.status === 'corrupt' && lastTaskProviderId) {
+    return lastTaskProviderId;
+  }
+  // One-shot migration from the legacy field in settings.json. Keeping the
+  // new value in its own synced file means pre-Things builds never parse or
+  // rewrite it, while upgraded Macs still share the same provider choice.
+  const legacyId = read().settings.taskProviderId;
+  lastTaskProviderId = legacyId;
+  if (result.status === 'missing') {
+    writeJson(TASK_PROVIDER_FILE, { id: legacyId });
+  }
+  return legacyId;
 }
 
 // Single read for the cross-device sync push payload. Returns null when
@@ -218,15 +238,13 @@ export function getSettingsSnapshotStrict(): {
   return {
     ui: settings.ui,
     weatherIcsUrl: settings.weatherIcsUrl,
-    taskProviderId: settings.taskProviderId,
+    taskProviderId: getTaskProviderId(),
   };
 }
 
 export function setTaskProviderId(id: TaskProviderId): void {
-  const { settings: s, corrupt } = read();
-  if (abortIfCorrupt(corrupt, 'setTaskProviderId')) return;
-  s.taskProviderId = id;
-  write(s);
+  writeJson(TASK_PROVIDER_FILE, { id });
+  lastTaskProviderId = id;
 }
 
 // Legacy bridge: returns any pre-migration `tasks` block from settings.json.

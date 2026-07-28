@@ -10,6 +10,8 @@
 //   * `rhythm.json`            — wake/sleep
 //   * `tasks-schedule.json`    — Todoist-task local schedule overlay
 //   * `settings.json`          — UI prefs, calendar visibility, weather URL
+//   * `task-provider.json`     — active task backend (separate so older yCal
+//                                builds cannot normalize unknown provider ids)
 //   * `tasks.md`               — markdown-provider task store
 //
 // The `cloudStorage` preference itself lives in `device.json` (per-device,
@@ -280,6 +282,7 @@ export const CLOUD_FILES = [
   'rhythm.json',
   'tasks-schedule.json',
   'settings.json',
+  'task-provider.json',
   'tasks.md',
   'glossary.json',
   'people.md',

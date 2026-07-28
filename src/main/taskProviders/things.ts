@@ -38,6 +38,7 @@ interface ThingsTaskWire {
   tagNames: string;
   project: ThingsRef | null;
   area: ThingsRef | null;
+  list: 'inbox' | 'anytime' | 'someday';
 }
 
 interface ThingsProjectWire extends ThingsRef {
@@ -128,6 +129,12 @@ function run(argv) {
     const taskProjectNames = app.toDos.project.name();
     const taskAreaIds = app.toDos.area.id();
     const taskAreaNames = app.toDos.area.name();
+    const inboxIds = new Set(app.lists.byId("TMInboxListSource").toDos().map(function (task) {
+      return String(task.id());
+    }));
+    const somedayIds = new Set(app.lists.byId("TMSomedayListSource").toDos().map(function (task) {
+      return String(task.id());
+    }));
     const tasks = ids.map(function (id, i) {
       return {
         id: String(id),
@@ -142,7 +149,12 @@ function run(argv) {
           : null,
         area: taskAreaIds[i]
           ? { id: String(taskAreaIds[i]), name: String(taskAreaNames[i] || "") }
-          : null
+          : null,
+        list: inboxIds.has(String(id))
+          ? "inbox"
+          : somedayIds.has(String(id))
+            ? "someday"
+            : "anytime"
       };
     });
     return JSON.stringify({ tasks: tasks, projects: projects, areas: areas, tags: tags });
@@ -270,13 +282,31 @@ export const thingsProvider: TaskProvider = {
   async listTasks(): Promise<TaskFetchResult> {
     const wire = await runThings<ThingsListWire>('list');
     const inboxId = 'things:inbox';
-    const projects: TaskProjectNode[] = [{
-      id: inboxId,
-      name: 'Inbox',
-      color: '#5b7a8e',
-      parentId: null,
-      childOrder: -1,
-    }];
+    const anytimeId = 'things:anytime';
+    const somedayId = 'things:someday';
+    const projects: TaskProjectNode[] = [
+      {
+        id: inboxId,
+        name: 'Inbox',
+        color: '#5b7a8e',
+        parentId: null,
+        childOrder: -3,
+      },
+      {
+        id: anytimeId,
+        name: 'Anytime',
+        color: '#3a8aa1',
+        parentId: null,
+        childOrder: -2,
+      },
+      {
+        id: somedayId,
+        name: 'Someday',
+        color: '#8a7c5b',
+        parentId: null,
+        childOrder: -1,
+      },
+    ];
 
     for (let i = 0; i < wire.areas.length; i++) {
       const area = wire.areas[i];
@@ -302,6 +332,10 @@ export const thingsProvider: TaskProvider = {
     const projectColor: Record<string, string> = {
       [inboxId]: '#5b7a8e',
       Inbox: '#5b7a8e',
+      [anytimeId]: '#3a8aa1',
+      Anytime: '#3a8aa1',
+      [somedayId]: '#8a7c5b',
+      Someday: '#8a7c5b',
     };
     for (const project of projects) {
       projectColor[project.id] = project.color;
@@ -312,7 +346,12 @@ export const thingsProvider: TaskProvider = {
       const tags = splitTags(task.tagNames);
       const { description, comments } = parseComments(task.notes, task.id);
       const meta = parseTaskMeta(task.title, description, tags);
-      const container = task.project ?? task.area;
+      const builtIn = task.list === 'inbox'
+        ? { id: inboxId, name: 'Inbox' }
+        : task.list === 'someday'
+          ? { id: somedayId, name: 'Someday' }
+          : { id: anytimeId, name: 'Anytime' };
+      const container = task.project ?? task.area ?? builtIn;
       return {
         id: task.id,
         projectId: container?.id ?? inboxId,

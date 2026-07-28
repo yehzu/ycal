@@ -19,7 +19,7 @@
 // parked on its original day. Either way, the task remains visible in
 // the side panel under "Overdue".
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   TaskComment,
   TaskItem,
@@ -90,6 +90,8 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   const [local, setLocal] = useState<TasksLocalState>({ scheduled: {}, doneOn: {} });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const providerIdRef = useRef<TaskProviderId | null>(null);
+  const fetchEpochRef = useRef(0);
   const apiKeySet = !!provider?.hasCredentials;
 
   // ── Boot: pull cached tasks + provider info, then refresh from upstream
@@ -102,6 +104,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
         window.ycal.tasksGetLocal(),
       ]);
       if (cancelled) return;
+      providerIdRef.current = info.id;
       setProvider(info);
       setProviders(providerList);
       setLocal({
@@ -122,22 +125,27 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
 
   const refresh = useCallback(async () => {
     if (!apiKeySet) return;
+    const epoch = ++fetchEpochRef.current;
     setLoading(true);
     setError(null);
     try {
       const res = await window.ycal.tasksList();
+      if (epoch !== fetchEpochRef.current) return;
       if (!res.ok) {
         setError(res.error);
         return;
       }
+      if (res.providerId && res.providerId !== providerIdRef.current) return;
       setTasks(res.tasks);
       setProjectOrder(res.projectOrder);
       setProjectColor(res.projectColor);
       setProjects(res.projects ?? []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (epoch === fetchEpochRef.current) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setLoading(false);
+      if (epoch === fetchEpochRef.current) setLoading(false);
     }
   }, [apiKeySet]);
 
@@ -177,16 +185,56 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
     return off;
   }, []);
 
+  const loadCurrentProvider = useCallback(async () => {
+    const [info, list] = await Promise.all([
+      window.ycal.tasksGetProviderInfo(),
+      window.ycal.tasksListProviders(),
+    ]);
+    const epoch = ++fetchEpochRef.current;
+    providerIdRef.current = info.id;
+    setProvider(info);
+    setProviders(list);
+    setTasks([]);
+    setProjectOrder([]);
+    setProjectColor({});
+    setProjects([]);
+    setError(null);
+    if (!info.hasCredentials) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const fetched = await window.ycal.tasksList();
+      if (epoch !== fetchEpochRef.current) return;
+      if (!fetched.ok) {
+        setError(fetched.error);
+        return;
+      }
+      if (fetched.providerId && fetched.providerId !== providerIdRef.current) return;
+      setTasks(fetched.tasks);
+      setProjectOrder(fetched.projectOrder);
+      setProjectColor(fetched.projectColor);
+      setProjects(fetched.projects ?? []);
+    } finally {
+      if (epoch === fetchEpochRef.current) setLoading(false);
+    }
+  }, []);
+
   // Cross-device sync: when tasks.md changes on disk (markdown provider
   // active, another Mac edited it), trigger a refresh so the panel
   // reflects new tasks/projects. We re-check provider id at fire time
   // because the user could have switched providers since boot.
   useEffect(() => {
     const off = window.ycal.onTasksProviderDataChanged((info) => {
-      if (provider?.id === info.providerId) void refresh();
+      if (info.activeChanged) {
+        void loadCurrentProvider();
+      } else if (provider?.id === info.providerId) {
+        void refresh();
+      }
     });
     return off;
-  }, [provider?.id, refresh]);
+  }, [loadCurrentProvider, provider?.id, refresh]);
 
   const setCredentials = useCallback(async (key: string | null) => {
     const res = await window.ycal.tasksSetCredentials(key);
@@ -208,6 +256,8 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   const setActiveProvider = useCallback(async (id: TaskProviderId) => {
     const res = await window.ycal.tasksSetActiveProvider(id);
     if (!res.ok) throw new Error(res.error);
+    providerIdRef.current = res.info.id;
+    const epoch = ++fetchEpochRef.current;
     setProvider(res.info);
     const list = await window.ycal.tasksListProviders();
     setProviders(list);
@@ -220,7 +270,9 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
       setLoading(true);
       try {
         const fetched = await window.ycal.tasksList();
+        if (epoch !== fetchEpochRef.current) return;
         if (fetched.ok) {
+          if (fetched.providerId && fetched.providerId !== providerIdRef.current) return;
           setTasks(fetched.tasks);
           setProjectOrder(fetched.projectOrder);
           setProjectColor(fetched.projectColor);
@@ -229,7 +281,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
           setError(fetched.error);
         }
       } finally {
-        setLoading(false);
+        if (epoch === fetchEpochRef.current) setLoading(false);
       }
     }
   }, []);
