@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCb);
 
-import { IPC } from '@shared/types';
+import { IPC, type TaskProviderId } from '@shared/types';
 import { isConfigured } from './config';
 import { startAddAccount } from './auth';
 import { removeAccount } from './tokenStore';
@@ -384,7 +384,7 @@ function registerIpc() {
   // ── Tasks (active provider) ───────────────────────────────────────
   ipcMain.handle(IPC.TasksGetProviderInfo, () => getActiveProviderInfo());
   ipcMain.handle(IPC.TasksListProviders, () => listProviders());
-  ipcMain.handle(IPC.TasksSetActiveProvider, (_e, id: 'todoist' | 'markdown') => {
+  ipcMain.handle(IPC.TasksSetActiveProvider, (_e, id: TaskProviderId) => {
     try {
       const info = setActiveProvider(id);
       return { ok: true as const, info };

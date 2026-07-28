@@ -854,6 +854,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   onToggleDone={(id) => void tasks.toggleDone(id)}
                   onOpenTask={setSelectedTaskId}
                   apiKeySet={!!tasks.provider?.hasCredentials}
+                  providerId={tasks.provider?.id ?? null}
                   loading={tasks.loading}
                   errorMessage={tasks.error}
                 />
@@ -909,6 +910,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
                   onToggleDone={(id) => void tasks.toggleDone(id)}
                   onOpenTask={setSelectedTaskId}
                   apiKeySet={!!tasks.provider?.hasCredentials}
+                  providerId={tasks.provider?.id ?? null}
                   loading={tasks.loading}
                   errorMessage={tasks.error}
                 />

@@ -25,7 +25,7 @@
 // flag.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { TaskItem, TaskProjectNode } from '@shared/types';
+import type { TaskItem, TaskProjectNode, TaskProviderId } from '@shared/types';
 import { useDragSource, useDragTarget } from '../dragController';
 import { DOW_SHORT, fmtDate, formatTime } from '../dates';
 import { taskOccursOn } from '../tasks';
@@ -50,9 +50,10 @@ interface Props {
   onUnschedule: (taskId: string) => void;
   onToggleDone: (taskId: string) => void;
   onOpenTask: (taskId: string) => void;
-  // True when the Todoist key isn't set yet — panel renders a hint instead
-  // of an empty state.
+  // True when the active provider is ready (credential configured or local
+  // app/file available). Otherwise the panel renders a setup hint.
   apiKeySet: boolean;
+  providerId: TaskProviderId | null;
   loading: boolean;
   errorMessage?: string | null;
 }
@@ -118,7 +119,7 @@ export function TasksPanel(props: Props) {
   const {
     open, today, tasks, projectOrder, projectColor, projects,
     doneTodayCount, carryoverIds, onClose, onUnschedule, onToggleDone,
-    onOpenTask, apiKeySet, loading, errorMessage,
+    onOpenTask, apiKeySet, providerId, loading, errorMessage,
   } = props;
 
   const todayStr = fmtDate(today);
@@ -422,7 +423,9 @@ export function TasksPanel(props: Props) {
       <div className="tp-body">
         {!apiKeySet && (
           <div className="tp-empty-state">
-            Connect Todoist in <em>Settings → Tasks</em> to load your inbox.
+            {providerId === 'things'
+              ? <>Install Things 3, then refresh from <em>Settings → Tasks</em>.</>
+              : <>Connect Todoist in <em>Settings → Tasks</em> to load your inbox.</>}
           </div>
         )}
         {apiKeySet && totalOpen === 0 && !loading && !errorMessage && (

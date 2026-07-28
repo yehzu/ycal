@@ -128,7 +128,7 @@ export function TaskSheet({
               className="ts-desc-empty"
               onClick={() => composerRef.current?.focus()}
             >
-              Add a description in Todoist…
+              Add a note…
             </button>
           )}
         </section>

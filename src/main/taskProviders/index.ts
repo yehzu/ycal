@@ -16,11 +16,13 @@ import type { TaskProviderId, TaskProviderInfo } from '@shared/types';
 import { describe, type TaskProvider } from './types';
 import { todoistProvider } from './todoist';
 import { markdownProvider } from './markdown';
+import { thingsProvider } from './things';
 import { getTaskProviderId, setTaskProviderId } from '../settings';
 
 const PROVIDERS: Record<TaskProviderId, TaskProvider> = {
   todoist: todoistProvider,
   markdown: markdownProvider,
+  things: thingsProvider,
 };
 
 export function getActiveProvider(): TaskProvider {

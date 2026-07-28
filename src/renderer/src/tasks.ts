@@ -24,6 +24,7 @@ import type {
   TaskComment,
   TaskItem,
   TaskProjectNode,
+  TaskProviderId,
   TaskProviderInfo,
   TasksLocalState,
 } from '@shared/types';
@@ -51,7 +52,7 @@ export interface TasksStore {
   // use. Settings → Tasks renders this as a segmented control. Empty
   // until the first IPC roundtrip resolves.
   providers: TaskProviderInfo[];
-  setActiveProvider: (id: 'todoist' | 'markdown') => Promise<void>;
+  setActiveProvider: (id: TaskProviderId) => Promise<void>;
   setCredentials: (key: string | null) => Promise<void>;
   loading: boolean;
   error: string | null;
@@ -204,7 +205,7 @@ export function useTasks(today: Date, autoRollover: boolean): TasksStore {
   // namespace, so wipe them — otherwise the panel briefly shows stale rows
   // until the new provider's first listTasks call lands. The fresh fetch
   // below re-fills the state.
-  const setActiveProvider = useCallback(async (id: 'todoist' | 'markdown') => {
+  const setActiveProvider = useCallback(async (id: TaskProviderId) => {
     const res = await window.ycal.tasksSetActiveProvider(id);
     if (!res.ok) throw new Error(res.error);
     setProvider(res.info);

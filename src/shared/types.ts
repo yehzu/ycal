@@ -499,7 +499,9 @@ export interface UpdateStatus {
 //   * markdown — reads/writes a `tasks.md` file in cloudStore. No auth;
 //                the file is created on demand and follows the user across
 //                devices via iCloud Drive (or stays local-only).
-export type TaskProviderId = 'todoist' | 'markdown';
+//   * things   — controls the installed Things 3 app through its supported
+//                macOS AppleScript dictionary. No token required.
+export type TaskProviderId = 'todoist' | 'markdown' | 'things';
 
 export interface TaskProviderInfo {
   id: TaskProviderId;

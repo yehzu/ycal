@@ -93,7 +93,10 @@ function read(): { settings: Settings; legacy: RawSettings; corrupt: boolean } {
         ? raw.weatherIcsUrl
         : null,
       ui: { ...DEFAULT_UI, ...(raw.ui ?? {}) },
-      taskProviderId: raw.taskProviderId === 'markdown' ? 'markdown' : 'todoist',
+      taskProviderId:
+        raw.taskProviderId === 'markdown' || raw.taskProviderId === 'things'
+          ? raw.taskProviderId
+          : 'todoist',
     },
     legacy: raw,
     corrupt: false,

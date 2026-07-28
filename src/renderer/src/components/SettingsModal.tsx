@@ -5,7 +5,7 @@ import type {
   DriveSyncStatus, GlossaryCategory, GlossaryEntry,
   LoadBands, LoadWindowSettings,
   MergeCriteria, RecentRecording, RecorderSetupProgress, RecorderSetupStatus,
-  RecordingStatus, RhythmData, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
+  RecordingStatus, RhythmData, TaskProviderId, TaskProviderInfo, TempUnits, ThemeMode, UpdateStatus,
 } from '@shared/types';
 import { useGlossary } from '../glossary';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
@@ -52,7 +52,7 @@ interface Props {
   // Tasks (active provider)
   taskProvider: TaskProviderInfo | null;
   taskProviders: TaskProviderInfo[];
-  setActiveTaskProvider: (id: 'todoist' | 'markdown') => Promise<void>;
+  setActiveTaskProvider: (id: TaskProviderId) => Promise<void>;
   setTaskCredentials: (key: string | null) => Promise<void>;
   refreshTasks: () => Promise<void>;
   autoRolloverPastTasks: boolean;
@@ -877,7 +877,7 @@ function PrefsTasks({
 }: {
   provider: TaskProviderInfo | null;
   providers: TaskProviderInfo[];
-  setActiveProvider: (id: 'todoist' | 'markdown') => Promise<void>;
+  setActiveProvider: (id: TaskProviderId) => Promise<void>;
   setCredentials: (key: string | null) => Promise<void>;
   refresh: () => Promise<void>;
   autoRollover: boolean;
@@ -891,6 +891,7 @@ function PrefsTasks({
 }) {
   const isMarkdown = provider?.id === 'markdown';
   const isTodoist = provider?.id === 'todoist';
+  const isThings = provider?.id === 'things';
   const hasKey = !!provider?.hasCredentials;
   const [editing, setEditing] = useState(isTodoist && !hasKey);
   const [draft, setDraft] = useState('');
@@ -900,7 +901,7 @@ function PrefsTasks({
 
   // Switching providers wipes the editing state — credentials only mean
   // anything for Todoist, and the markdown provider needs no input.
-  const switchProvider = async (id: 'todoist' | 'markdown') => {
+  const switchProvider = async (id: TaskProviderId) => {
     if (provider?.id === id) return;
     setSwitching(true);
     setSaveError(null);
@@ -953,8 +954,8 @@ function PrefsTasks({
     <div className="pref-section">
       <h3 className="pref-h">Provider</h3>
       <p className="pref-row-hint" style={{ marginTop: 0, maxWidth: '60ch' }}>
-        yCal can back tasks with a remote service (Todoist) or a local
-        markdown file you can edit in any editor. Switching providers
+        yCal can back tasks with Todoist, Things 3, or a local markdown
+        file you can edit in any editor. Switching providers
         keeps the calendar schedule overlay (so a task you scheduled on
         Tuesday stays parked there) but lists tasks from the new source.
       </p>
@@ -963,18 +964,21 @@ function PrefsTasks({
         hint={
           isMarkdown
             ? 'Tasks live in tasks.md, routed through your Sync setting.'
-            : 'Tasks come from Todoist over the API.'
+            : isThings
+              ? 'Tasks come from the Things 3 app on this Mac.'
+              : 'Tasks come from Todoist over the API.'
         }
       >
-        <PrefSegmented<'todoist' | 'markdown'>
-          value={(provider?.id ?? 'todoist') as 'todoist' | 'markdown'}
+        <PrefSegmented<TaskProviderId>
+          value={provider?.id ?? 'todoist'}
           options={providers.length > 0
             ? providers.map((p) => ({
-                value: p.id as 'todoist' | 'markdown',
+                value: p.id,
                 label: p.displayName,
               }))
             : [
                 { value: 'todoist', label: 'Todoist' },
+                { value: 'things', label: 'Things 3' },
                 { value: 'markdown', label: 'Markdown file' },
               ]}
           onChange={(v) => void switchProvider(v)}
@@ -1085,6 +1089,16 @@ function PrefsTasks({
             <div className="pref-feed-error">{saveError}</div>
           )}
         </>
+      )}
+
+      {isThings && (
+        <div className="pref-note">
+          yCal reads and updates Things through its official macOS automation
+          interface. The first refresh may ask for permission to control
+          Things 3; you can change this later in <em>System Settings → Privacy
+          &amp; Security → Automation</em>. Things&apos; When date appears as
+          the task date in yCal, with Deadline used as a fallback.
+        </div>
       )}
 
       <div className="pref-note">
