@@ -61,25 +61,23 @@ let idleIcon: Electron.NativeImage | null = null;
 const emptyIcon = nativeImage.createEmpty();
 // Mutation-dedupe state. Menu bar managers (Thaw / Bartender / Ice) hook
 // every NSStatusItem change to re-evaluate their layout — so an item that
-// blindly re-sets its title/image/menu on every 60s poll (even when
-// nothing changed) makes the manager churn, which manifests as the item
-// getting "stuck" or jumping slots. We cache the last applied value and
-// only call the setter when it genuinely changes; an idle yCal then
-// touches the status item zero times between real events.
+// blindly re-sets its title/menu on every 60s poll (even when nothing
+// changed) makes the manager churn, which manifests as the item getting
+// "stuck" or jumping slots. We cache the last applied value and only call
+// the setter when it genuinely changes.
+//
+// The image is deliberately NOT mutable. Switching between an empty image
+// while a meeting is shown and the yCal icon after it ends makes Thaw treat
+// the status item as newly classified and reapply its default hidden section,
+// overriding the user's "always visible" placement. A stable image gives
+// menu bar managers one durable identity for the lifetime of the Tray.
 let lastTitle: string | null = null;
-let lastImageKind: 'idle' | 'empty' | null = null;
 let lastMenuSig: string | null = null;
 
 function applyTitle(title: string): void {
   if (!tray || lastTitle === title) return;
   lastTitle = title;
   tray.setTitle(title);
-}
-
-function applyImage(kind: 'idle' | 'empty'): void {
-  if (!tray || lastImageKind === kind) return;
-  lastImageKind = kind;
-  tray.setImage(kind === 'idle' && idleIcon ? idleIcon : emptyIcon);
 }
 
 // Structural fingerprint of a menu template: labels + type + enabled +
@@ -132,13 +130,16 @@ export function startTray(mainWindow: BrowserWindow): void {
   if (tray) return;
   mainWindowRef = mainWindow;
 
-  // Two display modes for the menubar item:
-  //   * "Upcoming" — empty image + text title ("12m · Standup").
-  //   * "Idle"     — small template icon + no title. Compact + recognisable.
-  // We always keep BOTH set; switching modes just zeroes the inactive one.
+  // Keep one stable image for the lifetime of this Tray. Thaw and similar
+  // menu bar managers persist section placement against the status item's
+  // observed identity; swapping image modes after a meeting can cause them
+  // to classify yCal again and move it back into their default hidden area.
+  // Upcoming/recording state is expressed only through the adjacent title.
   idleIcon = loadIdleIcon();
   tray = new Tray(idleIcon ?? emptyIcon);
-  tray.setTitle(idleIcon ? '' : ' yCal');
+  const initialTitle = idleIcon ? '' : ' yCal';
+  tray.setTitle(initialTitle);
+  lastTitle = initialTitle;
   tray.setToolTip('yCal — upcoming events');
 
   // Left-click should open the dropdown (default macOS behaviour for
@@ -175,7 +176,6 @@ export function stopTray(): void {
   idleIcon = null;
   stopFn = null;
   lastTitle = null;
-  lastImageKind = null;
   lastMenuSig = null;
 }
 
@@ -321,27 +321,21 @@ async function refresh(): Promise<void> {
   const activeRec = recordings.find((r) => r.state === 'recording');
 
   if (activeRec) {
-    // Recording state. Show only the title text; macOS's own screen-
-    // recording indicator already eats space on the right side of the
-    // menubar, so doubling up with our orbit icon makes yCal more
-    // likely to fall off the right edge on a 14" notched display.
-    // The leading "●" gives the menubar item enough visual weight to
-    // keep its slot.
-    applyImage('empty');
+    // Keep the stable yCal icon and add a leading dot to make recording
+    // state unmistakable. The icon costs a little width, but avoiding an
+    // image swap is what preserves the user's Thaw placement after the
+    // meeting ends.
     const title = activeRec.title?.trim() || 'Recording';
     applyTitle(` ● ${truncate(title, TITLE_MAX)}`);
   } else {
     const next = findCurrentOrNext(events);
     if (next) {
-      applyImage('empty');
       applyTitle(formatTrayLabel(next));
     } else if (idleIcon) {
-      applyImage('idle');
       applyTitle('');
     } else {
       // Icon failed to load (shouldn't happen in a packaged build) — fall
       // back to the original text-only label so the menubar still works.
-      applyImage('empty');
       applyTitle(formatTrayLabel(null));
     }
   }
@@ -515,4 +509,3 @@ function scheduleNotifications(events: CalendarEvent[]): void {
     notifyTimers.push(timer);
   }
 }
-
