@@ -139,6 +139,16 @@ yCal ships a small, headless CLI that reuses the same auth and Google Calendar c
 
 If yCal isn't already running, the client launches it via `open -a yCal` and polls the socket for up to 15 seconds. The window appears once; subsequent CLI invocations go straight through the socket with the GUI still in the background.
 
+The CLI can also update the installed app from the latest GitHub release.
+`update` and `upgrade` are aliases; both download the architecture-matched
+release, safely replace the current app bundle, and restart yCal:
+
+```bash
+ycal update
+# or
+ycal upgrade
+```
+
 The same `runCli` code path also still works as `yCal --cli <args>` (in-process Electron mode) — useful for CI/headless contexts where the GUI can't display.
 
 ### Install
@@ -167,6 +177,7 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 | `ycal next [N]` | Next N upcoming events (default 5). |
 | `ycal find <query>` | Search events `-7d` to `+90d`. |
 | `ycal weather` | Forecast from the configured weather iCal feed. |
+| `ycal update` / `ycal upgrade` | Install the latest release and restart yCal. |
 | `ycal recordings` | List archived meeting recordings (Drive appdata). `--limit <n>`. |
 | `ycal transcript <event-id>` | Raw transcript text. Or `--query "<title>"`. |
 | `ycal summary <event-id>` | Raw summary artifact (Markdown note). Or `--query "<title>"`. |
@@ -254,6 +265,9 @@ ycal today --format markdown
 
 # Next three upcoming events:
 ycal next 3
+
+# Install the latest release and restart:
+ycal update
 
 # Pipe to an LLM:
 ycal events --from today --to +14d | llm -m claude-opus-4-7 \

@@ -379,7 +379,7 @@ function registerIpc() {
   });
 
   ipcMain.handle(IPC.UpdateInstall, () => {
-    requestInstall();
+    void requestInstall();
   });
 
   // ── Tasks (active provider) ───────────────────────────────────────

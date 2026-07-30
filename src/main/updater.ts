@@ -609,6 +609,6 @@ export async function checkForUpdatesNow(): Promise<void> {
   await checkForUpdate();
 }
 
-export function requestInstall(): void {
-  void performInstall();
+export async function requestInstall(): Promise<void> {
+  await performInstall();
 }

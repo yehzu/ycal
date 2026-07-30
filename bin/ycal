@@ -29,6 +29,12 @@ const SOCK = path.join(
   'Library/Application Support/ycal/cli.sock',
 );
 const args = process.argv.slice(2);
+const isUpdateCommand = args.includes('update') || args.includes('upgrade');
+// Updating can download a large release zip before the app hands off to the
+// swap helper. Keep the normal request budget short, but allow self-update
+// enough time on a slow connection.
+const readTimeoutMs =
+  isUpdateCommand ? 10 * 60 * 1000 : 30000;
 
 // Split timeouts on purpose:
 //   • connectTimeoutMs caps how long we wait for the GUI to accept the
@@ -102,7 +108,7 @@ async function main() {
   // Fast path: GUI already running. Short connect, long read — most commands
   // need a network roundtrip to Google Calendar, which can take a couple
   // seconds.
-  let res = await tryRequest(1000, 30000);
+  let res = await tryRequest(1000, readTimeoutMs);
   if (res) deliver(res);
 
   // Slow path: launch the GUI, then poll.
@@ -130,7 +136,7 @@ async function main() {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     await sleep(300);
-    res = await tryRequest(700, 30000);
+    res = await tryRequest(700, readTimeoutMs);
     if (res) deliver(res);
   }
   process.stderr.write('ycal: timed out waiting for yCal to start (15s)\n');
