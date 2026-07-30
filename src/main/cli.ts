@@ -28,7 +28,7 @@ import { listAccounts } from './tokenStore';
 import { fetchWeather } from './weather';
 import { getUiSettings } from './settings';
 import {
-  checkForUpdatesNow, getLastUpdateStatus, requestInstall,
+  checkForUpdatesNow, getLastUpdateStatus, onUpdateStatus, requestInstall,
 } from './updater';
 import {
   fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
@@ -45,6 +45,7 @@ import type {
   CalRolePersisted,
   MeetingArtifactKind,
   MeetingNote,
+  UpdateStatus,
   UiSettings,
 } from '@shared/types';
 
@@ -86,6 +87,7 @@ type Format = 'json' | 'text' | 'markdown';
 export interface CliIo {
   out: Writable;
   err: Writable;
+  progress?: (status: UpdateStatus) => void;
 }
 
 interface ParsedArgs {
@@ -1233,64 +1235,72 @@ async function cmdUpdate(args: ParsedArgs, version: string, io: CliIo): Promise<
     );
   }
 
-  await checkForUpdatesNow();
-  const checked = getLastUpdateStatus();
-  if (checked.state === 'error') {
-    throw new CliError(`update check failed: ${checked.error ?? 'unknown error'}`);
-  }
+  const stopProgress = io.progress
+    ? onUpdateStatus((status) => io.progress?.(status))
+    : () => {};
+  try {
+    await checkForUpdatesNow();
+    const checked = getLastUpdateStatus();
+    if (checked.state === 'error') {
+      throw new CliError(`update check failed: ${checked.error ?? 'unknown error'}`);
+    }
 
-  if (checked.state === 'idle') {
+    if (checked.state === 'idle') {
+      emit(
+        {
+          command: args.command,
+          currentVersion: version,
+          latestVersion: version,
+          updated: false,
+          status: 'up-to-date',
+        },
+        format,
+        () => `yCal ${version} is already up to date.`,
+        io,
+      );
+      return 0;
+    }
+
+    if ((checked.state !== 'available' && checked.state !== 'ready')
+        || !checked.version) {
+      throw new CliError(`cannot install update while updater is ${checked.state}`);
+    }
+
+    const nextVersion = checked.version;
+    await requestInstall();
+    const installed = getLastUpdateStatus();
+    if (installed.state === 'error') {
+      throw new CliError(`update failed: ${installed.error ?? 'unknown error'}`);
+    }
+    if (installed.state !== 'installing') {
+      throw new CliError(`update did not start (updater is ${installed.state})`);
+    }
+
     emit(
       {
         command: args.command,
         currentVersion: version,
-        latestVersion: version,
-        updated: false,
-        status: 'up-to-date',
+        latestVersion: nextVersion,
+        updated: true,
+        status: 'restarting',
       },
       format,
-      () => `yCal ${version} is already up to date.`,
+      () => `Updating yCal ${version} → ${nextVersion}. The app will restart automatically.`,
       io,
     );
     return 0;
+  } finally {
+    stopProgress();
   }
-
-  if ((checked.state !== 'available' && checked.state !== 'ready')
-      || !checked.version) {
-    throw new CliError(`cannot install update while updater is ${checked.state}`);
-  }
-
-  const nextVersion = checked.version;
-  await requestInstall();
-  const installed = getLastUpdateStatus();
-  if (installed.state === 'error') {
-    throw new CliError(`update failed: ${installed.error ?? 'unknown error'}`);
-  }
-  if (installed.state !== 'installing') {
-    throw new CliError(`update did not start (updater is ${installed.state})`);
-  }
-
-  emit(
-    {
-      command: args.command,
-      currentVersion: version,
-      latestVersion: nextVersion,
-      updated: true,
-      status: 'restarting',
-    },
-    format,
-    () => `Updating yCal ${version} → ${nextVersion}. The app will restart automatically.`,
-    io,
-  );
-  return 0;
 }
 
 export async function runCli(
   argv: string[],
   out: Writable = process.stdout,
   err: Writable = process.stderr,
+  progress?: (status: UpdateStatus) => void,
 ): Promise<number> {
-  const io: CliIo = { out, err };
+  const io: CliIo = { out, err, progress };
   const version = readVersion();
   const args = parseArgs(argv);
 

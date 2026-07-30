@@ -180,6 +180,9 @@ export interface UiSettings {
   units?: TempUnits;
   // Hide calendar rows that the user has toggled off in the sidebar.
   hideDisabledCals?: boolean;
+  // Hide calendars classified as read-only/subscribed. The UI presents
+  // this inversely as the "Show read-only" display preference.
+  hideReadOnly?: boolean;
   // When true, unfinished scheduled tasks from previous days are
   // automatically unscheduled and returned to the inbox. When false, they
   // stay parked on their original day with a "↻ carry" indicator.

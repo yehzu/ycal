@@ -143,6 +143,12 @@ Two execution modes share `runCli()` from `src/main/cli.ts`:
 **Wire protocol on the socket** (`<userData>/cli.sock`, mode 0600):
 - Client → server: `{"args": ["today", "--format", "markdown"]}` then half-close write side
 - Server → client: `{"stdout": "...", "stderr": "...", "code": 0}`
+- `update` / `upgrade` opt into streaming with `"stream": true`. The server
+  then writes newline-delimited `{"type":"progress","status":...}` frames and
+  finishes with one `{"type":"result","stdout":...,"stderr":...,"code":...}`
+  frame. The launcher keeps progress on interactive stderr so stdout remains
+  pipe-safe. Both directions are backward-compatible: old clients still get
+  the original single response, and new clients accept that legacy response.
 
 **Two non-obvious gotchas live here:**
 

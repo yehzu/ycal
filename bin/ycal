@@ -29,12 +29,75 @@ const SOCK = path.join(
   'Library/Application Support/ycal/cli.sock',
 );
 const args = process.argv.slice(2);
-const isUpdateCommand = args.includes('update') || args.includes('upgrade');
+
+// Mirror the command-discovery part of main/cli.ts so an argument value such
+// as `ycal find update` does not accidentally opt into the streaming updater
+// protocol. Flags may appear before the command.
+function findCommand(argv) {
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i];
+    if (arg === '--help' || arg === '-h' || arg === '--version' || arg === '-v') {
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      if (arg.includes('=')) {
+        i++;
+      } else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) {
+        i += 2;
+      } else {
+        i++;
+      }
+      continue;
+    }
+    return arg;
+  }
+  return '';
+}
+
+const command = findCommand(args);
+const isUpdateCommand = command === 'update' || command === 'upgrade';
 // Updating can download a large release zip before the app hands off to the
 // swap helper. Keep the normal request budget short, but allow self-update
 // enough time on a slow connection.
 const readTimeoutMs =
   isUpdateCommand ? 10 * 60 * 1000 : 30000;
+let progressVisible = false;
+
+function renderProgress(status) {
+  if (!process.stderr.isTTY) return;
+  let label = 'Checking for updates';
+  let percent = null;
+  if (status.state === 'available') {
+    label = `Downloading yCal ${status.version ?? ''}`.trim();
+    percent = status.progress ?? 0;
+  } else if (status.state === 'ready') {
+    label = `Downloaded yCal ${status.version ?? ''}`.trim();
+    percent = 100;
+  } else if (status.state === 'installing') {
+    label = `Installing yCal ${status.version ?? ''}`.trim();
+    percent = status.progress ?? 0;
+  } else if (status.state === 'error') {
+    label = 'Update failed';
+  }
+
+  const width = 24;
+  const clamped = percent == null ? null : Math.max(0, Math.min(100, percent));
+  const filled = clamped == null ? 0 : Math.round((clamped / 100) * width);
+  const bar = percent == null
+    ? '[························]'
+    : `[${'='.repeat(filled)}${' '.repeat(width - filled)}]`;
+  const suffix = clamped == null ? '' : ` ${String(Math.round(clamped)).padStart(3)}%`;
+  process.stderr.write(`\r\u001b[2K${label} ${bar}${suffix}`);
+  progressVisible = true;
+}
+
+function finishProgress() {
+  if (!progressVisible) return;
+  process.stderr.write('\n');
+  progressVisible = false;
+}
 
 // Split timeouts on purpose:
 //   • connectTimeoutMs caps how long we wait for the GUI to accept the
@@ -49,6 +112,7 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
     const sock = net.createConnection(SOCK);
     let connected = false;
     let buf = '';
+    let lineBuf = '';
 
     const connectTimer = setTimeout(() => {
       sock.destroy();
@@ -60,19 +124,44 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
     sock.on('connect', () => {
       connected = true;
       clearTimeout(connectTimer);
-      sock.write(JSON.stringify({ args }));
+      sock.write(JSON.stringify({ args, stream: isUpdateCommand }));
       sock.end(); // half-close: server reads until 'end'
       readTimer = setTimeout(() => {
         sock.destroy();
         resolve(null);
       }, readTimeoutMs);
     });
-    sock.on('data', (chunk) => { buf += chunk; });
+    sock.on('data', (chunk) => {
+      if (!isUpdateCommand) {
+        buf += chunk;
+        return;
+      }
+      lineBuf += chunk;
+      let newline = lineBuf.indexOf('\n');
+      while (newline >= 0) {
+        const line = lineBuf.slice(0, newline);
+        lineBuf = lineBuf.slice(newline + 1);
+        try {
+          const frame = JSON.parse(line);
+          if (frame.type === 'progress') renderProgress(frame.status);
+          else if (frame.type === 'result') buf = JSON.stringify(frame);
+        } catch (_e) { /* ignore malformed progress frame */ }
+        newline = lineBuf.indexOf('\n');
+      }
+    });
     sock.on('end', () => {
       clearTimeout(connectTimer);
       if (readTimer) clearTimeout(readTimer);
       try {
-        resolve(JSON.parse(buf));
+        if (isUpdateCommand && !buf && lineBuf) {
+          // Backwards compatibility with an older installed yCal that
+          // answers with the original single-JSON response.
+          buf = lineBuf;
+        }
+        const parsed = JSON.parse(buf);
+        resolve(parsed.type === 'result'
+          ? { stdout: parsed.stdout, stderr: parsed.stderr, code: parsed.code }
+          : parsed);
       } catch (_e) {
         resolve(null);
       }
@@ -89,6 +178,7 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
 }
 
 function deliver(res) {
+  finishProgress();
   const code = typeof res.code === 'number' ? res.code : 0;
   if (res.stderr) process.stderr.write(res.stderr);
   // Wait for stdout to drain before exiting — process.exit() with a large
@@ -109,7 +199,7 @@ async function main() {
   // need a network roundtrip to Google Calendar, which can take a couple
   // seconds.
   let res = await tryRequest(1000, readTimeoutMs);
-  if (res) deliver(res);
+  if (res) return deliver(res);
 
   // Slow path: launch the GUI, then poll.
   if (!fs.existsSync(APP_BIN)) {
@@ -137,7 +227,7 @@ async function main() {
   while (Date.now() < deadline) {
     await sleep(300);
     res = await tryRequest(700, readTimeoutMs);
-    if (res) deliver(res);
+    if (res) return deliver(res);
   }
   process.stderr.write('ycal: timed out waiting for yCal to start (15s)\n');
   process.exit(1);

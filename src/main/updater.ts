@@ -56,9 +56,13 @@ let pendingVersion: string | null = null;
 let pendingZipPath: string | null = null;
 let prefetchPromise: Promise<void> | null = null;
 let installInProgress = false;
+const statusListeners = new Set<(status: UpdateStatus) => void>();
 
 function broadcast(status: UpdateStatus): void {
   lastStatus = status;
+  for (const listener of statusListeners) {
+    try { listener(status); } catch { /* one observer must not break updates */ }
+  }
   if (currentWin && !currentWin.isDestroyed()) {
     currentWin.webContents.send(IPC.UpdateStatus, status);
   }
@@ -601,6 +605,11 @@ export function setupAutoUpdater(win: BrowserWindow): void {
 
 export function getLastUpdateStatus(): UpdateStatus {
   return lastStatus;
+}
+
+export function onUpdateStatus(listener: (status: UpdateStatus) => void): () => void {
+  statusListeners.add(listener);
+  return () => { statusListeners.delete(listener); };
 }
 
 export async function checkForUpdatesNow(): Promise<void> {

@@ -33,6 +33,7 @@ const DEFAULT_UI: UiSettings = {
   calVisible: {},
   calRoles: {},
   sectionOrder: ['almanac', 'agenda', 'calendars'],
+  hideReadOnly: false,
 };
 
 const DEFAULTS: Settings = {
@@ -155,6 +156,7 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
   if (patch.showWeekNums !== undefined) next.showWeekNums = patch.showWeekNums;
   if (patch.showWeather !== undefined) next.showWeather = patch.showWeather;
   if (patch.units !== undefined) next.units = patch.units;
+  if (patch.hideReadOnly !== undefined) next.hideReadOnly = patch.hideReadOnly;
   if (patch.hideDisabledCals !== undefined) next.hideDisabledCals = patch.hideDisabledCals;
   if (patch.autoRolloverPastTasks !== undefined) {
     next.autoRolloverPastTasks = patch.autoRolloverPastTasks;

@@ -40,6 +40,7 @@ const DEFAULT_UI: UiSettings = {
   showWeekNums: true,
   showWeather: true,
   units: 'F',
+  hideReadOnly: false,
 };
 
 // Boot waits for persisted UI settings to load before mounting AppShell so
@@ -99,7 +100,9 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     }
     return cleaned.length === DEFAULT_SECTION_ORDER.length ? cleaned : DEFAULT_SECTION_ORDER;
   });
-  const [hideReadOnly, setHideReadOnly] = useState(false);
+  const [hideReadOnly, setHideReadOnly] = useState<boolean>(
+    () => initialUi.hideReadOnly ?? false,
+  );
   const [hideDisabledCals, setHideDisabledCals] = useState<boolean>(
     () => initialUi.hideDisabledCals ?? false,
   );
@@ -268,6 +271,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       if (raw.sectionOrder !== undefined) {
         setSectionOrder(raw.sectionOrder as SidebarSectionKey[]);
       }
+      if (raw.hideReadOnly !== undefined) setHideReadOnly(raw.hideReadOnly);
       if (raw.hideDisabledCals !== undefined) setHideDisabledCals(raw.hideDisabledCals);
       if (raw.autoRolloverPastTasks !== undefined) setAutoRolloverPastTasks(raw.autoRolloverPastTasks);
       if (raw.autoRecordMeetings !== undefined) setAutoRecordMeetings(raw.autoRecordMeetings);
@@ -387,6 +391,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
       showWeekNums,
       showWeather,
       units,
+      hideReadOnly,
       hideDisabledCals,
       autoRolloverPastTasks,
       autoRecordMeetings,
@@ -404,7 +409,7 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     });
   }, [
     store.accountsActive, store.calVisible, calRoles, sectionOrder,
-    mergeCriteria, showWeekNums, showWeather, units, hideDisabledCals,
+    mergeCriteria, showWeekNums, showWeather, units, hideReadOnly, hideDisabledCals,
     autoRolloverPastTasks, autoRecordMeetings, recordingConfirmBeforeStart,
     recordingTrigger, recordingWhisperModel, recordingSummaryPrompt,
     recordingUploadAudio, recordingVoiceProcessing, recorderDiarize,

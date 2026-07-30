@@ -14,6 +14,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { Writable } from 'node:stream';
 import { runCli } from './cli';
+import type { UpdateStatus } from '@shared/types';
 
 class StringSink extends Writable {
   data = '';
@@ -47,12 +48,26 @@ export function startCliServer(): void {
     sock.on('end', async () => {
       let response = { stdout: '', stderr: '', code: 1 };
       try {
-        const req = JSON.parse(buf) as { args?: unknown };
+        const req = JSON.parse(buf) as { args?: unknown; stream?: unknown };
         const args = Array.isArray(req.args) ? req.args.map(String) : [];
         const out = new StringSink();
         const err = new StringSink();
-        const code = await runCli(args, out, err);
+        const stream = req.stream === true;
+        const sendProgress = stream
+          ? (status: UpdateStatus) => {
+              if (!sock.destroyed) {
+                sock.write(`${JSON.stringify({ type: 'progress', status })}\n`);
+              }
+            }
+          : undefined;
+        const code = await runCli(args, out, err, sendProgress);
         response = { stdout: out.data, stderr: err.data, code };
+        if (stream) {
+          try {
+            sock.end(`${JSON.stringify({ type: 'result', ...response })}\n`);
+          } catch { /* socket closed */ }
+          return;
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         response = { stdout: '', stderr: `cliServer: ${msg}\n`, code: 1 };

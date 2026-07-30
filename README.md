@@ -141,7 +141,8 @@ If yCal isn't already running, the client launches it via `open -a yCal` and pol
 
 The CLI can also update the installed app from the latest GitHub release.
 `update` and `upgrade` are aliases; both download the architecture-matched
-release, safely replace the current app bundle, and restart yCal:
+release, show live download/install progress in an interactive terminal,
+safely replace the current app bundle, and restart yCal:
 
 ```bash
 ycal update
