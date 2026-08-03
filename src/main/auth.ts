@@ -3,6 +3,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { AddressInfo } from 'node:net';
 import crypto from 'node:crypto';
 import { google } from 'googleapis';
+import type { OAuth2Client } from 'google-auth-library';
 import { loadOAuthConfig } from './config';
 import { upsertAccount, type StoredAccount } from './tokenStore';
 import { NETWORK_TIMEOUT_MS, withNetworkTimeout } from './networkTimeout';
@@ -167,10 +168,40 @@ async function runAuthDance(
   return stored;
 }
 
-export function authClientForAccount(account: StoredAccount) {
+// One OAuth2Client per account, reused for the process's lifetime.
+//
+// A fresh client starts with no access token, so its very first request
+// spends a full token-refresh round trip — and every caller here used to
+// mint one per call. listAllMeetingArchives() walks the accounts and
+// builds a client per account, so a single `ycal recordings` paid one
+// refresh per signed-in account before it could even list. Reuse also
+// lets google-auth-library do its job: one client dedupes concurrent
+// refreshes and keeps the access token until it actually expires, which
+// matters now that the meta reads run six-wide.
+//
+// Keyed by account id, but the cached entry is only handed back when the
+// OAuth client_id AND the refresh token still match — so re-adding an
+// account (new refresh token) or editing the OAuth config rebuilds
+// instead of silently reusing a client bound to dead credentials. An
+// entry for a removed account is simply never looked up again.
+const clientCache = new Map<
+  string,
+  { clientId: string; refreshToken: string; client: OAuth2Client }
+>();
+
+export function authClientForAccount(account: StoredAccount): OAuth2Client {
   const cfg = loadOAuthConfig();
   if (!cfg) throw new Error('OAuth client credentials not configured.');
+  const hit = clientCache.get(account.id);
+  if (hit && hit.clientId === cfg.client_id && hit.refreshToken === account.refreshToken) {
+    return hit.client;
+  }
   const oauth2 = new google.auth.OAuth2(cfg.client_id, cfg.client_secret);
   oauth2.setCredentials({ refresh_token: account.refreshToken });
+  clientCache.set(account.id, {
+    clientId: cfg.client_id,
+    refreshToken: account.refreshToken,
+    client: oauth2,
+  });
   return oauth2;
 }

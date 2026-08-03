@@ -23,6 +23,15 @@
 // transcript.txt, summary.md, meta.json}. Reads check Drive freshness
 // against the cached meta.json; if Drive has nothing new the cached file
 // is returned without a re-download.
+//
+// The two halves of that cache prove freshness DIFFERENTLY, and the
+// difference is load-bearing:
+//   • artifacts (audio/transcript/summary) — file mtime, which
+//     fetchMeetingArtifact() aligns to Drive via utimesSync on download.
+//   • meta.json — the `_driveModifiedTime` field inside the body, because
+//     uploadMeetingArtifacts() also writes this file and does NOT align
+//     its mtime, so mtime here means "when this Mac wrote it".
+// See the CACHE_DRIVE_MTIME_KEY block below.
 
 import { app } from 'electron';
 import fs from 'node:fs';
@@ -163,6 +172,97 @@ export function readCachedMeta(eventId: string): ArchiveMeta | null {
   }
 }
 
+// ── Cached-meta freshness ────────────────────────────────────────────────
+//
+// The cached meta.json doubles as the read-through cache for
+// listAllMeetingArchives()'s second pass, which is ~87% of that call's wall
+// clock (one `files.get?alt=media` per meeting).
+//
+// Freshness is decided by a field INSIDE the cached body, never by the
+// file's mtime. uploadMeetingArtifacts() writes this same path at upload
+// time and does NOT align its mtime to Drive (unlike fetchMeetingArtifact,
+// which utimesSync()s the artifact files it downloads) — so an existing
+// cached meta.json's mtime is "when this Mac last uploaded", which says
+// nothing about the Drive copy. Comparing it would produce confident wrong
+// answers in both directions.
+//
+// What we store instead is the Drive `modifiedTime` the body was
+// downloaded from. It costs nothing extra: the appdata listing in pass 1
+// already asks for `modifiedTime` (driveAppData.list fields) — it was
+// simply being dropped on the floor.
+//
+// Wire format — a superset of ArchiveMeta; the extra key is local-only and
+// is never uploaded to Drive:
+//
+//   { …ArchiveMeta…, "_driveModifiedTime": "2026-07-31T03:01:38.772Z" }
+//
+// Bodies written before this key existed simply lack it. Those are a MISS
+// (fetched from Drive once, then rewritten in the new shape) — never an
+// error, and never deleted. readCachedMeta() above keeps working on both
+// shapes because the extra key is additive and no consumer enumerates.
+const CACHE_DRIVE_MTIME_KEY = '_driveModifiedTime';
+
+interface StampedCachedMeta {
+  meta: ArchiveMeta;
+  driveModifiedTime: string | null;
+}
+
+// `eventIdSafe` — the already-sanitised id used as the cache directory
+// name. safeEventId() is idempotent over its own output, so passing it
+// back through cacheMetaPath() lands on the same directory an upload or a
+// fetch would have written.
+function readStampedCachedMeta(eventIdSafe: string): StampedCachedMeta | null {
+  try {
+    const p = cacheMetaPath(eventIdSafe);
+    if (!fs.existsSync(p)) return null;
+    const parsed: unknown = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    // A non-object body (null / array / scalar) is a corrupt cache, not a
+    // meta. Treat as a miss; the Drive read will overwrite it.
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const stamp = (parsed as Record<string, unknown>)[CACHE_DRIVE_MTIME_KEY];
+    return {
+      meta: parsed as ArchiveMeta,
+      driveModifiedTime: typeof stamp === 'string' && stamp ? stamp : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// EQUALITY, not "cached >= remote". We recorded the exact modifiedTime we
+// downloaded from, so any change at all — newer, or a rollback that made
+// Drive's copy older — has to invalidate. Compare the raw strings first,
+// then the parsed instants, so a formatting change in Drive's RFC-3339
+// output doesn't cause a permanent false miss.
+function sameDriveTime(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  return Number.isFinite(ta) && Number.isFinite(tb) && ta === tb;
+}
+
+// Best-effort: a cache we can't write is a slow next run, never a failed
+// listing, so this swallows everything.
+function writeStampedCachedMeta(
+  eventIdSafe: string,
+  meta: unknown,
+  driveModifiedTime: string,
+): void {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return;
+  try {
+    fs.mkdirSync(cacheDir(eventIdSafe), { recursive: true });
+    fs.writeFileSync(
+      cacheMetaPath(eventIdSafe),
+      JSON.stringify(
+        { ...(meta as Record<string, unknown>), [CACHE_DRIVE_MTIME_KEY]: driveModifiedTime },
+        null,
+        2,
+      ),
+    );
+  } catch { /* cache write is advisory */ }
+}
+
 async function apiFor(accountId: string): Promise<DriveAppDataAPI> {
   const account = getAccount(accountId);
   if (!account) {
@@ -260,6 +360,12 @@ export async function uploadMeetingArtifacts(input: UploadInput): Promise<Upload
       if (!result.uploaded[kind]) continue;
       fs.copyFileSync(file, cachePath(input.eventId, kind));
     }
+    // Deliberately written WITHOUT the _driveModifiedTime stamp: upsert()
+    // hands back only a file id, so we don't know what modifiedTime Drive
+    // just assigned. An unstamped body is a cache miss by construction, so
+    // the next listing re-reads this one sidecar and rewrites it stamped.
+    // One extra round trip per freshly uploaded recording is the correct
+    // trade against guessing a timestamp we never saw.
     fs.writeFileSync(cacheMetaPath(input.eventId), JSON.stringify(result.meta, null, 2));
   } catch (e) {
     console.error('[yCal meetingArchive] cache seed failed', e);
@@ -414,20 +520,28 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
         // names and upsert() has no atomic create-if-absent (it does a
         // file(name) lookup then create), so a GUI upload racing a
         // reprocess can leave two meet__<id>.meta.json behind.
-        metaFileIds: string[];
+        //
+        // Each entry carries the sidecar's Drive modifiedTime alongside
+        // its id — the listing already fetched it, and pass 2 needs it to
+        // decide whether the local cache is still valid.
+        metaFiles: Array<{ id: string; modifiedTime: string | null }>;
+        // Map key: the sanitised id, which is also the meeting-cache
+        // directory name. Distinct from fallbackEventId, which truncates
+        // at the first `.`.
+        eventIdSafe: string;
         fallbackEventId: string;
       }>;
-      for (const [, group] of byEvent) {
+      for (const [eventIdSafe, group] of byEvent) {
         const has: Record<ArtifactKind, boolean> = {
           audio: false, transcript: false, summary: false,
         };
         let modifiedAt: string | null = null;
-        const metaFileIds: string[] = [];
+        const metaFiles: Array<{ id: string; modifiedTime: string | null }> = [];
         for (const f of group) {
           const parsed = parseName(f.name);
           if (!parsed) continue;
           if (parsed.kind === 'meta') {
-            if (f.id) metaFileIds.push(f.id);
+            if (f.id) metaFiles.push({ id: f.id, modifiedTime: f.modifiedTime ?? null });
           } else {
             has[parsed.kind] = true;
           }
@@ -438,17 +552,18 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
         rows.push({
           has,
           modifiedAt,
-          metaFileIds,
+          metaFiles,
+          eventIdSafe,
           // eventIdSafe — best we can do when the meta sidecar is missing.
           fallbackEventId: group[0].name.slice(PREFIX.length).split('.')[0],
         });
       }
 
-      // Pass 2 — the meta sidecars, in bounded-parallel waves. The list
-      // UI reads meta.title / .startedAt / .endsAt on every row, so we
-      // can't defer these to click time; but doing them one-at-a-time
-      // meant a serial round trip per event, which is what made the Notes
-      // view and `ycal recordings` crawl once the listing was complete.
+      // Pass 2 — the meta sidecars, read through the local meeting-cache
+      // and only then, on a miss, from Drive in bounded-parallel waves.
+      // The list UI reads meta.title / .startedAt / .endsAt on every row,
+      // so we can't defer these to click time; and one alt=media GET per
+      // meeting is the entire cost of this call in practice.
       //
       // Within a row the sidecars are still tried IN ORDER and the last
       // one that both downloads and parses wins — a duplicate whose read
@@ -459,12 +574,31 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
         rows,
         META_FETCH_CONCURRENCY,
         async (r): Promise<{ meta: ArchiveMeta | null; failed: number }> => {
+          // The cache can only speak for the single-sidecar case. With
+          // zero there is nothing to read; with two-or-more, "try in
+          // order, last one that downloads AND parses wins" is the only
+          // rule that produces the right answer, and one cached body
+          // can't stand in for it — so duplicates always go to Drive and
+          // keep their existing four-combination behaviour exactly.
+          const only = r.metaFiles.length === 1 ? r.metaFiles[0] : null;
+          if (only?.modifiedTime) {
+            const cached = readStampedCachedMeta(r.eventIdSafe);
+            if (cached && sameDriveTime(cached.driveModifiedTime, only.modifiedTime)) {
+              return { meta: cached.meta, failed: 0 };
+            }
+          }
           let meta: ArchiveMeta | null = null;
           let failed = 0;
-          for (const id of r.metaFileIds) {
+          for (const f of r.metaFiles) {
             try {
-              const buf = await api.read(id);
-              meta = JSON.parse(buf.toString('utf-8')) as ArchiveMeta;
+              const buf = await api.read(f.id);
+              const parsed = JSON.parse(buf.toString('utf-8')) as ArchiveMeta;
+              meta = parsed;
+              // Write back only for the single-sidecar shape — a stamped
+              // body for a duplicated row would never be consulted anyway.
+              if (only && f.modifiedTime) {
+                writeStampedCachedMeta(r.eventIdSafe, parsed, f.modifiedTime);
+              }
             } catch (e) {
               failed += 1;
               lastMetaError = e;
@@ -486,7 +620,7 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
       // ~/Library/Logs/yCal/recorder.log so the degradation is still
       // discoverable after the fact.
       const failedReads = metas.reduce((n, m) => n + m.failed, 0);
-      const degradedRows = metas.filter((m, i) => !m.meta && rows[i].metaFileIds.length > 0).length;
+      const degradedRows = metas.filter((m, i) => !m.meta && rows[i].metaFiles.length > 0).length;
       if (failedReads > 0) {
         const msg =
           `[yCal meetingArchive] ${failedReads} meta sidecar read(s) failed for `
