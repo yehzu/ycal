@@ -29,20 +29,37 @@ export class DriveAppDataAPI {
     this.drive = google.drive({ version: 'v3', auth });
   }
 
+  // Enumerate the WHOLE appdata bucket, following Drive's pagination.
+  // This used to take the first page only ("yCal writes ≤ 6 files") — but
+  // meeting archives put up to 6 files in here per recorded event, so the
+  // bucket is hundreds of files deep. A single page silently truncated the
+  // listing: recordings past the cut vanished from the Notes view and
+  // `ycal recordings`, and driveSync could stop seeing settings.json.
+  // Every caller expects the complete set, so page until Drive stops
+  // handing back a token.
   async list(): Promise<AppDataFile[]> {
-    const res = await withNetworkTimeout('drive.list', () =>
-      this.drive.files.list(
-        {
-          spaces: 'appDataFolder',
-          // pageSize defaults to 100. yCal writes ≤ 6 files; one page is
-          // plenty. If we ever blow past, paginate.
-          pageSize: 100,
-          fields: 'files(id, name, size, modifiedTime)',
-        },
-        { timeout: NETWORK_TIMEOUT_MS },
-      ),
-    );
-    return (res.data.files ?? []) as AppDataFile[];
+    const out: AppDataFile[] = [];
+    let pageToken: string | undefined;
+    // Belt-and-braces against a server that keeps returning a token:
+    // 1000 files/page × 100 pages is far beyond any real appdata bucket.
+    for (let page = 0; page < 100; page += 1) {
+      const res = await withNetworkTimeout('drive.list', () =>
+        this.drive.files.list(
+          {
+            // 1000 is Drive's maximum page size — fewest round trips.
+            pageSize: 1000,
+            spaces: 'appDataFolder',
+            pageToken,
+            fields: 'nextPageToken, files(id, name, size, modifiedTime)',
+          },
+          { timeout: NETWORK_TIMEOUT_MS },
+        ),
+      );
+      out.push(...((res.data.files ?? []) as AppDataFile[]));
+      pageToken = res.data.nextPageToken ?? undefined;
+      if (!pageToken) break;
+    }
+    return out;
   }
 
   async file(name: string): Promise<AppDataFile | null> {

@@ -346,6 +346,40 @@ export async function listMeetingArchive(
   return { eventId, accountId, meta, has, modifiedAt };
 }
 
+// How many meta sidecars we pull from one account at a time. The meta
+// bodies are the only part of a listing that can't be answered from file
+// names + list metadata, so they're the whole network cost of the
+// listing. 6 keeps us well inside Drive's per-user rate limit and bounds
+// the open-socket count, while collapsing what used to be one 10s-timeout
+// round trip per event into a handful of waves. The access token is
+// already warm by this point (api.list() just refreshed it), so the
+// parallel reads don't stampede google-auth-library's refresh path.
+const META_FETCH_CONCURRENCY = 6;
+
+// Run `fn` over `items` with at most `limit` in flight, preserving order
+// in the result array.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      for (;;) {
+        const i = next;
+        next += 1;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return out;
+}
+
 // Enumerate every meet__ entry across every signed-in account. Used by
 // `ycal recordings` and the Settings → Recordings list to show meeting
 // notes that have aged out of any in-memory cache. Returns one row per
@@ -367,32 +401,69 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
         arr.push(f);
         byEvent.set(parsed.eventIdSafe, arr);
       }
+      // Pass 1 — everything derivable from file names and the list
+      // metadata. No network at all.
+      const rows = [] as Array<{
+        has: Record<ArtifactKind, boolean>;
+        modifiedAt: string | null;
+        metaFileId: string | null;
+        fallbackEventId: string;
+      }>;
       for (const [, group] of byEvent) {
         const has: Record<ArtifactKind, boolean> = {
           audio: false, transcript: false, summary: false,
         };
-        let meta: ArchiveMeta | null = null;
         let modifiedAt: string | null = null;
+        let metaFileId: string | null = null;
         for (const f of group) {
           const parsed = parseName(f.name);
           if (!parsed) continue;
-          if (parsed.kind === 'meta' && f.id) {
-            try {
-              const buf = await api.read(f.id);
-              meta = JSON.parse(buf.toString('utf-8')) as ArchiveMeta;
-            } catch { /* skip */ }
-          } else if (parsed.kind !== 'meta') {
+          if (parsed.kind === 'meta') {
+            if (f.id) metaFileId = f.id;
+          } else {
             has[parsed.kind] = true;
           }
           if (f.modifiedTime && (!modifiedAt || f.modifiedTime > modifiedAt)) {
             modifiedAt = f.modifiedTime;
           }
         }
-        // eventId from the meta is the canonical (un-mangled) one. If meta
-        // is missing, fall back to the eventIdSafe — best we can do.
-        const eventId = meta?.eventId ?? group[0].name.slice(PREFIX.length).split('.')[0];
-        out.push({ eventId, accountId: acct.id, meta, has, modifiedAt });
+        rows.push({
+          has,
+          modifiedAt,
+          metaFileId,
+          // eventIdSafe — best we can do when the meta sidecar is missing.
+          fallbackEventId: group[0].name.slice(PREFIX.length).split('.')[0],
+        });
       }
+
+      // Pass 2 — the meta sidecars, in bounded-parallel waves. The list
+      // UI reads meta.title / .startedAt / .endsAt on every row, so we
+      // can't defer these to click time; but doing them one-at-a-time
+      // meant a serial round trip per event, which is what made the Notes
+      // view and `ycal recordings` crawl once the listing was complete.
+      const metas = await mapWithConcurrency(
+        rows,
+        META_FETCH_CONCURRENCY,
+        async (r): Promise<ArchiveMeta | null> => {
+          if (!r.metaFileId) return null;
+          try {
+            const buf = await api.read(r.metaFileId);
+            return JSON.parse(buf.toString('utf-8')) as ArchiveMeta;
+          } catch { return null; /* skip */ }
+        },
+      );
+
+      rows.forEach((r, i) => {
+        const meta = metas[i];
+        out.push({
+          // eventId from the meta is the canonical (un-mangled) one.
+          eventId: meta?.eventId ?? r.fallbackEventId,
+          accountId: acct.id,
+          meta,
+          has: r.has,
+          modifiedAt: r.modifiedAt,
+        });
+      });
     } catch (e) {
       console.error(`[yCal meetingArchive] list failed for ${acct.email}`, e);
     }
