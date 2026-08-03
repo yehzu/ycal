@@ -5,10 +5,13 @@
 // Flow:
 //   1. Try to connect to ~/Library/Application Support/yCal/cli.sock.
 //      If it answers → print response → exit. (~50ms, no dock activity.)
-//   2. If the GUI isn't running, launch yCal.app via `open -g -a` (no focus
-//      steal), poll the socket for up to 15s, then drive it once it's up.
-//      Subsequent calls go straight through path 1.
-//   3. If yCal.app isn't installed, fail with code 2.
+//   2. If the socket never accepts, the GUI isn't running: launch yCal.app
+//      via `open -g -a` (no focus steal), poll the socket for up to 15s,
+//      then drive it once it's up. Subsequent calls go through path 1.
+//   3. If the socket DID accept but the request didn't finish (timeout, or
+//      the connection dropped mid-answer), the GUI is up — say so and stop.
+//      Launching a second copy would neither help nor be honest.
+//   4. If yCal.app isn't installed, fail with code 2.
 //
 // Pure Node, no Electron import — that's what keeps the dock quiet.
 'use strict';
@@ -61,8 +64,32 @@ const isUpdateCommand = command === 'update' || command === 'upgrade';
 // Updating can download a large release zip before the app hands off to the
 // swap helper. Keep the normal request budget short, but allow self-update
 // enough time on a slow connection.
-const readTimeoutMs =
-  isUpdateCommand ? 10 * 60 * 1000 : 30000;
+const DEFAULT_READ_TIMEOUT_MS = 30000;
+const UPDATE_READ_TIMEOUT_MS = 10 * 60 * 1000;
+
+// Opt-in escape hatch, not a bigger default. A request that needs more than
+// 30s is a real symptom (an archive listing that has outgrown the budget),
+// and quietly waiting longer would hide it — so the default stays put and
+// the timeout message names this variable instead. For `update` the
+// override may only RAISE the budget, so exporting a small value in a shell
+// profile can never shorten a download.
+function readTimeoutOverride() {
+  const raw = process.env.YCAL_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === '') return null;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    process.stderr.write(
+      `ycal: ignoring YCAL_TIMEOUT_MS=${raw} — expected a positive number of milliseconds\n`,
+    );
+    return null;
+  }
+  return Math.round(ms);
+}
+
+const timeoutOverride = readTimeoutOverride();
+const readTimeoutMs = isUpdateCommand
+  ? Math.max(UPDATE_READ_TIMEOUT_MS, timeoutOverride ?? 0)
+  : (timeoutOverride ?? DEFAULT_READ_TIMEOUT_MS);
 let progressVisible = false;
 
 function renderProgress(status) {
@@ -104,19 +131,39 @@ function finishProgress() {
 //     socket. Short — if it can't accept in <1s the GUI almost certainly
 //     isn't running, and we should fall back to launching.
 //   • readTimeoutMs caps the actual request. Generous, since real commands
-//     hit the Google Calendar API and can take a couple seconds. A single
-//     unified timeout caused responses to be cut off mid-flight on slower
-//     queries and produced false "yCal not running" reports.
+//     hit the Google Calendar API and can take a couple seconds.
+//
+// Resolves with a tagged outcome rather than a bare response-or-null,
+// because the caller has to tell two very different failures apart:
+//   { outcome: 'ok', result }      → response parsed, print it
+//   { outcome: 'unreachable' }     → the socket never accepted; GUI is down
+//   { outcome: 'timeout' }         → accepted, then nothing within the budget
+//   { outcome: 'unusable', detail} → accepted, then closed/errored with no
+//                                    parseable response
+// Collapsing the last three into null is what made a slow request print
+// "yCal not running — launching…" and then launch an app that was already
+// running.
+const UNREACHABLE = { outcome: 'unreachable' };
+
 function tryRequest(connectTimeoutMs, readTimeoutMs) {
   return new Promise((resolve) => {
     const sock = net.createConnection(SOCK);
     let connected = false;
+    let settled = false;
     let buf = '';
     let lineBuf = '';
 
+    // Several socket events can fire for one failure (error then close);
+    // first one wins, the rest are no-ops.
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
     const connectTimer = setTimeout(() => {
       sock.destroy();
-      resolve(null);
+      settle(UNREACHABLE);
     }, connectTimeoutMs);
     let readTimer = null;
 
@@ -128,7 +175,7 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
       sock.end(); // half-close: server reads until 'end'
       readTimer = setTimeout(() => {
         sock.destroy();
-        resolve(null);
+        settle({ outcome: 'timeout' });
       }, readTimeoutMs);
     });
     sock.on('data', (chunk) => {
@@ -159,20 +206,38 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
           buf = lineBuf;
         }
         const parsed = JSON.parse(buf);
-        resolve(parsed.type === 'result'
-          ? { stdout: parsed.stdout, stderr: parsed.stderr, code: parsed.code }
-          : parsed);
+        settle({
+          outcome: 'ok',
+          result: parsed.type === 'result'
+            ? { stdout: parsed.stdout, stderr: parsed.stderr, code: parsed.code }
+            : parsed,
+        });
       } catch (_e) {
-        resolve(null);
+        settle({
+          outcome: 'unusable',
+          detail: buf ? 'response was not valid JSON' : 'response was empty',
+        });
       }
     });
-    sock.on('error', () => {
+    sock.on('error', (err) => {
       clearTimeout(connectTimer);
       if (readTimer) clearTimeout(readTimer);
       // ENOENT (no socket) and ECONNREFUSED (stale socket, nobody listening)
-      // both land here. Returning null tells main() to fall back to launching
-      // the GUI.
-      if (!connected) resolve(null);
+      // land here BEFORE 'connect' — that, and only that, means the GUI isn't
+      // accepting requests, so main() should fall back to launching it. An
+      // error after 'connect' is a live GUI that dropped the call; it used to
+      // leave this promise pending forever, hanging the CLI.
+      settle(connected
+        ? { outcome: 'unusable', detail: (err && err.message) || String(err) }
+        : UNREACHABLE);
+    });
+    // Backstop: a close with neither 'end' nor 'error' would otherwise hang.
+    sock.on('close', () => {
+      clearTimeout(connectTimer);
+      if (readTimer) clearTimeout(readTimer);
+      settle(connected
+        ? { outcome: 'unusable', detail: 'connection closed before a response arrived' }
+        : UNREACHABLE);
     });
   });
 }
@@ -194,14 +259,54 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Quote an argv entry well enough that the suggested retry line can be
+// pasted back into a shell verbatim.
+function shellQuote(a) {
+  return /^[\w@%+=:,./-]+$/.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`;
+}
+
+function describeCommand() {
+  return command ? `\`ycal ${command}\`` : 'the request';
+}
+
+// The socket accepted, so the GUI is up — the one thing this must never do
+// is claim otherwise or launch a second copy. Name the failure that actually
+// happened and give the user a next step.
+function reportLiveFailure(attempt) {
+  finishProgress();
+  if (attempt.outcome === 'timeout') {
+    const secs = readTimeoutMs / 1000;
+    // Don't round a 1.5s override up to "2s" — the number is the whole point.
+    const budget = `${secs >= 10 ? Math.round(secs) : Math.round(secs * 10) / 10}s`;
+    const suggested = Math.max(readTimeoutMs * 3, 120000);
+    const retry = ['ycal', ...args.map(shellQuote)].join(' ');
+    process.stderr.write(
+      `ycal: connected to yCal, but ${describeCommand()} did not answer within ${budget}.\n`
+      + '  yCal is running — this is a slow request, not a stopped app. Commands that\n'
+      + '  enumerate the whole Drive archive get slower as the archive grows.\n'
+      + `  Retry, or give this one call more room:\n    YCAL_TIMEOUT_MS=${suggested} ${retry}\n`,
+    );
+  } else {
+    process.stderr.write(
+      `ycal: connected to yCal, but ${describeCommand()} returned no usable response`
+      + `${attempt.detail ? ` (${attempt.detail})` : ''}.\n`
+      + '  yCal is running. Retry; if it repeats, restart yCal.\n',
+    );
+  }
+  process.exit(1);
+}
+
 async function main() {
   // Fast path: GUI already running. Short connect, long read — most commands
   // need a network roundtrip to Google Calendar, which can take a couple
   // seconds.
-  let res = await tryRequest(1000, readTimeoutMs);
-  if (res) return deliver(res);
+  let attempt = await tryRequest(1000, readTimeoutMs);
+  if (attempt.outcome === 'ok') return deliver(attempt.result);
+  // Anything but 'unreachable' means the socket accepted us, i.e. the GUI is
+  // alive. Don't fall through to the launch path.
+  if (attempt.outcome !== 'unreachable') return reportLiveFailure(attempt);
 
-  // Slow path: launch the GUI, then poll.
+  // Slow path: the socket never accepted. Launch the GUI, then poll.
   if (!fs.existsSync(APP_BIN)) {
     process.stderr.write(
       `ycal: yCal.app not found at ${APP_PATH}. ` +
@@ -226,8 +331,11 @@ async function main() {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     await sleep(300);
-    res = await tryRequest(700, readTimeoutMs);
-    if (res) return deliver(res);
+    attempt = await tryRequest(700, readTimeoutMs);
+    if (attempt.outcome === 'ok') return deliver(attempt.result);
+    // The GUI came up and accepted, but the request itself failed. Report
+    // that instead of polling out the remaining seconds and blaming startup.
+    if (attempt.outcome !== 'unreachable') return reportLiveFailure(attempt);
   }
   process.stderr.write('ycal: timed out waiting for yCal to start (15s)\n');
   process.exit(1);
