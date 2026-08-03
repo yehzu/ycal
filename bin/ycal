@@ -67,12 +67,23 @@ const isUpdateCommand = command === 'update' || command === 'upgrade';
 const DEFAULT_READ_TIMEOUT_MS = 30000;
 const UPDATE_READ_TIMEOUT_MS = 10 * 60 * 1000;
 
+// Floor for the override. Below this the budget can expire on a perfectly
+// healthy request — the fast path already spends up to 1s on connect alone,
+// and normal commands need a Google Calendar roundtrip on top. That failure
+// classifies as 'timeout', not 'unreachable', so it would never fall through
+// to launching the GUI: the CLI would just refuse every command with a
+// "connected, but…" message. 5s is 5× the connect budget and comfortably
+// past the couple-second roundtrip, so it only rejects values that are
+// unusable by construction.
+const MIN_READ_TIMEOUT_MS = 5000;
+
 // Opt-in escape hatch, not a bigger default. A request that needs more than
 // 30s is a real symptom (an archive listing that has outgrown the budget),
 // and quietly waiting longer would hide it — so the default stays put and
-// the timeout message names this variable instead. For `update` the
-// override may only RAISE the budget, so exporting a small value in a shell
-// profile can never shorten a download.
+// the timeout message names this variable instead. The override can only
+// RAISE `update`'s 10-minute budget, and can never take any command below
+// MIN_READ_TIMEOUT_MS — a stale `export YCAL_TIMEOUT_MS=2000` left in a
+// shell profile after one update must not quietly break every later call.
 function readTimeoutOverride() {
   const raw = process.env.YCAL_TIMEOUT_MS;
   if (raw === undefined || raw.trim() === '') return null;
@@ -89,7 +100,7 @@ function readTimeoutOverride() {
 const timeoutOverride = readTimeoutOverride();
 const readTimeoutMs = isUpdateCommand
   ? Math.max(UPDATE_READ_TIMEOUT_MS, timeoutOverride ?? 0)
-  : (timeoutOverride ?? DEFAULT_READ_TIMEOUT_MS);
+  : Math.max(MIN_READ_TIMEOUT_MS, timeoutOverride ?? DEFAULT_READ_TIMEOUT_MS);
 let progressVisible = false;
 
 function renderProgress(status) {
@@ -269,9 +280,13 @@ function describeCommand() {
   return command ? `\`ycal ${command}\`` : 'the request';
 }
 
-// The socket accepted, so the GUI is up — the one thing this must never do
-// is claim otherwise or launch a second copy. Name the failure that actually
-// happened and give the user a next step.
+// The socket accepted, so a yCal process is alive holding that listener —
+// this must never claim otherwise or launch a second copy. But "alive" is
+// the ONLY thing a completed connect proves. A wedged main process still has
+// its listener, so the kernel accepts and we time out exactly as we do on a
+// merely-slow request; the two are indistinguishable from here. Say what was
+// observed, offer both readings, and never tell the user to sit through a
+// longer wait as if it were the certain fix.
 function reportLiveFailure(attempt) {
   finishProgress();
   if (attempt.outcome === 'timeout') {
@@ -282,9 +297,11 @@ function reportLiveFailure(attempt) {
     const retry = ['ycal', ...args.map(shellQuote)].join(' ');
     process.stderr.write(
       `ycal: connected to yCal, but ${describeCommand()} did not answer within ${budget}.\n`
-      + '  yCal is running — this is a slow request, not a stopped app. Commands that\n'
-      + '  enumerate the whole Drive archive get slower as the archive grows.\n'
-      + `  Retry, or give this one call more room:\n    YCAL_TIMEOUT_MS=${suggested} ${retry}\n`,
+      + '  The socket accepted, so yCal is up — it is either slow to answer this\n'
+      + '  command (listings of the whole Drive archive get slower as it grows) or\n'
+      + '  stuck. This cannot tell the two apart.\n'
+      + `  If you think it is slow, give this one call more room:\n    YCAL_TIMEOUT_MS=${suggested} ${retry}\n`
+      + '  If that times out too, or it keeps happening, restart yCal.\n',
     );
   } else {
     process.stderr.write(
