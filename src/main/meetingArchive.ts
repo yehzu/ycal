@@ -239,7 +239,7 @@ function readStampedCachedMeta(eventIdSafe: string): StampedCachedMeta | null {
     // This is NOT the only reader of the file. Two others parse the same
     // meta.json and neither strips the key: readCachedMeta() (:174), which
     // hands the raw body back cast as ArchiveMeta, and
-    // resolveOriginalStartedAt() (meetRecorder.ts:556-558), which reads
+    // resolveOriginalStartedAt() (meetRecorder.ts:556-560), which reads
     // startedAt straight out of a JSON.parse. Both are safe today only
     // because they pick individual fields and never re-serialise the body.
     const { [CACHE_DRIVE_MTIME_KEY]: stamp, ...meta } = parsed as Record<string, unknown>;
@@ -281,11 +281,21 @@ function readStampedCachedMeta(eventIdSafe: string): StampedCachedMeta | null {
 // takeover happens on the first miss, i.e. an unstamped body, or a stamp
 // Drive has since moved past.
 //
+// And a takeover writes the Drive body verbatim, so the new owner is THAT
+// body's own `accountId` — not, by construction, the account whose
+// listing performed the write. The two coincide in practice only because
+// the row was enumerated out of this account's own appdata, so the
+// sidecar it just downloaded is one this account uploaded.
+//
 // The one exception to all of the above: uploadMeetingArtifacts() writes
 // this file without consulting this guard at all, so an upload ALWAYS
 // takes ownership. That is deliberate — the account that just uploaded is
 // the freshest source of truth for the body, and that write is the only
-// mechanism that ever releases another account's claim.
+// mechanism that ever TRANSFERS a claim. It is not the only way a claim
+// ends, though: deleteMeetingArchive() (:874) rmSync's the whole cache
+// directory unconditionally, claim included — so deleting a meeting held
+// by account A leaves the next listing under account B free to miss and
+// claim it.
 function cacheClaimedByOtherAccount(
   cached: StampedCachedMeta | null,
   accountId: string,
