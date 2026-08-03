@@ -179,27 +179,48 @@ async function runAuthDance(
 // refreshes and keeps the access token until it actually expires, which
 // matters now that the meta reads run six-wide.
 //
-// Keyed by account id, but the cached entry is only handed back when the
-// OAuth client_id AND the refresh token still match — so re-adding an
-// account (new refresh token) or editing the OAuth config rebuilds
-// instead of silently reusing a client bound to dead credentials. An
-// entry for a removed account is simply never looked up again.
+// Keyed by account id. What the guard below ACTUALLY buys us: re-adding
+// an account hands us a new refresh token, and that rebuilds the client
+// instead of reusing one bound to the revoked grant.
+//
+// It does NOT make the app pick up an edited oauth-client.json. That is a
+// property of loadOAuthConfig(), which memoises at module scope
+// (config.ts:12-13) and so reads the file exactly once per process — the
+// credential comparison here can never observe a change and is dead in a
+// single process by construction. Changing the OAuth client still means
+// restarting yCal, exactly as it did before this cache existed. The
+// comparison stays because it is the correct guard the day that memoising
+// changes, and it covers the secret as well as the id: rotating only
+// client_secret is a real Google Cloud operation and would otherwise slip
+// past an id-only check.
 const clientCache = new Map<
   string,
-  { clientId: string; refreshToken: string; client: OAuth2Client }
+  { clientId: string; clientSecret: string; refreshToken: string; client: OAuth2Client }
 >();
+
+// Drop an account's cached client. Must be called whenever an account is
+// removed: this Map is process-lifetime, so without it a removed
+// account's refresh token stays resident in memory until yCal restarts —
+// the opposite of what tokenStore's encrypt-at-rest design is for.
+export function forgetAuthClient(accountId: string): void {
+  clientCache.delete(accountId);
+}
 
 export function authClientForAccount(account: StoredAccount): OAuth2Client {
   const cfg = loadOAuthConfig();
   if (!cfg) throw new Error('OAuth client credentials not configured.');
   const hit = clientCache.get(account.id);
-  if (hit && hit.clientId === cfg.client_id && hit.refreshToken === account.refreshToken) {
+  if (hit
+      && hit.clientId === cfg.client_id
+      && hit.clientSecret === cfg.client_secret
+      && hit.refreshToken === account.refreshToken) {
     return hit.client;
   }
   const oauth2 = new google.auth.OAuth2(cfg.client_id, cfg.client_secret);
   oauth2.setCredentials({ refresh_token: account.refreshToken });
   clientCache.set(account.id, {
     clientId: cfg.client_id,
+    clientSecret: cfg.client_secret,
     refreshToken: account.refreshToken,
     client: oauth2,
   });

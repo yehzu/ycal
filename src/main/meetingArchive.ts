@@ -32,6 +32,15 @@
 //     uploadMeetingArtifacts() also writes this file and does NOT align
 //     its mtime, so mtime here means "when this Mac wrote it".
 // See the CACHE_DRIVE_MTIME_KEY block below.
+//
+// WRITERS of <eventIdSafe>/meta.json — there are two, and the second one
+// is easy to miss when debugging a wrong title or date:
+//   1. uploadMeetingArtifacts(), at the end of every upload.
+//   2. listAllMeetingArchives() pass 2, on every cache miss — i.e. any
+//      `ycal recordings` or Notes-view refresh can rewrite this file.
+// Because the directory is keyed by event id with no account component,
+// (2) is ownership-gated so two accounts holding the same event can't
+// flip the body back and forth. See cacheClaimedByOtherAccount.
 
 import { app } from 'electron';
 import fs from 'node:fs';
@@ -203,6 +212,7 @@ export function readCachedMeta(eventId: string): ArchiveMeta | null {
 const CACHE_DRIVE_MTIME_KEY = '_driveModifiedTime';
 
 interface StampedCachedMeta {
+  // Already stripped of the local-only key — see readStampedCachedMeta.
   meta: ArchiveMeta;
   driveModifiedTime: string | null;
 }
@@ -219,14 +229,48 @@ function readStampedCachedMeta(eventIdSafe: string): StampedCachedMeta | null {
     // A non-object body (null / array / scalar) is a corrupt cache, not a
     // meta. Treat as a miss; the Drive read will overwrite it.
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    const stamp = (parsed as Record<string, unknown>)[CACHE_DRIVE_MTIME_KEY];
+    // Strip the local-only key here, at the ONE place a cached body enters
+    // the program, so what callers hold is an ArchiveMeta that matches its
+    // type — nothing downstream can round-trip our bookkeeping back up to
+    // Drive via a `JSON.stringify(meta)` + `upsert`, and nothing has to
+    // remember to strip it. Today's callers happen to be safe; the type
+    // system would not have caught tomorrow's.
+    const { [CACHE_DRIVE_MTIME_KEY]: stamp, ...meta } = parsed as Record<string, unknown>;
     return {
-      meta: parsed as ArchiveMeta,
+      meta: meta as unknown as ArchiveMeta,
       driveModifiedTime: typeof stamp === 'string' && stamp ? stamp : null,
     };
   } catch {
     return null;
   }
+}
+
+// ── One cache directory, possibly two accounts ───────────────────────────
+//
+// cacheDir() keys on eventIdSafe ALONE — there is no account component
+// (see :145). When the same event is archived under two signed-in
+// accounts, both rows in a listing resolve to the SAME meta.json.
+//
+// That was harmless while uploadMeetingArtifacts() was the only writer:
+// a listing read the file and never moved it. Pass 2 writing it changes
+// that, and an unguarded write would flip the body between accounts on
+// every single listing. This file is not scratch space — it is what the
+// Notes view renders via readCachedMeta() (notesStore.ts:608/:744), and
+// what uploadMeetingArtifacts() reads back as `prevMeta` to inherit
+// startedAt/endsAt from and then re-uploads to Drive. A flip is therefore
+// a path from local cache into Drive data, and it did not exist before.
+//
+// The rule: whichever account's body is on disk owns the file. The other
+// account reads Drive every time and writes nothing. Ownership comes from
+// the body's own `accountId` — already part of ArchiveMeta, so no second
+// stamp field is needed. An absent/blank owner means unclaimed (legacy or
+// hand-edited), and the current account may take it.
+function cacheClaimedByOtherAccount(
+  cached: StampedCachedMeta | null,
+  accountId: string,
+): boolean {
+  const owner = cached?.meta?.accountId;
+  return typeof owner === 'string' && owner.length > 0 && owner !== accountId;
 }
 
 // EQUALITY, not "cached >= remote". We recorded the exact modifiedTime we
@@ -244,23 +288,39 @@ function sameDriveTime(a: string | null | undefined, b: string | null | undefine
 
 // Best-effort: a cache we can't write is a slow next run, never a failed
 // listing, so this swallows everything.
+//
+// Written via temp + rename, which is atomic within a directory on APFS.
+// listAllMeetingArchives() has four entry points (cli.ts:829 and :898,
+// index.ts:759, notesStore.ts:768) across the GUI and the CLI, which are
+// separate processes that can overlap — a plain writeFileSync lets a
+// reader see a half-serialised body. That failure is quiet and nasty: the
+// reader's catch turns it into a miss and the row degrades to "Untitled
+// meeting", so the symptom is a title that vanishes now and then and
+// never reproduces on demand. The temp name carries the pid so two
+// writers don't collide on the temp file either.
 function writeStampedCachedMeta(
   eventIdSafe: string,
   meta: unknown,
   driveModifiedTime: string,
 ): void {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return;
+  const final = cacheMetaPath(eventIdSafe);
+  const tmp = `${final}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(cacheDir(eventIdSafe), { recursive: true });
     fs.writeFileSync(
-      cacheMetaPath(eventIdSafe),
+      tmp,
       JSON.stringify(
         { ...(meta as Record<string, unknown>), [CACHE_DRIVE_MTIME_KEY]: driveModifiedTime },
         null,
         2,
       ),
     );
-  } catch { /* cache write is advisory */ }
+    fs.renameSync(tmp, final);
+  } catch {
+    // Don't leave a temp behind when the rename (or the write) failed.
+    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to do */ }
+  }
 }
 
 async function apiFor(accountId: string): Promise<DriveAppDataAPI> {
@@ -581,11 +641,14 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
           // can't stand in for it — so duplicates always go to Drive and
           // keep their existing four-combination behaviour exactly.
           const only = r.metaFiles.length === 1 ? r.metaFiles[0] : null;
-          if (only?.modifiedTime) {
-            const cached = readStampedCachedMeta(r.eventIdSafe);
-            if (cached && sameDriveTime(cached.driveModifiedTime, only.modifiedTime)) {
-              return { meta: cached.meta, failed: 0 };
-            }
+          const cached = only ? readStampedCachedMeta(r.eventIdSafe) : null;
+          // Another account already owns this event's cache directory —
+          // read Drive and leave the file alone, for BOTH the hit and the
+          // write below. See cacheClaimedByOtherAccount.
+          const claimedByOther = cacheClaimedByOtherAccount(cached, acct.id);
+          if (only?.modifiedTime && cached && !claimedByOther
+              && sameDriveTime(cached.driveModifiedTime, only.modifiedTime)) {
+            return { meta: cached.meta, failed: 0 };
           }
           let meta: ArchiveMeta | null = null;
           let failed = 0;
@@ -596,7 +659,7 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
               meta = parsed;
               // Write back only for the single-sidecar shape — a stamped
               // body for a duplicated row would never be consulted anyway.
-              if (only && f.modifiedTime) {
+              if (only && f.modifiedTime && !claimedByOther) {
                 writeStampedCachedMeta(r.eventIdSafe, parsed, f.modifiedTime);
               }
             } catch (e) {

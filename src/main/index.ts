@@ -10,7 +10,7 @@ const execFile = promisify(execFileCb);
 
 import { IPC, type TaskProviderId } from '@shared/types';
 import { isConfigured } from './config';
-import { startAddAccount } from './auth';
+import { forgetAuthClient, startAddAccount } from './auth';
 import { removeAccount } from './tokenStore';
 import {
   fetchColors, listAccountSummaries, listAllCalendars, listEvents,
@@ -305,6 +305,9 @@ function registerIpc() {
 
   ipcMain.handle(IPC.RemoveAccount, (_e, id: string) => {
     removeAccount(id);
+    // Drop the in-memory OAuth client too — it holds the refresh token we
+    // just deleted from disk, and the cache lives for the whole process.
+    forgetAuthClient(id);
     invalidateCalendarCache();
     invalidateEventsCache();
     refreshTraySoon();
