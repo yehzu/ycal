@@ -1,8 +1,17 @@
-// Recorder-specific append-only file log. Lives at
-// ~/Library/Logs/yCal/recorder.log so it survives across yCal launches.
-// Captures the [yCal recorder] console.log lines plus an explicit
-// rtrace() that writes a stack frame — useful for diagnosing "who
-// stopped my recording" after the fact.
+// Append-only file log for main-process events worth reading after the
+// fact. Lives at ~/Library/Logs/yCal/recorder.log so it survives across
+// yCal launches. Captures the [yCal recorder] console.log lines plus an
+// explicit rtrace() that writes a stack frame — useful for diagnosing
+// "who stopped my recording" after the fact.
+//
+// It started out recorder-only (hence the name and path) but is now also
+// the destination for silent degradations elsewhere in the main process —
+// a truncated Drive listing, a batch of failed meta reads. Those need a
+// file for the same reason the recorder did: the GUI is launched detached
+// via `open -g -a`, so main-process console output has no terminal to land
+// in, and the CLI path substitutes its own sinks. Anything appended here
+// must stay cheap and non-throwing; callers log to it in addition to
+// console, never instead of raising a real error.
 
 import fs from 'node:fs';
 import path from 'node:path';

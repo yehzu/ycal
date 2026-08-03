@@ -15,6 +15,7 @@
 import { google, type drive_v3 } from 'googleapis';
 import type { OAuth2Client } from 'google-auth-library';
 import { NETWORK_TIMEOUT_MS, withNetworkTimeout } from './networkTimeout';
+import { rlog } from './recorderLog';
 
 export interface AppDataFile {
   id: string;
@@ -72,12 +73,19 @@ export class DriveAppDataAPI {
     // caller is written to tolerate a degraded/offline listing, and
     // failing the whole Notes view over this would be worse than showing
     // most of it. If this ever fires, the cap (or the query) is wrong.
+    //
+    // console.warn alone is not reachable evidence: this runs in the
+    // Electron main process, which the GUI starts via `open -g -a` with no
+    // attached terminal, and the CLI path swaps in its own StringSink. So
+    // also append to ~/Library/Logs/yCal/recorder.log, which outlives the
+    // launch that produced it and is somewhere a user can be pointed at.
     if (pageToken) {
-      console.warn(
+      const msg =
         `[yCal driveAppData] appdata listing truncated at ${pages} pages / `
         + `${out.length} files — Drive still had more. Callers are seeing an `
-        + 'INCOMPLETE listing; raise MAX_LIST_PAGES.',
-      );
+        + 'INCOMPLETE listing; raise MAX_LIST_PAGES.';
+      console.warn(msg);
+      rlog(msg);
     }
     return out;
   }

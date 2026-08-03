@@ -31,6 +31,7 @@ import path from 'node:path';
 import { authClientForAccount } from './auth';
 import { getAccount, listAccounts } from './tokenStore';
 import { DriveAppDataAPI, type AppDataFile } from './driveAppData';
+import { rlog } from './recorderLog';
 
 export type ArtifactKind = 'audio' | 'transcript' | 'summary';
 
@@ -478,15 +479,21 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
       // of those is noise; a rate-limit or auth failure takes out dozens
       // at once and used to do it in complete silence. Surface the count
       // (once per account) with a sample cause so it's diagnosable.
+      //
+      // console.warn goes to the main process's stderr, which nobody sees:
+      // the GUI is launched detached via `open -g -a` and the CLI path
+      // redirects its own sinks. Mirror it into
+      // ~/Library/Logs/yCal/recorder.log so the degradation is still
+      // discoverable after the fact.
       const failedReads = metas.reduce((n, m) => n + m.failed, 0);
       const degradedRows = metas.filter((m, i) => !m.meta && rows[i].metaFileIds.length > 0).length;
       if (failedReads > 0) {
-        console.warn(
+        const msg =
           `[yCal meetingArchive] ${failedReads} meta sidecar read(s) failed for `
           + `${acct.email}; ${degradedRows}/${rows.length} recordings will show `
-          + 'without a title or date. Sample cause:',
-          lastMetaError,
-        );
+          + 'without a title or date. Sample cause:';
+        console.warn(msg, lastMetaError);
+        rlog(msg, lastMetaError);
       }
 
       rows.forEach((r, i) => {
