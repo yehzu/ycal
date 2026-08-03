@@ -23,6 +23,11 @@ export interface AppDataFile {
   modifiedTime?: string;
 }
 
+// Ceiling on how many pages list() will follow. At Drive's max pageSize
+// of 1000 this is 100k files — orders of magnitude past any real appdata
+// bucket, so reaching it means something is wrong rather than big.
+const MAX_LIST_PAGES = 100;
+
 export class DriveAppDataAPI {
   private drive: drive_v3.Drive;
   constructor(auth: OAuth2Client) {
@@ -40,9 +45,10 @@ export class DriveAppDataAPI {
   async list(): Promise<AppDataFile[]> {
     const out: AppDataFile[] = [];
     let pageToken: string | undefined;
-    // Belt-and-braces against a server that keeps returning a token:
+    let pages = 0;
+    // Belt-and-braces against a server that keeps handing back a token:
     // 1000 files/page × 100 pages is far beyond any real appdata bucket.
-    for (let page = 0; page < 100; page += 1) {
+    while (pages < MAX_LIST_PAGES) {
       const res = await withNetworkTimeout('drive.list', () =>
         this.drive.files.list(
           {
@@ -56,8 +62,22 @@ export class DriveAppDataAPI {
         ),
       );
       out.push(...((res.data.files ?? []) as AppDataFile[]));
+      pages += 1;
       pageToken = res.data.nextPageToken ?? undefined;
       if (!pageToken) break;
+    }
+    // Hitting the cap means we're handing back a TRUNCATED listing — the
+    // exact failure mode this method was rewritten to eliminate, so it
+    // must not be silent. Deliberately a warn and not a throw: every
+    // caller is written to tolerate a degraded/offline listing, and
+    // failing the whole Notes view over this would be worse than showing
+    // most of it. If this ever fires, the cap (or the query) is wrong.
+    if (pageToken) {
+      console.warn(
+        `[yCal driveAppData] appdata listing truncated at ${pages} pages / `
+        + `${out.length} files — Drive still had more. Callers are seeing an `
+        + 'INCOMPLETE listing; raise MAX_LIST_PAGES.',
+      );
     }
     return out;
   }

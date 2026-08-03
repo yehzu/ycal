@@ -357,25 +357,28 @@ export async function listMeetingArchive(
 const META_FETCH_CONCURRENCY = 6;
 
 // Run `fn` over `items` with at most `limit` in flight, preserving order
-// in the result array.
+// in the result array. `limit` is clamped to at least 1: a 0-or-negative
+// limit would spawn zero workers, resolve instantly and hand back an
+// array of holes typed as R — and tsconfig.node.json has no
+// noUncheckedIndexedAccess, so nothing downstream would catch it. Slow
+// beats silently wrong.
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
+  if (items.length === 0) return [];
+  const workerCount = Math.max(1, Math.min(Math.floor(limit) || 1, items.length));
   const out = new Array<R>(items.length);
   let next = 0;
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    async () => {
-      for (;;) {
-        const i = next;
-        next += 1;
-        if (i >= items.length) return;
-        out[i] = await fn(items[i]);
-      }
-    },
-  );
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  });
   await Promise.all(workers);
   return out;
 }
@@ -406,7 +409,11 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
       const rows = [] as Array<{
         has: Record<ArtifactKind, boolean>;
         modifiedAt: string | null;
-        metaFileId: string | null;
+        // Usually 0 or 1. Can be >1: Drive appdata permits duplicate
+        // names and upsert() has no atomic create-if-absent (it does a
+        // file(name) lookup then create), so a GUI upload racing a
+        // reprocess can leave two meet__<id>.meta.json behind.
+        metaFileIds: string[];
         fallbackEventId: string;
       }>;
       for (const [, group] of byEvent) {
@@ -414,12 +421,12 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
           audio: false, transcript: false, summary: false,
         };
         let modifiedAt: string | null = null;
-        let metaFileId: string | null = null;
+        const metaFileIds: string[] = [];
         for (const f of group) {
           const parsed = parseName(f.name);
           if (!parsed) continue;
           if (parsed.kind === 'meta') {
-            if (f.id) metaFileId = f.id;
+            if (f.id) metaFileIds.push(f.id);
           } else {
             has[parsed.kind] = true;
           }
@@ -430,7 +437,7 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
         rows.push({
           has,
           modifiedAt,
-          metaFileId,
+          metaFileIds,
           // eventIdSafe — best we can do when the meta sidecar is missing.
           fallbackEventId: group[0].name.slice(PREFIX.length).split('.')[0],
         });
@@ -441,20 +448,49 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
       // can't defer these to click time; but doing them one-at-a-time
       // meant a serial round trip per event, which is what made the Notes
       // view and `ycal recordings` crawl once the listing was complete.
+      //
+      // Within a row the sidecars are still tried IN ORDER and the last
+      // one that both downloads and parses wins — a duplicate whose read
+      // or JSON.parse fails must not clobber a sibling that worked. The
+      // parallelism is across rows, never inside one.
+      let lastMetaError: unknown = null;
       const metas = await mapWithConcurrency(
         rows,
         META_FETCH_CONCURRENCY,
-        async (r): Promise<ArchiveMeta | null> => {
-          if (!r.metaFileId) return null;
-          try {
-            const buf = await api.read(r.metaFileId);
-            return JSON.parse(buf.toString('utf-8')) as ArchiveMeta;
-          } catch { return null; /* skip */ }
+        async (r): Promise<{ meta: ArchiveMeta | null; failed: number }> => {
+          let meta: ArchiveMeta | null = null;
+          let failed = 0;
+          for (const id of r.metaFileIds) {
+            try {
+              const buf = await api.read(id);
+              meta = JSON.parse(buf.toString('utf-8')) as ArchiveMeta;
+            } catch (e) {
+              failed += 1;
+              lastMetaError = e;
+            }
+          }
+          return { meta, failed };
         },
       );
 
+      // A meta read that fails degrades its row to "Untitled meeting",
+      // startedAt null, and a sort to the bottom of the Notes list. One
+      // of those is noise; a rate-limit or auth failure takes out dozens
+      // at once and used to do it in complete silence. Surface the count
+      // (once per account) with a sample cause so it's diagnosable.
+      const failedReads = metas.reduce((n, m) => n + m.failed, 0);
+      const degradedRows = metas.filter((m, i) => !m.meta && rows[i].metaFileIds.length > 0).length;
+      if (failedReads > 0) {
+        console.warn(
+          `[yCal meetingArchive] ${failedReads} meta sidecar read(s) failed for `
+          + `${acct.email}; ${degradedRows}/${rows.length} recordings will show `
+          + 'without a title or date. Sample cause:',
+          lastMetaError,
+        );
+      }
+
       rows.forEach((r, i) => {
-        const meta = metas[i];
+        const { meta } = metas[i];
         out.push({
           // eventId from the meta is the canonical (un-mangled) one.
           eventId: meta?.eventId ?? r.fallbackEventId,
