@@ -229,12 +229,19 @@ function readStampedCachedMeta(eventIdSafe: string): StampedCachedMeta | null {
     // A non-object body (null / array / scalar) is a corrupt cache, not a
     // meta. Treat as a miss; the Drive read will overwrite it.
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    // Strip the local-only key here, at the ONE place a cached body enters
-    // the program, so what callers hold is an ArchiveMeta that matches its
+    // Strip the local-only key here, at the ONE place that produces a typed
+    // ArchiveMeta out of a cached body, so what callers hold matches its
     // type — nothing downstream can round-trip our bookkeeping back up to
     // Drive via a `JSON.stringify(meta)` + `upsert`, and nothing has to
     // remember to strip it. Today's callers happen to be safe; the type
     // system would not have caught tomorrow's.
+    //
+    // This is NOT the only reader of the file. Two others parse the same
+    // meta.json and neither strips the key: readCachedMeta() (:174), which
+    // hands the raw body back cast as ArchiveMeta, and
+    // resolveOriginalStartedAt() (meetRecorder.ts:556-558), which reads
+    // startedAt straight out of a JSON.parse. Both are safe today only
+    // because they pick individual fields and never re-serialise the body.
     const { [CACHE_DRIVE_MTIME_KEY]: stamp, ...meta } = parsed as Record<string, unknown>;
     return {
       meta: meta as unknown as ArchiveMeta,
@@ -248,7 +255,7 @@ function readStampedCachedMeta(eventIdSafe: string): StampedCachedMeta | null {
 // ── One cache directory, possibly two accounts ───────────────────────────
 //
 // cacheDir() keys on eventIdSafe ALONE — there is no account component
-// (see :145). When the same event is archived under two signed-in
+// (see :154). When the same event is archived under two signed-in
 // accounts, both rows in a listing resolve to the SAME meta.json.
 //
 // That was harmless while uploadMeetingArtifacts() was the only writer:
@@ -263,8 +270,22 @@ function readStampedCachedMeta(eventIdSafe: string): StampedCachedMeta | null {
 // The rule: whichever account's body is on disk owns the file. The other
 // account reads Drive every time and writes nothing. Ownership comes from
 // the body's own `accountId` — already part of ArchiveMeta, so no second
-// stamp field is needed. An absent/blank owner means unclaimed (legacy or
-// hand-edited), and the current account may take it.
+// stamp field is needed.
+//
+// An absent/blank owner means unclaimed (legacy or hand-edited), but
+// "unclaimed" is weaker than it sounds, because this guard only gates the
+// listing's write-back. A takeover needs the row to MISS: the hit branch
+// returns the cached body before it ever reaches the write. So an
+// unclaimed body that is stamped AND whose stamp still equals Drive's
+// modifiedTime is served to every account as-is and never rewritten;
+// takeover happens on the first miss, i.e. an unstamped body, or a stamp
+// Drive has since moved past.
+//
+// The one exception to all of the above: uploadMeetingArtifacts() writes
+// this file without consulting this guard at all, so an upload ALWAYS
+// takes ownership. That is deliberate — the account that just uploaded is
+// the freshest source of truth for the body, and that write is the only
+// mechanism that ever releases another account's claim.
 function cacheClaimedByOtherAccount(
   cached: StampedCachedMeta | null,
   accountId: string,
@@ -286,41 +307,56 @@ function sameDriveTime(a: string | null | undefined, b: string | null | undefine
   return Number.isFinite(ta) && Number.isFinite(tb) && ta === tb;
 }
 
+// The single writer of meta.json. BOTH writers go through here — the
+// listing write-back (writeStampedCachedMeta, just below) and
+// uploadMeetingArtifacts()'s cache seed — so every write is temp + rename,
+// which is atomic within a directory on APFS.
+//
+// The readers are spread across processes that overlap:
+// listAllMeetingArchives() has four entry points (cli.ts:829 and :898,
+// index.ts:762, notesStore.ts:768) across the GUI and the CLI, and an
+// upload can be running beside any of them. A plain writeFileSync lets a
+// reader see a half-serialised body, and the failure is quiet and nasty
+// because every reader's catch turns a parse error into "no cache":
+//
+//   - in a listing the row degrades to "Untitled meeting", so the symptom
+//     is a title that vanishes now and then and never reproduces;
+//   - in uploadMeetingArtifacts() the torn read nulls `prevMeta`, so
+//     startedAt falls through to the caller's value — "now" on a
+//     reprocess — and that wrong startedAt is then upserted to Drive. A
+//     tear in the local cache escapes into Drive's copy of the meeting.
+//
+// The temp name carries the pid so two writers don't collide on the temp
+// file either. Throws (after removing the temp) so each caller keeps its
+// own failure policy.
+function writeCacheMetaAtomic(eventIdSafe: string, body: unknown): void {
+  const final = cacheMetaPath(eventIdSafe);
+  const tmp = `${final}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(cacheDir(eventIdSafe), { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
+    fs.renameSync(tmp, final);
+  } catch (e) {
+    // Don't leave a temp behind when the rename (or the write) failed.
+    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to do */ }
+    throw e;
+  }
+}
+
 // Best-effort: a cache we can't write is a slow next run, never a failed
 // listing, so this swallows everything.
-//
-// Written via temp + rename, which is atomic within a directory on APFS.
-// listAllMeetingArchives() has four entry points (cli.ts:829 and :898,
-// index.ts:759, notesStore.ts:768) across the GUI and the CLI, which are
-// separate processes that can overlap — a plain writeFileSync lets a
-// reader see a half-serialised body. That failure is quiet and nasty: the
-// reader's catch turns it into a miss and the row degrades to "Untitled
-// meeting", so the symptom is a title that vanishes now and then and
-// never reproduces on demand. The temp name carries the pid so two
-// writers don't collide on the temp file either.
 function writeStampedCachedMeta(
   eventIdSafe: string,
   meta: unknown,
   driveModifiedTime: string,
 ): void {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return;
-  const final = cacheMetaPath(eventIdSafe);
-  const tmp = `${final}.${process.pid}.tmp`;
   try {
-    fs.mkdirSync(cacheDir(eventIdSafe), { recursive: true });
-    fs.writeFileSync(
-      tmp,
-      JSON.stringify(
-        { ...(meta as Record<string, unknown>), [CACHE_DRIVE_MTIME_KEY]: driveModifiedTime },
-        null,
-        2,
-      ),
-    );
-    fs.renameSync(tmp, final);
-  } catch {
-    // Don't leave a temp behind when the rename (or the write) failed.
-    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to do */ }
-  }
+    writeCacheMetaAtomic(eventIdSafe, {
+      ...(meta as Record<string, unknown>),
+      [CACHE_DRIVE_MTIME_KEY]: driveModifiedTime,
+    });
+  } catch { /* see above — a failed cache write is never a failed listing */ }
 }
 
 async function apiFor(accountId: string): Promise<DriveAppDataAPI> {
@@ -426,7 +462,11 @@ export async function uploadMeetingArtifacts(input: UploadInput): Promise<Upload
     // the next listing re-reads this one sidecar and rewrites it stamped.
     // One extra round trip per freshly uploaded recording is the correct
     // trade against guessing a timestamp we never saw.
-    fs.writeFileSync(cacheMetaPath(input.eventId), JSON.stringify(result.meta, null, 2));
+    //
+    // Still temp + rename: a listing in another process reads this same
+    // path, and so does the `prevMeta` read at the top of this function.
+    // See writeCacheMetaAtomic.
+    writeCacheMetaAtomic(input.eventId, result.meta);
   } catch (e) {
     console.error('[yCal meetingArchive] cache seed failed', e);
   }
