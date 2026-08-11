@@ -186,7 +186,14 @@ export function useStore(
         return;
       }
       fetchedRangeRef.current = { start: startTs, end: endTs };
-      setEvents(res.events);
+      // A failed refresh can return no rows when every calendar timed out and
+      // no disk cache is available. Keep the last-known-good events in that
+      // case; replacing them with [] makes a transient Google outage look
+      // like the user's calendar was deleted. The failure banner still tells
+      // the user that the data is stale and offers Retry.
+      if (res.events.length > 0 || res.failures.length === 0) {
+        setEvents(res.events);
+      }
       setEventFailures(res.failures);
       setError(null);
     } finally {

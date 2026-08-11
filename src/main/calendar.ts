@@ -544,11 +544,26 @@ export async function listEvents(req: ListEventsRequest): Promise<ListEventsResu
     writeEventsDiskCache(req.timeMin, req.timeMax, out);
   }
 
+  // Keep the last fully successful in-memory snapshot when a forced refresh
+  // fails. `force: true` deliberately bypasses the normal TTL cache above,
+  // but a timeout must not turn a previously populated calendar into a blank
+  // one. Returning the stale snapshot together with failures lets the
+  // renderer keep showing events while still surfacing the Retry banner.
+  if (failures.length > 0) {
+    const lastGood = eventsCache.get(cacheKey);
+    if (lastGood) {
+      console.warn(
+        `[yCal] events fetch failed — serving ${lastGood.data.length} events from in-memory cache`,
+      );
+      return { events: lastGood.data, failures };
+    }
+  }
+
   // Network-degraded fallback: every calendar failed transiently (typically
   // offline / DNS hang). If the on-disk cache covers the requested window,
   // serve it so the calendar isn't blank. Failures are still returned so
   // the renderer surfaces the degraded state.
-  if (out.length === 0 && failures.length > 0 && failures.every((f) => f.transient)) {
+  if (failures.length > 0 && failures.every((f) => f.transient)) {
     const disk = readEventsDiskCache();
     if (disk && disk.timeMin <= req.timeMin && disk.timeMax >= req.timeMax) {
       const filtered = disk.events.filter(
