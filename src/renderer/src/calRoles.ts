@@ -4,6 +4,9 @@ import { calKey } from './store';
 export type CalRole = 'normal' | 'subscribed' | 'holiday' | 'teamOoo';
 export type CalRoles = Record<string, CalRole>;
 
+export const TEAM_OOO_START_HOUR = 9;
+export const TEAM_OOO_END_HOUR = 18;
+
 export const ROLE_OPTIONS: Array<[CalRole, string]> = [
   ['normal', 'Normal events'],
   ['subscribed', 'Read-only (hide from agenda)'],
@@ -112,16 +115,25 @@ function localDay(d: Date): Date {
 }
 
 // Department/HR feeds commonly encode a full-day absence as a timed 09:00–
-// 18:00 event. The calendar surface should treat that as an all-day event so
-// it uses the connected ribbon at the top of Month/Week/Day views. This is a
-// display-only copy; the original timed event remains the source of truth.
+// 18:00 event. Only that exact full-workday shape is promoted to an all-day
+// display event; partial absences stay timed so the user can tell the
+// difference. The display copy never changes the source event.
+export function isTeamOooFullWorkday(e: CalendarEvent): boolean {
+  if (e.allDay) return true;
+  const start = new Date(e.start);
+  const end = new Date(e.end);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return false;
+  const startMinutes = start.getHours() * 60 + start.getMinutes();
+  const endMinutes = end.getHours() * 60 + end.getMinutes();
+  return end.getTime() > start.getTime()
+    && startMinutes === TEAM_OOO_START_HOUR * 60
+    && endMinutes === TEAM_OOO_END_HOUR * 60;
+}
+
 export function teamOooAllDayEvent(e: CalendarEvent): CalendarEvent {
+  if (!isTeamOooFullWorkday(e)) return e;
   if (e.allDay) {
-    return {
-      ...e,
-      eventType: 'default',
-      workingLocation: undefined,
-    };
+    return { ...e, eventType: 'default', workingLocation: undefined };
   }
 
   const start = new Date(e.start);
@@ -164,6 +176,12 @@ export function teamOooAllDayEvents(
       continue;
     }
     const shown = teamOooAllDayEvent(e);
+    if (shown === e) {
+      // A partial-day Team OOO remains a normal timed event. It must not be
+      // grouped with the full-workday all-day range for the same person.
+      normal.push(e);
+      continue;
+    }
     const key = [
       shown.accountId,
       shown.calendarId,
