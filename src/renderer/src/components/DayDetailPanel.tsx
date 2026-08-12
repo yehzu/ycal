@@ -6,7 +6,7 @@ import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import {
   type CalRoles, isHolidayEvent, isExcludedFromAgenda, isReadOnlyRole,
-  isTeamOooEvent, roleOfEvent, teamOooDailyEvent,
+  isTeamOooEvent, roleOfEvent, teamOooAllDayEvent,
 } from '../calRoles';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
@@ -168,9 +168,7 @@ export function DayDetailPanel({
         <>
           <div className="dd-section-h">Other calendars</div>
           {subscribed.map((e) => {
-            const shown = isTeamOooEvent(e, calRoles) && e.allDay
-              ? teamOooDailyEvent(e, date)
-              : e;
+            const shown = isTeamOooEvent(e, calRoles) ? teamOooAllDayEvent(e) : e;
             return renderEv(shown, shown.allDay);
           })}
         </>

@@ -7,12 +7,12 @@ import {
   startOfMonth, startOfWeek,
 } from '../dates';
 import {
-  buildEventsByDay, compareEventsByStart, eventTouchesDay, isMultiDayAllDay,
+  buildEventsByDay, compareEventsByStart, isMultiDayAllDay,
   layoutWeekRibbons,
   type RibbonPlacement,
 } from '../multiday';
 import {
-  type CalRoles, isHolidayEvent, isTeamOooEvent, teamOooDailyEvent,
+  type CalRoles, isHolidayEvent, isTeamOooEvent, teamOooAllDayEvents,
 } from '../calRoles';
 import { dayHolidayInfo } from '../holidays';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
@@ -73,35 +73,24 @@ export function MonthGrid({
   }, [anchor.getFullYear(), anchor.getMonth()]);
 
   const flatDays = useMemo(() => weeks.flat(), [weeks]);
-
-  // Team OOO all-day feed entries become one visible 09:00–18:00 event per
-  // date. They should not enter the all-day ribbon stack.
-  const ribbonEvents = useMemo(
-    () => events.filter((e) => !isHolidayEvent(e, calRoles)
-      && !(isTeamOooEvent(e, calRoles) && e.allDay)
-      && (!isLocationChip(e) || isTeamOooEvent(e, calRoles))),
+  const displayEvents = useMemo(
+    () => teamOooAllDayEvents(events, calRoles),
     [events, calRoles],
   );
 
-  const gridEvents = useMemo(() => {
-    const out: CalendarEvent[] = [];
-    for (const e of events) {
-      if (e.allDay && isTeamOooEvent(e, calRoles)) {
-        for (const day of flatDays) {
-          if (eventTouchesDay(e, day)) out.push(teamOooDailyEvent(e, day));
-        }
-      } else {
-        out.push(e);
-      }
-    }
-    return out;
-  }, [events, flatDays, calRoles]);
+  // Team OOO is normalized to an all-day event before the regular ribbon
+  // layout, so timed 09:00–18:00 feed entries become connected top bars.
+  const ribbonEvents = useMemo(
+    () => displayEvents.filter((e) => !isHolidayEvent(e, calRoles)
+      && (!isLocationChip(e) || isTeamOooEvent(e, calRoles))),
+    [displayEvents, calRoles],
+  );
 
   // One-pass bucket of events keyed by YYYY-MM-DD. Each Cell looks up its own
   // slice in O(1) instead of re-scanning the full event list.
   const eventsByDay = useMemo(
-    () => buildEventsByDay(gridEvents, flatDays),
-    [gridEvents, flatDays],
+    () => buildEventsByDay(displayEvents, flatDays),
+    [displayEvents, flatDays],
   );
 
   const gridRef = useRef<HTMLDivElement | null>(null);
@@ -374,8 +363,8 @@ const Cell = memo(function Cell({
     });
 
   // Holiday-role events render beside the date, not as event rows.
-  // Multi-day all-day events render in the ribbon overlay only, except Team
-  // OOO entries which were expanded into daily timed events above.
+  // Multi-day all-day events render in the ribbon overlay only. Team OOO has
+  // already been normalized to this same all-day representation above.
   // Location indicators render as small chips beside the date.
   const ordered = touching
     .filter((e) => !isMultiDayAllDay(e)

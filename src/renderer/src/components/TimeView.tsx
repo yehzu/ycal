@@ -11,7 +11,7 @@ import {
   type RibbonPlacement,
 } from '../multiday';
 import {
-  type CalRoles, isHolidayEvent, isTeamOooEvent, teamOooDailyEvent,
+  type CalRoles, isHolidayEvent, isTeamOooEvent, teamOooAllDayEvents,
 } from '../calRoles';
 import { dayHolidayInfo, type DayHolidayInfo } from '../holidays';
 import { isLocationChip, isLocationEvent, locKindOf, locLabelOf } from '../locations';
@@ -155,43 +155,32 @@ export function TimeView({
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
   const nowOffset = ((nowMinutes / 60) - START_HOUR) * HOUR_HEIGHT;
 
-  const teamOooDailyByDay = useMemo(() => {
-    const m: Record<string, CalendarEvent[]> = {};
-    for (const d of days) m[fmtDate(d)] = [];
-    for (const e of events) {
-      if (!e.allDay || !isTeamOooEvent(e, calRoles)) continue;
-      for (const d of days) {
-        if (eventTouchesDay(e, d)) {
-          m[fmtDate(d)].push(teamOooDailyEvent(e, d));
-        }
-      }
-    }
-    return m;
-  }, [days, events, calRoles]);
+  const displayEvents = useMemo(
+    () => teamOooAllDayEvents(events, calRoles),
+    [events, calRoles],
+  );
 
   const allDayByDay = useMemo(() => {
     const m: Record<string, CalendarEvent[]> = {};
     for (const d of days) {
-      m[fmtDate(d)] = events.filter(
+      m[fmtDate(d)] = displayEvents.filter(
         (e) => e.allDay
           && !isMultiDayAllDay(e)
-          && !isTeamOooEvent(e, calRoles)
-          && !isLocationChip(e)
+          && (!isLocationChip(e) || isTeamOooEvent(e, calRoles))
           && eventTouchesDay(e, d),
       );
     }
     return m;
-  }, [days, events, calRoles]);
+  }, [days, displayEvents, calRoles]);
 
   const ribbons = useMemo<RibbonPlacement[]>(
     () => (days.length === 0
       ? []
       : layoutRangeRibbons(
-        events.filter((e) => !(isTeamOooEvent(e, calRoles) && e.allDay)
-          && (!isLocationChip(e) || isTeamOooEvent(e, calRoles))),
+        displayEvents.filter((e) => !isLocationChip(e) || isTeamOooEvent(e, calRoles)),
         days[0], days.length,
       )),
-    [days, events, calRoles],
+    [days, displayEvents, calRoles],
   );
   const ribbonLanes = ribbons.length === 0
     ? 0
@@ -200,14 +189,11 @@ export function TimeView({
   const timedByDay = useMemo(() => {
     const m: Record<string, CalendarEvent[]> = {};
     for (const d of days) m[fmtDate(d)] = [];
-    for (const [dayKey, teamEvents] of Object.entries(teamOooDailyByDay)) {
-      m[dayKey].push(...teamEvents);
-    }
-    for (const e of events) {
+    for (const e of displayEvents) {
       if (e.allDay) continue;
       // Drop every location-flagged event from the column-packed event
-      // list — workingLocation goes to the date chips. Team OOO stays in the
-      // normal event flow so its person and time/range remain readable.
+      // list — workingLocation goes to the date chips. Team OOO has already
+      // been normalized into the all-day flow above.
       if (isLocationEvent(e) && !isTeamOooEvent(e, calRoles)) continue;
       for (const d of days) {
         if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
@@ -217,16 +203,15 @@ export function TimeView({
       m[dayKey].sort(compareEventsByStart);
     }
     return m;
-  }, [days, events, calRoles, teamOooDailyByDay]);
+  }, [days, displayEvents, calRoles]);
 
   // Timed personal OOO events surface as a full-width, hatched background
-  // band behind regular events. Team OOO all-day entries have already been
-  // expanded into 09:00–18:00 daily events above and are deliberately absent
-  // from this personal-OOO bucket.
+  // band behind regular events. Team OOO entries have already been normalized
+  // into all-day ribbons above and are deliberately absent from this bucket.
   const oooByDay = useMemo(() => {
     const m: Record<string, CalendarEvent[]> = {};
     for (const d of days) m[fmtDate(d)] = [];
-    for (const e of events) {
+    for (const e of displayEvents) {
       if (e.allDay) continue;
       if (e.eventType !== 'outOfOffice' || isTeamOooEvent(e, calRoles)) continue;
       for (const d of days) {
@@ -234,13 +219,13 @@ export function TimeView({
       }
     }
     return m;
-  }, [days, events]);
+  }, [days, displayEvents, calRoles]);
 
   const locationsByDay = useMemo(() => {
     const m: Record<string, CalendarEvent[]> = {};
     for (const d of days) {
       const seen = new Set<string>();
-      m[fmtDate(d)] = events
+      m[fmtDate(d)] = displayEvents
         .filter((e) => isLocationChip(e)
           && !isTeamOooEvent(e, calRoles)
           && eventTouchesDay(e, d))
@@ -252,7 +237,7 @@ export function TimeView({
         });
     }
     return m;
-  }, [days, events, calRoles]);
+  }, [days, displayEvents, calRoles]);
 
   // Tasks bucketed by date for chip rendering.
   const tasksByDay = useMemo(() => {

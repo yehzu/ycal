@@ -4,9 +4,6 @@ import { calKey } from './store';
 export type CalRole = 'normal' | 'subscribed' | 'holiday' | 'teamOoo';
 export type CalRoles = Record<string, CalRole>;
 
-export const TEAM_OOO_START_HOUR = 9;
-export const TEAM_OOO_END_HOUR = 18;
-
 export const ROLE_OPTIONS: Array<[CalRole, string]> = [
   ['normal', 'Normal events'],
   ['subscribed', 'Read-only (hide from agenda)'],
@@ -106,29 +103,97 @@ export function presentForVisibleCalendars(
   };
 }
 
-// Google HR feeds often encode a person's full workday OOO as an all-day
-// event. For the calendar grid that is more useful as one ordinary 09:00–18:00
-// event per date: it occupies the actual workday slot, shows the person's
-// title, and does not disappear into the all-day ribbon stack.
-export function teamOooDailyEvent(e: CalendarEvent, day: Date): CalendarEvent {
-  if (!e.allDay) return e;
-  const dayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-  const start = new Date(
-    day.getFullYear(), day.getMonth(), day.getDate(), TEAM_OOO_START_HOUR, 0, 0, 0,
-  );
-  const end = new Date(
-    day.getFullYear(), day.getMonth(), day.getDate(), TEAM_OOO_END_HOUR, 0, 0, 0,
-  );
+function localDateTime(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T00:00:00`;
+}
+
+function localDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// Department/HR feeds commonly encode a full-day absence as a timed 09:00–
+// 18:00 event. The calendar surface should treat that as an all-day event so
+// it uses the connected ribbon at the top of Month/Week/Day views. This is a
+// display-only copy; the original timed event remains the source of truth.
+export function teamOooAllDayEvent(e: CalendarEvent): CalendarEvent {
+  if (e.allDay) {
+    return {
+      ...e,
+      eventType: 'default',
+      workingLocation: undefined,
+    };
+  }
+
+  const start = new Date(e.start);
+  const end = new Date(e.end);
+  const startDay = localDay(start);
+  const endMidnight = localDay(end);
+  const endDay = end.getTime() > endMidnight.getTime()
+    ? new Date(endMidnight.getFullYear(), endMidnight.getMonth(), endMidnight.getDate() + 1)
+    : endMidnight;
+  if (endDay.getTime() <= startDay.getTime()) {
+    endDay.setDate(startDay.getDate() + 1);
+  }
+
   return {
     ...e,
-    id: `${e.id}:team-ooo:${dayKey}`,
-    start: start.toISOString(),
-    end: end.toISOString(),
-    allDay: false,
-    // Avoid routing the derived display copy back through the personal OOO
-    // location-band renderer. The calendar role still identifies it as Team
-    // OOO for styling and read-only filtering.
+    id: `${e.id}:team-ooo:all-day`,
+    start: localDateTime(startDay),
+    end: localDateTime(endDay),
+    allDay: true,
+    // Keep Team OOO out of the personal OOO/location-chip renderer. The
+    // calendar role still supplies its slate ribbon styling and read-only
+    // filtering.
     eventType: 'default',
     workingLocation: undefined,
   };
+}
+
+// If a feed emits one 09:00–18:00 event per date, join adjacent entries with
+// the same calendar/title into one all-day range. That preserves the visual
+// continuity of a multi-day absence instead of producing a row of detached
+// daily pills. Gaps remain separate absences.
+export function teamOooAllDayEvents(
+  events: CalendarEvent[], calRoles: CalRoles,
+): CalendarEvent[] {
+  const normal: CalendarEvent[] = [];
+  const byKey = new Map<string, CalendarEvent[]>();
+  for (const e of events) {
+    if (!isTeamOooEvent(e, calRoles)) {
+      normal.push(e);
+      continue;
+    }
+    const shown = teamOooAllDayEvent(e);
+    const key = [
+      shown.accountId,
+      shown.calendarId,
+      shown.title.trim().toLocaleLowerCase(),
+    ].join('|');
+    const group = byKey.get(key);
+    if (group) group.push(shown);
+    else byKey.set(key, [shown]);
+  }
+
+  const team: CalendarEvent[] = [];
+  for (const group of byKey.values()) {
+    group.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    let range = group[0];
+    for (let i = 1; i < group.length; i++) {
+      const next = group[i];
+      if (new Date(next.start).getTime() > new Date(range.end).getTime()) {
+        team.push(range);
+        range = next;
+        continue;
+      }
+      if (new Date(next.end).getTime() > new Date(range.end).getTime()) {
+        range = {
+          ...range,
+          end: next.end,
+          id: `${range.id}:${next.id}`,
+        };
+      }
+    }
+    team.push(range);
+  }
+  return [...normal, ...team];
 }
