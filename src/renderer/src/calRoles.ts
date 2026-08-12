@@ -33,14 +33,15 @@ export function isTeamOooEvent(e: CalendarEvent, calRoles: CalRoles): boolean {
   );
 }
 
-// Holiday and Team OOO calendars are kept out of the normal agenda — they
-// render as contextual markers instead. Read-only calendars remain available
-// in their own "Other calendars" section.
+// Holiday and read-only calendars are kept out of the normal agenda. Team OOO
+// is intentionally a normal, visible event surface: people and date ranges
+// must remain readable, and it is not governed by the read-only display
+// switch. Its separate styling is applied at the event/ribbon level.
 export function isExcludedFromAgenda(
   e: CalendarEvent, calRoles: CalRoles,
 ): boolean {
   const r = roleOfEvent(e, calRoles);
-  return r === 'holiday' || r === 'subscribed' || isTeamOooEvent(e, calRoles);
+  return r === 'holiday' || r === 'subscribed';
 }
 
 // True if the calendar (by account|calendar key) is read-only / subscribed

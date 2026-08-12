@@ -52,14 +52,9 @@ export function DayEventsModal({
       return true;
     });
 
-  const teamOoo = occurs
-    .filter((e) => isTeamOooEvent(e, calRoles))
-    .slice()
-    .sort(compareEventsByStart);
-
   const seenL = new Set<string>();
   const locations = occurs
-    .filter((e) => isLocationChip(e))
+    .filter((e) => isLocationChip(e) && !isTeamOooEvent(e, calRoles))
     .filter((e) => {
       const k = locLabelOf(e).trim().toLowerCase();
       if (seenL.has(k)) return false;
@@ -70,7 +65,7 @@ export function DayEventsModal({
   const rest = occurs.filter(
     (e) =>
       !isHolidayEvent(e, calRoles) &&
-      !isLocationChip(e) &&
+      (!isLocationChip(e) || isTeamOooEvent(e, calRoles)) &&
       !isExcludedFromAgenda(e, calRoles),
   );
   const allDay = rest.filter((e) => e.allDay).slice().sort(compareEventsByStart);
@@ -166,12 +161,6 @@ export function DayEventsModal({
                   <span className="dem-body"><span className="dem-title">{h.title}</span></span>
                 </button>
               ))}
-            </section>
-          )}
-          {teamOoo.length > 0 && (
-            <section className="dem-section">
-              <h3 className="dem-h">Team OOO</h3>
-              {teamOoo.map((e) => renderEv(e, e.allDay))}
             </section>
           )}
           {allDay.length > 0 && (

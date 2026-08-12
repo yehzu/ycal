@@ -47,11 +47,6 @@ export function DayDetailPanel({
     return true;
   });
 
-  const teamOoo = todays
-    .filter((e) => isTeamOooEvent(e, calRoles))
-    .slice()
-    .sort(compareEventsByStart);
-
   // Subscribed (read-only) calendars render in their own section so the
   // primary agenda stays focused on the user's own events.
   const subscribed = todays
@@ -59,14 +54,15 @@ export function DayDetailPanel({
     .slice()
     .sort(compareEventsByStart);
   const agenda = todays.filter(
-    (e) => !isExcludedFromAgenda(e, calRoles) && !isLocationChip(e),
+    (e) => !isExcludedFromAgenda(e, calRoles)
+      && (!isLocationChip(e) || isTeamOooEvent(e, calRoles)),
   );
   const allDay = agenda.filter((e) => e.allDay).slice().sort(compareEventsByStart);
   const timed = agenda.filter((e) => !e.allDay).slice().sort(compareEventsByStart);
 
   const seenLoc = new Set<string>();
   const locations = todays
-    .filter((e) => isLocationChip(e))
+    .filter((e) => isLocationChip(e) && !isTeamOooEvent(e, calRoles))
     .filter((e) => {
       const k = locLabelOf(e).trim().toLowerCase();
       if (seenLoc.has(k)) return false;
@@ -151,13 +147,6 @@ export function DayDetailPanel({
             <span key={he.id} style={{ color: he.color }}>· {he.title}</span>
           ))}
         </div>
-      )}
-
-      {teamOoo.length > 0 && (
-        <>
-          <div className="dd-section-h">Team OOO</div>
-          {teamOoo.map((e) => renderEv(e, e.allDay))}
-        </>
       )}
 
       <div className="dd-section-h">All-day</div>

@@ -158,18 +158,21 @@ export function TimeView({
       m[fmtDate(d)] = events.filter(
         (e) => e.allDay
           && !isMultiDayAllDay(e)
-          && !isLocationChip(e)
+          && (!isLocationChip(e) || isTeamOooEvent(e, calRoles))
           && eventTouchesDay(e, d),
       );
     }
     return m;
-  }, [days, events]);
+  }, [days, events, calRoles]);
 
   const ribbons = useMemo<RibbonPlacement[]>(
     () => (days.length === 0
       ? []
-      : layoutRangeRibbons(events.filter((e) => !isLocationChip(e)), days[0], days.length)),
-    [days, events],
+      : layoutRangeRibbons(
+        events.filter((e) => !isLocationChip(e) || isTeamOooEvent(e, calRoles)),
+        days[0], days.length,
+      )),
+    [days, events, calRoles],
   );
   const ribbonLanes = ribbons.length === 0
     ? 0
@@ -181,10 +184,9 @@ export function TimeView({
     for (const e of events) {
       if (e.allDay) continue;
       // Drop every location-flagged event from the column-packed event
-      // list — workingLocation goes to the date chips, and OOO (timed or
-      // all-day) gets its own treatment so it doesn't fight real
-      // meetings for column width.
-      if (isLocationEvent(e) || isTeamOooEvent(e, calRoles)) continue;
+      // list — workingLocation goes to the date chips. Team OOO stays in the
+      // normal event flow so its person and time/range remain readable.
+      if (isLocationEvent(e) && !isTeamOooEvent(e, calRoles)) continue;
       for (const d of days) {
         if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
       }
@@ -209,27 +211,14 @@ export function TimeView({
     return m;
   }, [days, events]);
 
-  // Team OOO is a calendar-level marker for other people's availability.
-  // Keep the original event range for the popover, but render timed entries
-  // as a cool background band instead of consuming a meeting column.
-  const teamOooByDay = useMemo(() => {
-    const m: Record<string, CalendarEvent[]> = {};
-    for (const d of days) m[fmtDate(d)] = [];
-    for (const e of events) {
-      if (!isTeamOooEvent(e, calRoles)) continue;
-      for (const d of days) {
-        if (eventTouchesDay(e, d)) m[fmtDate(d)].push(e);
-      }
-    }
-    return m;
-  }, [days, events, calRoles]);
-
   const locationsByDay = useMemo(() => {
     const m: Record<string, CalendarEvent[]> = {};
     for (const d of days) {
       const seen = new Set<string>();
       m[fmtDate(d)] = events
-        .filter((e) => isLocationChip(e) && eventTouchesDay(e, d))
+        .filter((e) => isLocationChip(e)
+          && !isTeamOooEvent(e, calRoles)
+          && eventTouchesDay(e, d))
         .filter((e) => {
           const k = locLabelOf(e).trim().toLowerCase();
           if (seen.has(k)) return false;
@@ -238,7 +227,7 @@ export function TimeView({
         });
     }
     return m;
-  }, [days, events]);
+  }, [days, events, calRoles]);
 
   // Tasks bucketed by date for chip rendering.
   const tasksByDay = useMemo(() => {
@@ -280,13 +269,11 @@ export function TimeView({
             const isWeekend = d.getDay() === 0 || d.getDay() === 6;
             const locs = locationsByDay[fmtDate(d)] ?? [];
             const isOOO = locs.some((le) => locKindOf(le) === 'ooo');
-            const teamOoos = teamOooByDay[fmtDate(d)] ?? [];
             const headCls = ['tv-col-head'];
             if (isToday) headCls.push('today');
             if (isWeekend && hInfo?.kind !== 'workday') headCls.push('weekend');
             if (hInfo) headCls.push('h-' + hInfo.kind);
             if (isOOO) headCls.push('is-ooo');
-            else if (teamOoos.length > 0) headCls.push('is-team-ooo');
             const dayLoad = computeDayLoad({
               date: d,
               events,
@@ -302,9 +289,7 @@ export function TimeView({
                 key={fmtDate(d)}
                 className={headCls.join(' ')}
                 style={hInfo?.color ? ({ ['--h-color' as never]: hInfo.color }) : undefined}
-                title={hInfo?.label || (teamOoos.length > 0
-                  ? teamOoos.map((e) => e.title).join(' · ')
-                  : '')}
+                title={hInfo?.label || ''}
               >
                 <div className="dow">{DOW_SHORT[d.getDay()]}</div>
                 <div className="num">{d.getDate()}</div>
@@ -465,9 +450,9 @@ export function TimeView({
                 isWeekend={isWeekend}
                 isOOO={isOOO}
                 hInfo={hInfo}
+                calRoles={calRoles}
                 events={timedByDay[fmtDate(d)] ?? []}
                 ooos={oooByDay[fmtDate(d)] ?? []}
-                teamOoos={(teamOooByDay[fmtDate(d)] ?? []).filter((e) => !e.allDay)}
                 onEventClick={onEventClick}
                 nowOffset={nowOffset}
                 tasks={dayTasks}
@@ -492,9 +477,9 @@ interface DayColumnProps {
   isWeekend: boolean;
   isOOO: boolean;
   hInfo: DayHolidayInfo | null;
+  calRoles: CalRoles;
   events: CalendarEvent[];
   ooos: CalendarEvent[];
-  teamOoos: CalendarEvent[];
   onEventClick: (e: CalendarEvent, anchor: HTMLElement) => void;
   nowOffset: number;
   tasks: Array<{ task: TaskItem; start: string }>;
@@ -507,7 +492,7 @@ interface DayColumnProps {
 }
 
 function DayColumn({
-  day, isToday, isWeekend, isOOO, hInfo, events, ooos, teamOoos, onEventClick, nowOffset,
+  day, isToday, isWeekend, isOOO, hInfo, calRoles, events, ooos, onEventClick, nowOffset,
   tasks, onScheduleTask, onToggleTaskDone, onOpenTask,
   rhythmData, onSetRhythmOverride, onClearRhythmOverride,
 }: DayColumnProps) {
@@ -550,7 +535,6 @@ function DayColumn({
   if (isWeekend && hInfo?.kind !== 'workday') colCls.push('weekend');
   if (hInfo) colCls.push('h-' + hInfo.kind);
   if (isOOO) colCls.push('is-ooo');
-  else if (teamOoos.length > 0) colCls.push('is-team-ooo');
   if (dropPreview) colCls.push('drop-over');
 
   const rhythm = useMemo(() => resolveRhythm(rhythmData, dateStr), [rhythmData, dateStr]);
@@ -596,30 +580,6 @@ function DayColumn({
         );
       })}
 
-      {/* Team OOO bands use a cool, low-contrast treatment so they read as
-          other people's availability rather than the user's own absence. */}
-      {teamOoos.map((e) => {
-        const dayStartMs = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
-        const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
-        const evS = new Date(e.start).getTime();
-        const evE = new Date(e.end).getTime();
-        const sMin = evS <= dayStartMs ? 0 : Math.round((evS - dayStartMs) / 60000);
-        const eMin = evE >= dayEndMs ? 24 * 60 : Math.round((evE - dayStartMs) / 60000);
-        const top = ((sMin / 60) - START_HOUR) * HOUR_HEIGHT;
-        const height = Math.max(16, ((eMin - sMin) / 60) * HOUR_HEIGHT);
-        return (
-          <button
-            key={'team-ooo:' + e.id}
-            className="tv-team-ooo-band"
-            style={{ top, height }}
-            onClick={(ev) => onEventClick(e, ev.currentTarget)}
-            title={e.title}
-          >
-            <span className="tv-team-ooo-label">TEAM OOO</span>
-          </button>
-        );
-      })}
-
       {/* Tasks and events share the same column layout so they don't cover
           each other when scheduled at the same time slot. */}
       {laid.map((b) => {
@@ -646,6 +606,7 @@ function DayColumn({
         const leftPct = widthPct * col;
         const startsHere = isEventStartDay(e, day);
         const cn = ['tv-event'];
+        if (isTeamOooEvent(e, calRoles)) cn.push('team-ooo-event');
         if (dur < 15) cn.push('tiny');
         else if (dur <= 30) cn.push('short');
         const rc = rsvpClass(e);

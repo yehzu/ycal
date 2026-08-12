@@ -53,26 +53,18 @@ function AgendaSummary({
 }) {
   const touching = eventsTouchingDay(events, date);
   const todays = touching
-    .filter((e) => !isExcludedFromAgenda(e, calRoles) && !isLocationChip(e))
+    .filter((e) => !isExcludedFromAgenda(e, calRoles)
+      && (!isLocationChip(e) || isTeamOooEvent(e, calRoles)))
     .slice()
     .sort(compareEventsByStart);
 
   const seenLoc = new Set<string>();
   const locations = touching
-    .filter((e) => isLocationChip(e))
+    .filter((e) => isLocationChip(e) && !isTeamOooEvent(e, calRoles))
     .filter((e) => {
       const k = locLabelOf(e).trim().toLowerCase();
       if (seenLoc.has(k)) return false;
       seenLoc.add(k);
-      return true;
-    });
-  const seenTeamOoo = new Set<string>();
-  const teamOoo = touching
-    .filter((e) => isTeamOooEvent(e, calRoles))
-    .filter((e) => {
-      const k = e.title.trim().toLowerCase();
-      if (seenTeamOoo.has(k)) return false;
-      seenTeamOoo.add(k);
       return true;
     });
   return (
@@ -95,23 +87,6 @@ function AgendaSummary({
               <LocationIcon kind={locKindOf(le)} title={locLabelOf(le)} />
             </span>
           ))}
-        </div>
-      )}
-      {teamOoo.length > 0 && (
-        <div className="agenda-team-ooo" title={teamOoo.map((e) => e.title).join(' · ')}>
-          {teamOoo.slice(0, 3).map((e) => (
-            <button
-              key={e.id}
-              className="team-ooo-chip"
-              onClick={(ev) => onEventClick?.(e, ev.currentTarget)}
-            >
-              <span className="team-ooo-chip-label">team OOO</span>
-              <span>{e.title}</span>
-            </button>
-          ))}
-          {teamOoo.length > 3 && (
-            <span className="team-ooo-chip-more">+{teamOoo.length - 3}</span>
-          )}
         </div>
       )}
       <div className="agenda-list">

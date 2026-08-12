@@ -20,7 +20,7 @@ import type {
   CalendarEvent, LoadBands, LoadWindowSettings, RhythmData, TaskItem,
 } from '@shared/types';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
-import { type CalRoles, isExcludedFromAgenda } from './calRoles';
+import { type CalRoles, isExcludedFromAgenda, roleOfEvent } from './calRoles';
 import { eventTouchesDay } from './multiday';
 import { isLocationEvent } from './locations';
 import { resolveRhythm } from './rhythm';
@@ -136,6 +136,9 @@ export function computeDayLoad({
     // committed time. Mirrors the iOS DayLoad filter.
     if (isLocationEvent(e)) continue;
     if (isExcludedFromAgenda(e, calRoles)) continue;
+    // Team OOO is visible as an event, but belongs to other people and must
+    // not reduce the current user's capacity gauge.
+    if (roleOfEvent(e, calRoles) === 'teamOoo') continue;
     if (e.rsvp === 'declined') continue;
     if (!eventTouchesDay(e, date)) continue;
     const dur = clippedDuration(e, date, win.startMin, win.endMin);
