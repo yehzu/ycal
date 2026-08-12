@@ -3,7 +3,8 @@ import type { CalendarEvent, CalendarSummary } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import {
-  type CalRoles, isHolidayEvent, isExcludedFromAgenda, isTeamOooEvent, roleOfEvent,
+  type CalRoles, isHolidayEvent, isExcludedFromAgenda, isReadOnlyRole,
+  isTeamOooEvent, roleOfEvent, teamOooDailyEvent,
 } from '../calRoles';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
@@ -71,7 +72,7 @@ export function DayEventsModal({
   const allDay = rest.filter((e) => e.allDay).slice().sort(compareEventsByStart);
   const timed = rest.filter((e) => !e.allDay).slice().sort(compareEventsByStart);
   const subscribed = occurs
-    .filter((e) => roleOfEvent(e, calRoles) === 'subscribed')
+    .filter((e) => isReadOnlyRole(roleOfEvent(e, calRoles)))
     .slice()
     .sort(compareEventsByStart);
 
@@ -180,7 +181,12 @@ export function DayEventsModal({
           {subscribed.length > 0 && (
             <section className="dem-section">
               <h3 className="dem-h">Other calendars</h3>
-              {subscribed.map((e) => renderEv(e, e.allDay))}
+              {subscribed.map((e) => {
+                const shown = isTeamOooEvent(e, calRoles) && e.allDay
+                  ? teamOooDailyEvent(e, date)
+                  : e;
+                return renderEv(shown, shown.allDay);
+              })}
             </section>
           )}
         </div>

@@ -1242,6 +1242,16 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   background: color-mix(in srgb, var(--cal) 28%, var(--paper) 72%);
   z-index: 4;
 }
+.tv-event.team-ooo-event {
+  background: color-mix(in srgb, #71828b 13%, var(--paper));
+  border-left-color: #71828b;
+  border-top-color: color-mix(in srgb, #71828b 45%, transparent);
+  border-right-color: color-mix(in srgb, #71828b 45%, transparent);
+  border-bottom-color: color-mix(in srgb, #71828b 45%, transparent);
+}
+.tv-event.team-ooo-event:hover {
+  background: color-mix(in srgb, #71828b 22%, var(--paper));
+}
 .tv-event .et { font-family: var(--mono); font-size: 9.5px; color: var(--cal); font-weight: 500; margin-right: 4px; }
 .tv-event .en { font-weight: 500; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; }
 

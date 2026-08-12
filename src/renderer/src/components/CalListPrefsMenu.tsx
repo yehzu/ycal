@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CalendarSummary } from '@shared/types';
 import { calKey } from '../store';
-import type { CalRoles } from '../calRoles';
+import { isReadOnlyRole, type CalRoles } from '../calRoles';
 import { ToggleSwitch } from './ToggleSwitch';
 
 interface Props {
@@ -53,7 +53,7 @@ export function CalListPrefsMenu({
 
   const readOnlyCount = calendars.filter((c) => {
     const role = calRoles[calKey(c.accountId, c.id)] ?? 'normal';
-    return role === 'subscribed' && accountsActive[c.accountId];
+    return isReadOnlyRole(role) && accountsActive[c.accountId];
   }).length;
   const disabledCount = calendars.filter(
     (c) =>

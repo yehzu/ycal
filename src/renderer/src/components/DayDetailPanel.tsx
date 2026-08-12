@@ -5,7 +5,8 @@ import type {
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import {
-  type CalRoles, isHolidayEvent, isExcludedFromAgenda, isTeamOooEvent, roleOfEvent,
+  type CalRoles, isHolidayEvent, isExcludedFromAgenda, isReadOnlyRole,
+  isTeamOooEvent, roleOfEvent, teamOooDailyEvent,
 } from '../calRoles';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
@@ -47,10 +48,10 @@ export function DayDetailPanel({
     return true;
   });
 
-  // Subscribed (read-only) calendars render in their own section so the
-  // primary agenda stays focused on the user's own events.
+  // Read-only calendars (including Team OOO) render in their own section so
+  // the primary agenda stays focused on the user's own events.
   const subscribed = todays
-    .filter((e) => roleOfEvent(e, calRoles) === 'subscribed')
+    .filter((e) => isReadOnlyRole(roleOfEvent(e, calRoles)))
     .slice()
     .sort(compareEventsByStart);
   const agenda = todays.filter(
@@ -166,7 +167,12 @@ export function DayDetailPanel({
       {subscribed.length > 0 && (
         <>
           <div className="dd-section-h">Other calendars</div>
-          {subscribed.map((e) => renderEv(e, e.allDay))}
+          {subscribed.map((e) => {
+            const shown = isTeamOooEvent(e, calRoles) && e.allDay
+              ? teamOooDailyEvent(e, date)
+              : e;
+            return renderEv(shown, shown.allDay);
+          })}
         </>
       )}
     </aside>

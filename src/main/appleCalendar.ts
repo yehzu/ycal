@@ -182,9 +182,10 @@ async function canonicalMirrorEvents(
     if (ui.accountsActive[calendar.accountId] === false) return false;
     const key = calKey(calendar.accountId, calendar.id);
     if (!(ui.calVisible[key] ?? calendar.selected)) return false;
-    // Match yCal's "read-only/subscribed" role, not Google's accessRole:
-    // users explicitly classify feeds they don't want in their agenda/mirror.
-    return (ui.calRoles[key] ?? 'normal') !== 'subscribed';
+    // Match yCal's read-only roles, not Google's accessRole: users explicitly
+    // classify feeds they don't want in their agenda/mirror.
+    const role = ui.calRoles[key] ?? 'normal';
+    return role !== 'subscribed' && role !== 'teamOoo';
   });
   if (targets.length === 0) {
     throw new Error(

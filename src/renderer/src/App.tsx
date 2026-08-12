@@ -361,12 +361,13 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     }
   }, []);
 
-  // Effective event list — drop read-only/subscribed entries when the master
-  // toggle is on. Other filters (account / calendar visibility) live in store.
-  // A merged event survives if any of its sources is on a non-read-only
-  // calendar (dedup may have picked the read-only side as canonical); when it
-  // does survive, we re-canonicalize against the visible writable source so it
-  // doesn't render with the hidden read-only calendar's color/link.
+  // Effective event list — drop read-only/subscribed and Team OOO entries when
+  // the master toggle is on. Other filters (account / calendar visibility)
+  // live in store. A merged event survives if any of its sources is on a
+  // non-read-only calendar (dedup may have picked the read-only side as
+  // canonical); when it does survive, we re-canonicalize against the visible
+  // writable source so it doesn't render with the hidden read-only calendar's
+  // color/link.
   const visibleEvents = useMemo(() => {
     if (!hideReadOnly) return store.events;
     const out: CalendarEvent[] = [];

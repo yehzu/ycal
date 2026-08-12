@@ -103,7 +103,7 @@ Add more accounts via the **+** in the account stack. Each account's calendars a
   fixture remains available for EventKit diagnostics. Google working-location
   chips (Office/Home/custom location) stay in yCal and are not mirrored; OOO
   events remain included. Calendars classified in yCal as read-only/subscribed
-  are excluded. Optional per-device auto-sync runs at launch, on foreground,
+  or Team OOO are excluded. Optional per-device auto-sync runs at launch, on foreground,
   and every five minutes.
 - Month / Week / Day views with column-sweep layout for overlapping events
 - Tiny / short / regular event rendering modes (so 15-min events don't crash into each other)

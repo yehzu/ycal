@@ -1585,7 +1585,7 @@ function AppleCalendarSpikeSettings() {
         copies for the past 30 through next 366 days. Apple-side edits are
         overwritten on the next sync. Working-location chips such as Office
         and Home stay in yCal and are not mirrored. Calendars classified as
-        read-only/subscribed are excluded.
+        read-only/subscribed or Team OOO are excluded.
       </p>
 
       <PrefRow

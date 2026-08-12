@@ -8,7 +8,8 @@ import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventTouchesDay, eventsTouchingDay } from '../multiday';
 import { calKey } from '../store';
 import {
-  type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda, isTeamOooEvent,
+  type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda, isReadOnlyRole,
+  isTeamOooEvent,
 } from '../calRoles';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
@@ -160,7 +161,7 @@ function CalListByAccount({
               const on = calVisible[k];
               const role: CalRole = calRoles[k] ?? 'normal';
               const isOpen = openMenu === k;
-              const dimmed = hideReadOnly && role === 'subscribed';
+              const dimmed = hideReadOnly && isReadOnlyRole(role);
               return (
                 <div key={k} className={'cal-row-wrap' + (dimmed ? ' dimmed' : '')}>
                   <button
