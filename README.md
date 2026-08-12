@@ -205,7 +205,7 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 
 ### Calendar filtering
 
-By default the events commands mirror the GUI agenda — only your active accounts, only the calendars you have visible in the sidebar, and only "normal" role calendars (read-only / subscribed and holidays excluded). This keeps `ycal today` focused on the same events the app shows you.
+By default the events commands mirror the GUI agenda — only your active accounts, only the calendars you have visible in the sidebar, and normal plus Team OOO marker calendars (read-only / subscribed and holidays excluded). This keeps `ycal today` focused on the same context the app shows you.
 
 When planning your schedule and you want to see colleague availability, add `--include-read-only`:
 

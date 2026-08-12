@@ -431,14 +431,15 @@ async function cmdCalendars(args: ParsedArgs, io: CliIo): Promise<number> {
   const ui = getUiSettings();
 
   // Annotate each calendar with the GUI's view of it: per-account active
-  // toggle, per-calendar visibility, and role (normal/subscribed/holiday).
+  // toggle, per-calendar visibility, and role (normal/subscribed/holiday/team OOO).
   // `included` summarizes whether `ycal events` would query this calendar
   // by default — useful debug aid for "why isn't event X showing up".
   const shaped = calendars.map((c) => {
     const accountActive = ui.accountsActive[c.accountId] !== false;
     const visible = ui.calVisible[calKey(c.accountId, c.id)] ?? c.selected;
     const role = roleOf(ui, c.accountId, c.id);
-    const included = accountActive && visible && role === 'normal';
+    const included = accountActive && visible
+      && (role === 'normal' || role === 'teamOoo');
     return {
       id: c.id,
       name: c.name,
@@ -473,7 +474,15 @@ async function cmdCalendars(args: ParsedArgs, io: CliIo): Promise<number> {
       const w = Math.max(...shaped.map((c) => c.name.length), 4);
       return shaped
         .map((c) => {
-          const flag = !c.includedByDefault ? '⊘' : c.role === 'subscribed' ? 'r' : c.role === 'holiday' ? 'h' : ' ';
+          const flag = !c.includedByDefault
+            ? '⊘'
+            : c.role === 'subscribed'
+              ? 'r'
+              : c.role === 'holiday'
+                ? 'h'
+                : c.role === 'teamOoo'
+                  ? 't'
+                  : ' ';
           return `${c.primary ? '★' : ' '}${flag} ${c.name.padEnd(w)}  ${c.account ?? ''}  ${c.id}`;
         })
         .join('\n');
@@ -508,8 +517,8 @@ interface EventQueryOptions {
   calendarIds: string[] | null;
   accountIds: string[] | null;
   // Calendar-set filtering. By default we mirror the GUI agenda: only the
-  // user's active accounts, only their visible calendars, and only "normal"
-  // role calendars (read-only/subscribed and holidays excluded).
+  // user's active accounts, only their visible calendars, and normal/team-OOO
+  // marker role calendars (read-only/subscribed and holidays excluded).
   // `--all-calendars` bypasses every UI filter; `--include-read-only` /
   // `--include-holidays` selectively widen for planning use.
   allCalendars: boolean;
@@ -554,7 +563,7 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
   //   1. Explicit --calendar <id> always wins (user is being deliberate).
   //   2. --all-calendars bypasses UI filters but still respects --account.
   //   3. Default: mirror the GUI agenda — only active accounts, only
-  //      visible calendars, only "normal" role. Optional flags widen.
+  //      visible calendars, normal + team-OOO marker roles. Optional flags widen.
   let targets = allCalendars;
   if (opts.accountIds) {
     const set = new Set(opts.accountIds);
@@ -1178,7 +1187,7 @@ CALENDAR FILTERING
   By default, events commands mirror the GUI agenda:
     • only active accounts (per the title-bar account stack)
     • only visible calendars (per the sidebar toggles)
-    • only "normal" role calendars (read-only and holidays excluded)
+    • normal and Team OOO marker calendars (read-only and holidays excluded)
   Flags to widen the set:
     --include-read-only     Include calendars marked read-only (subscribed)
                             — useful while planning, to see colleague schedules.

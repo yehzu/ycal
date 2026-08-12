@@ -1,13 +1,14 @@
 import type { CalendarEvent } from '@shared/types';
 import { calKey } from './store';
 
-export type CalRole = 'normal' | 'subscribed' | 'holiday';
+export type CalRole = 'normal' | 'subscribed' | 'holiday' | 'teamOoo';
 export type CalRoles = Record<string, CalRole>;
 
 export const ROLE_OPTIONS: Array<[CalRole, string]> = [
   ['normal', 'Normal events'],
   ['subscribed', 'Read-only (hide from agenda)'],
   ['holiday', 'Holiday (beside date)'],
+  ['teamOoo', 'Team OOO (other people)'],
 ];
 
 export function roleOfEvent(e: CalendarEvent, calRoles: CalRoles): CalRole {
@@ -18,13 +19,28 @@ export function isHolidayEvent(e: CalendarEvent, calRoles: CalRoles): boolean {
   return roleOfEvent(e, calRoles) === 'holiday';
 }
 
-// Holiday calendars are also kept out of the agenda — they render beside
-// the date instead.
+// Team OOO is a calendar-level display mode for shared people/HR feeds. It is
+// deliberately separate from Google's native outOfOffice eventType: native
+// OOO belongs to the current user and keeps the warm personal OOO treatment.
+// A merged event counts as team OOO when any of its source calendars has this
+// role, even if dedupEvents selected another source as canonical.
+export function isTeamOooEvent(e: CalendarEvent, calRoles: CalRoles): boolean {
+  const sources = e.mergedFrom && e.mergedFrom.length > 0
+    ? e.mergedFrom
+    : [{ accountId: e.accountId, calendarId: e.calendarId }];
+  return sources.some(
+    (s) => (calRoles[calKey(s.accountId, s.calendarId)] ?? 'normal') === 'teamOoo',
+  );
+}
+
+// Holiday and Team OOO calendars are kept out of the normal agenda — they
+// render as contextual markers instead. Read-only calendars remain available
+// in their own "Other calendars" section.
 export function isExcludedFromAgenda(
   e: CalendarEvent, calRoles: CalRoles,
 ): boolean {
   const r = roleOfEvent(e, calRoles);
-  return r === 'holiday' || r === 'subscribed';
+  return r === 'holiday' || r === 'subscribed' || isTeamOooEvent(e, calRoles);
 }
 
 // True if the calendar (by account|calendar key) is read-only / subscribed

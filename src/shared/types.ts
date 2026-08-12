@@ -144,7 +144,7 @@ export interface WeatherDay {
 }
 
 // User-controlled UI state that survives across launches.
-export type CalRolePersisted = 'normal' | 'subscribed' | 'holiday';
+export type CalRolePersisted = 'normal' | 'subscribed' | 'holiday' | 'teamOoo';
 export type SidebarSection = 'almanac' | 'agenda' | 'calendars';
 export type TempUnits = 'F' | 'C';
 

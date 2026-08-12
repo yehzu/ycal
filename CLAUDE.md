@@ -157,7 +157,7 @@ Two execution modes share `runCli()` from `src/main/cli.ts`:
 
 `runCli(argv, out, err)` writes to injected `Writable` streams — don't go back to `process.stdout.write`. The same function serves stdio (in-process mode) and `StringSink` buffers (socket mode), and the server can serve concurrent connections safely.
 
-**CLI mirrors GUI filtering by default.** `src/main/cli.ts` reads `settings.json` UI prefs (`accountsActive`, `calVisible`, `calRoles`) and applies them like the renderer's agenda would: only active accounts × visible calendars × `normal`-role calendars. Opt-in flags widen the set: `--include-read-only` (subscribed), `--include-holidays`, `--all-calendars` (full bypass). `--calendar <id>` always wins. Calendar-set filtering is account-scoped (pair-based) so a shared calendar visible on account A but hidden on account B fetches only the A copy.
+**CLI mirrors GUI filtering by default.** `src/main/cli.ts` reads `settings.json` UI prefs (`accountsActive`, `calVisible`, `calRoles`) and applies them like the renderer's agenda would: only active accounts × visible calendars × `normal` or `teamOoo` role calendars. Opt-in flags widen the set: `--include-read-only` (subscribed), `--include-holidays`, `--all-calendars` (full bypass). `--calendar <id>` always wins. Calendar-set filtering is account-scoped (pair-based) so a shared calendar visible on account A but hidden on account B fetches only the A copy.
 
 ## Caching layers in main
 

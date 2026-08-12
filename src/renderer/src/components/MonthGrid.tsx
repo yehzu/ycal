@@ -10,7 +10,7 @@ import {
   buildEventsByDay, compareEventsByStart, isMultiDayAllDay, layoutWeekRibbons,
   type RibbonPlacement,
 } from '../multiday';
-import { type CalRoles, isHolidayEvent } from '../calRoles';
+import { type CalRoles, isHolidayEvent, isTeamOooEvent } from '../calRoles';
 import { dayHolidayInfo } from '../holidays';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
@@ -237,7 +237,12 @@ const WeekRow = memo(function WeekRow({
       {ribbons.length > 0 && (
         <div className="week-ribbons">
           {ribbons.map((r) => (
-            <Ribbon key={r.event.id + ':' + r.colStart} placement={r} onClick={onEventClick} />
+            <Ribbon
+              key={r.event.id + ':' + r.colStart}
+              placement={r}
+              calRoles={calRoles}
+              onClick={onEventClick}
+            />
           ))}
         </div>
       )}
@@ -246,15 +251,17 @@ const WeekRow = memo(function WeekRow({
 });
 
 function Ribbon({
-  placement, onClick,
+  placement, calRoles, onClick,
 }: {
   placement: RibbonPlacement;
+  calRoles: CalRoles;
   onClick: (e: CalendarEvent, anchor: HTMLElement) => void;
 }) {
   const e = placement.event;
   const cn = ['ribbon'];
   if (placement.clippedLeft) cn.push('clip-l');
   if (placement.clippedRight) cn.push('clip-r');
+  if (isTeamOooEvent(e, calRoles)) cn.push('team-ooo-ribbon');
   const rc = rsvpClass(e);
   if (rc) cn.push(rc);
   return (
@@ -334,6 +341,20 @@ const Cell = memo(function Cell({
     return true;
   });
 
+  // Team OOO markers stay out of the packed event list. Single-day and timed
+  // markers sit beside the date; multi-day all-day entries use the ribbon
+  // overlay so the range remains visually connected.
+  const teamOooEvents = touching.filter(
+    (e) => isTeamOooEvent(e, calRoles) && !isMultiDayAllDay(e),
+  );
+  const seenTeamOoo = new Set<string>();
+  const uniqTeamOoo = teamOooEvents.filter((e) => {
+    const k = e.title.trim().toLowerCase();
+    if (seenTeamOoo.has(k)) return false;
+    seenTeamOoo.add(k);
+    return true;
+  });
+
   const seenLoc = new Set<string>();
   const locationEvents = touching
     .filter((e) => isLocationChip(e))
@@ -350,6 +371,7 @@ const Cell = memo(function Cell({
   const ordered = touching
     .filter((e) => !isMultiDayAllDay(e)
       && !isHolidayEvent(e, calRoles)
+      && !isTeamOooEvent(e, calRoles)
       && !isLocationChip(e))
     .slice()
     .sort(compareEventsByStart);
@@ -364,6 +386,7 @@ const Cell = memo(function Cell({
   if (isWeekend && hInfo?.kind !== 'workday') cls.push('weekend');
   if (hInfo) cls.push('h-' + hInfo.kind);
   if (isOOO) cls.push('is-ooo');
+  else if (touching.some((e) => isTeamOooEvent(e, calRoles))) cls.push('is-team-ooo');
 
   return (
     <div
@@ -371,7 +394,9 @@ const Cell = memo(function Cell({
       style={hInfo?.color ? ({ ['--h-color' as never]: hInfo.color }) : undefined}
       onClick={() => setSelected(day)}
       onDoubleClick={() => goToDayView(day)}
-      title={hInfo?.label || 'Double-click to open day view'}
+      title={hInfo?.label || (uniqTeamOoo.length > 0
+        ? uniqTeamOoo.map((e) => e.title).join(' · ')
+        : 'Double-click to open day view')}
     >
       <div className="day-head">
         <div className="day-num">{day.getDate()}</div>
@@ -393,6 +418,18 @@ const Cell = memo(function Cell({
               {he.title}
             </span>
           ))}
+          {uniqTeamOoo.length > 0 && (
+            <button
+              className="team-ooo-marker"
+              title={uniqTeamOoo.map((e) => e.title).join(' · ')}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onEventClick(uniqTeamOoo[0], ev.currentTarget);
+              }}
+            >
+              team OOO{uniqTeamOoo.length > 1 ? ` +${uniqTeamOoo.length - 1}` : ''}
+            </button>
+          )}
           {locationEvents.map((le) => (
             <span
               key={le.id}

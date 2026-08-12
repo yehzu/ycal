@@ -5,7 +5,7 @@ import type {
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
 import {
-  type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent,
+  type CalRoles, isHolidayEvent, isExcludedFromAgenda, isTeamOooEvent, roleOfEvent,
 } from '../calRoles';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
@@ -47,6 +47,11 @@ export function DayDetailPanel({
     return true;
   });
 
+  const teamOoo = todays
+    .filter((e) => isTeamOooEvent(e, calRoles))
+    .slice()
+    .sort(compareEventsByStart);
+
   // Subscribed (read-only) calendars render in their own section so the
   // primary agenda stays focused on the user's own events.
   const subscribed = todays
@@ -79,7 +84,9 @@ export function DayDetailPanel({
     return (
       <div
         key={e.id}
-        className={'dd-event' + (rc ? ' ' + rc : '')}
+        className={'dd-event'
+          + (isTeamOooEvent(e, calRoles) ? ' team-ooo-event' : '')
+          + (rc ? ' ' + rc : '')}
         style={{ ['--cal' as never]: e.color }}
         onClick={(ev) => onEventClick(e, ev.currentTarget as HTMLElement)}
       >
@@ -144,6 +151,13 @@ export function DayDetailPanel({
             <span key={he.id} style={{ color: he.color }}>· {he.title}</span>
           ))}
         </div>
+      )}
+
+      {teamOoo.length > 0 && (
+        <>
+          <div className="dd-section-h">Team OOO</div>
+          {teamOoo.map((e) => renderEv(e, e.allDay))}
+        </>
       )}
 
       <div className="dd-section-h">All-day</div>

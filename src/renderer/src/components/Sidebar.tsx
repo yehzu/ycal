@@ -8,7 +8,7 @@ import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventTouchesDay, eventsTouchingDay } from '../multiday';
 import { calKey } from '../store';
 import {
-  type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda,
+  type CalRole, type CalRoles, ROLE_OPTIONS, isExcludedFromAgenda, isTeamOooEvent,
 } from '../calRoles';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
@@ -66,6 +66,15 @@ function AgendaSummary({
       seenLoc.add(k);
       return true;
     });
+  const seenTeamOoo = new Set<string>();
+  const teamOoo = touching
+    .filter((e) => isTeamOooEvent(e, calRoles))
+    .filter((e) => {
+      const k = e.title.trim().toLowerCase();
+      if (seenTeamOoo.has(k)) return false;
+      seenTeamOoo.add(k);
+      return true;
+    });
   return (
     <div>
       <div className="agenda-day-line">{DOW_LONG[date.getDay()]}</div>
@@ -86,6 +95,23 @@ function AgendaSummary({
               <LocationIcon kind={locKindOf(le)} title={locLabelOf(le)} />
             </span>
           ))}
+        </div>
+      )}
+      {teamOoo.length > 0 && (
+        <div className="agenda-team-ooo" title={teamOoo.map((e) => e.title).join(' · ')}>
+          {teamOoo.slice(0, 3).map((e) => (
+            <button
+              key={e.id}
+              className="team-ooo-chip"
+              onClick={(ev) => onEventClick?.(e, ev.currentTarget)}
+            >
+              <span className="team-ooo-chip-label">team OOO</span>
+              <span>{e.title}</span>
+            </button>
+          ))}
+          {teamOoo.length > 3 && (
+            <span className="team-ooo-chip-more">+{teamOoo.length - 3}</span>
+          )}
         </div>
       )}
       <div className="agenda-list">
@@ -172,6 +198,7 @@ function CalListByAccount({
                     <span className="label">{c.name}</span>
                     {role === 'holiday' && <span className="role-tag">holiday</span>}
                     {role === 'subscribed' && <span className="role-tag">read-only</span>}
+                    {role === 'teamOoo' && <span className="role-tag">team OOO</span>}
                     {c.primary && role === 'normal' && (
                       <span className="primary-tag">primary</span>
                     )}

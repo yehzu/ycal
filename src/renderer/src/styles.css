@@ -437,7 +437,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 
 /* Calendar row settings menu — gear icon visible on hover, dropdown lets
-   user switch the calendar role (normal / read-only / holiday). */
+   user switch the calendar role (normal / read-only / holiday / team OOO). */
 .cal-row-wrap {
   position: relative;
   display: flex;
@@ -545,6 +545,39 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   display: inline-block;
   flex-shrink: 0;
   transform: translateY(-1px);
+}
+.agenda-team-ooo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.team-ooo-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 5px;
+  border: 0.5px solid color-mix(in srgb, #6f9db7 55%, transparent);
+  background: color-mix(in srgb, #6f9db7 8%, var(--paper));
+  color: #557f9b;
+  font: 10px var(--serif-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.team-ooo-chip:hover { background: color-mix(in srgb, #6f9db7 14%, var(--paper)); }
+.team-ooo-chip-label {
+  font: 700 8px var(--mono);
+  letter-spacing: 0.08em;
+  flex-shrink: 0;
+}
+.team-ooo-chip-more {
+  align-self: center;
+  color: #557f9b;
+  font: 9px var(--mono);
 }
 
 /* Weather */
@@ -1183,6 +1216,22 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   box-shadow: none;
 }
 
+/* Team OOO markers are intentionally cool and quieter than the warm personal
+   OOO treatment. They describe someone else's availability, not the user's
+   own unavailable time. */
+.tv-allday-pill.team-ooo-pill {
+  background: color-mix(in srgb, #6f9db7 10%, var(--paper)) !important;
+  color: #557f9b !important;
+  font-style: normal;
+  border: 0.5px solid color-mix(in srgb, #6f9db7 55%, transparent);
+}
+.ribbon.team-ooo-ribbon {
+  background: color-mix(in srgb, #6f9db7 10%, var(--paper));
+  color: #557f9b;
+  border: 0.5px solid color-mix(in srgb, #6f9db7 55%, transparent);
+  box-shadow: none;
+}
+
 .tv-grid-row { border-bottom: 0.5px solid var(--rule-faint); position: relative; }
 .tv-grid-row.hour { border-bottom: 0.5px solid var(--rule-soft); }
 
@@ -1299,6 +1348,50 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   line-height: 1.4;
   pointer-events: none;
 }
+.tv-team-ooo-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(111, 157, 183, 0.10) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 7%, transparent);
+  border: none;
+  border-top: 0.5px solid rgba(111, 157, 183, 0.38);
+  border-bottom: 0.5px solid rgba(111, 157, 183, 0.38);
+  padding: 0;
+  cursor: pointer;
+  z-index: 1;
+  overflow: hidden;
+}
+.tv-team-ooo-band:hover {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(111, 157, 183, 0.16) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 11%, transparent);
+}
+.tv-team-ooo-label {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  color: #557f9b;
+  background: var(--paper);
+  border: 0.5px solid #6f9db7;
+  padding: 1px 4px 0;
+  border-radius: 2px;
+  line-height: 1.4;
+  pointer-events: none;
+}
 [data-theme="dark"] .tv-ooo-band {
   background:
     repeating-linear-gradient(
@@ -1323,6 +1416,37 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: #e8a874;
   background: color-mix(in srgb, var(--paper) 88%, transparent);
   border-color: #e8a874;
+}
+[data-theme="dark"] .tv-allday-pill.team-ooo-pill,
+[data-theme="dark"] .ribbon.team-ooo-ribbon {
+  background: color-mix(in srgb, #9ec4dd 15%, var(--paper)) !important;
+  color: #a7cce3 !important;
+  border-color: color-mix(in srgb, #9ec4dd 65%, transparent);
+}
+[data-theme="dark"] .tv-team-ooo-band {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(158, 196, 221, 0.14) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 12%, transparent);
+  border-top-color: rgba(158, 196, 221, 0.52);
+  border-bottom-color: rgba(158, 196, 221, 0.52);
+}
+[data-theme="dark"] .tv-team-ooo-band:hover {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(158, 196, 221, 0.22) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 17%, transparent);
+}
+[data-theme="dark"] .tv-team-ooo-label {
+  color: #a7cce3;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  border-color: #9ec4dd;
 }
 
 .now-line {
@@ -1446,6 +1570,12 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: var(--ink-mute);
   margin-top: 2px;
 }
+.dd-event.team-ooo-event {
+  background: color-mix(in srgb, #6f9db7 6%, transparent);
+}
+.dd-event.team-ooo-event .dt,
+.dd-event.team-ooo-event .dn { color: #557f9b; }
+.dd-event.team-ooo-event .dn::before { background: #6f9db7; }
 .dd-notes {
   font-family: var(--serif-body);
   font-size: 13.5px;
@@ -2019,6 +2149,24 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 .dem-row:hover { background: rgba(0,0,0,0.025); }
 .dem-row:hover::before { opacity: 1; }
+.dem-row.team-ooo-event {
+  background: color-mix(in srgb, #6f9db7 6%, transparent);
+}
+.dem-row.team-ooo-event .dem-title,
+.dem-row.team-ooo-event .dem-time { color: #557f9b; }
+[data-theme="dark"] .agenda-team-ooo .team-ooo-chip,
+[data-theme="dark"] .dem-row.team-ooo-event,
+[data-theme="dark"] .dd-event.team-ooo-event {
+  background: color-mix(in srgb, #6f9db7 14%, var(--paper));
+}
+[data-theme="dark"] .agenda-team-ooo .team-ooo-chip,
+[data-theme="dark"] .agenda-team-ooo .team-ooo-chip-more,
+[data-theme="dark"] .dem-row.team-ooo-event .dem-title,
+[data-theme="dark"] .dem-row.team-ooo-event .dem-time,
+[data-theme="dark"] .dd-event.team-ooo-event .dt,
+[data-theme="dark"] .dd-event.team-ooo-event .dn {
+  color: #a7cce3;
+}
 .dem-time {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -2836,6 +2984,56 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 .month-cell.is-ooo .day-meta { padding-right: 28px; }
 
+.month-cell.is-team-ooo {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(111, 157, 183, 0.07) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 8%, var(--paper));
+  position: relative;
+}
+.month-cell.is-team-ooo .day-num {
+  color: #557f9b;
+}
+.month-cell.is-team-ooo::after {
+  content: "TEAM";
+  position: absolute;
+  top: 4px; right: 4px;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  color: #557f9b;
+  background: var(--paper);
+  border: 0.5px solid #6f9db7;
+  padding: 1px 4px 0;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+  line-height: 1.4;
+}
+.month-cell.is-team-ooo .day-meta { padding-right: 32px; }
+.team-ooo-marker {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #557f9b;
+  cursor: pointer;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.03em;
+  padding: 0;
+}
+.team-ooo-marker:hover { text-decoration: underline; }
+
 .tv-col-head.is-ooo {
   background:
     repeating-linear-gradient(
@@ -2886,6 +3084,82 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
       rgba(184, 107, 62, 0.05) 8px 10px
     ),
     color-mix(in srgb, #b86b3e 5%, var(--paper));
+}
+.tv-col-head.is-team-ooo {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(111, 157, 183, 0.10) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 10%, var(--paper));
+  position: relative;
+}
+.tv-col-head.is-team-ooo .num,
+.tv-col-head.is-team-ooo .dow { color: #557f9b; }
+.tv-col-head.is-team-ooo::before {
+  content: "TEAM";
+  position: absolute;
+  top: 4px; left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  color: var(--paper);
+  background: #6f9db7;
+  padding: 2px 5px 1px;
+  border-radius: 2px;
+  line-height: 1.2;
+  z-index: 2;
+}
+.tv-col-head.is-team-ooo .dow,
+.tv-col-head.is-team-ooo .num { margin-top: 14px; }
+.tv-col-head.is-team-ooo::after {
+  content: "";
+  position: absolute;
+  left: 4px; right: 4px; bottom: 0;
+  height: 3px;
+  background: repeating-linear-gradient(
+    -45deg,
+    #6f9db7 0 3px,
+    color-mix(in srgb, #6f9db7 30%, transparent) 3px 6px
+  );
+}
+.tv-col.is-team-ooo {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(111, 157, 183, 0.045) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 4%, var(--paper));
+}
+[data-theme="dark"] .month-cell.is-team-ooo,
+[data-theme="dark"] .tv-col-head.is-team-ooo,
+[data-theme="dark"] .tv-col.is-team-ooo {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0 8px,
+      rgba(158, 196, 221, 0.13) 8px 10px
+    ),
+    color-mix(in srgb, #6f9db7 13%, var(--paper));
+}
+[data-theme="dark"] .month-cell.is-team-ooo .day-num,
+[data-theme="dark"] .tv-col-head.is-team-ooo .num,
+[data-theme="dark"] .tv-col-head.is-team-ooo .dow,
+[data-theme="dark"] .team-ooo-marker {
+  color: #a7cce3;
+}
+[data-theme="dark"] .month-cell.is-team-ooo::after {
+  color: #a7cce3;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  border-color: #9ec4dd;
+}
+[data-theme="dark"] .tv-col-head.is-team-ooo::before {
+  color: var(--paper);
+  background: #6f9db7;
 }
 
 /* ── Auto-update overlay ────────────────────────────────────────────────
@@ -6152,5 +6426,3 @@ body.mode-quickadd #root {
   resize: vertical;
 }
 .gx-textarea:focus { outline: 0; border-color: var(--ink); }
-
-

@@ -2,7 +2,9 @@ import { useEffect } from 'react';
 import type { CalendarEvent, CalendarSummary } from '@shared/types';
 import { DOW_LONG, MONTH_NAMES, formatTime, ordinal } from '../dates';
 import { compareEventsByStart, eventsTouchingDay } from '../multiday';
-import { type CalRoles, isHolidayEvent, isExcludedFromAgenda, roleOfEvent } from '../calRoles';
+import {
+  type CalRoles, isHolidayEvent, isExcludedFromAgenda, isTeamOooEvent, roleOfEvent,
+} from '../calRoles';
 import { isLocationChip, locKindOf, locLabelOf } from '../locations';
 import { rsvpClass } from '../rsvp';
 import { LocationIcon } from './LocationIcon';
@@ -50,6 +52,11 @@ export function DayEventsModal({
       return true;
     });
 
+  const teamOoo = occurs
+    .filter((e) => isTeamOooEvent(e, calRoles))
+    .slice()
+    .sort(compareEventsByStart);
+
   const seenL = new Set<string>();
   const locations = occurs
     .filter((e) => isLocationChip(e))
@@ -81,7 +88,9 @@ export function DayEventsModal({
     return (
       <button
         key={e.id}
-        className={'dem-row' + (rc ? ' ' + rc : '')}
+        className={'dem-row'
+          + (isTeamOooEvent(e, calRoles) ? ' team-ooo-event' : '')
+          + (rc ? ' ' + rc : '')}
         style={{ ['--cal' as never]: e.color }}
         onClick={(ev) => onEventClick(e, ev.currentTarget)}
       >
@@ -157,6 +166,12 @@ export function DayEventsModal({
                   <span className="dem-body"><span className="dem-title">{h.title}</span></span>
                 </button>
               ))}
+            </section>
+          )}
+          {teamOoo.length > 0 && (
+            <section className="dem-section">
+              <h3 className="dem-h">Team OOO</h3>
+              {teamOoo.map((e) => renderEv(e, e.allDay))}
             </section>
           )}
           {allDay.length > 0 && (
