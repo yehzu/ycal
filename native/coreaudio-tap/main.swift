@@ -14,10 +14,22 @@
 // Output contract (UNCHANGED, so record-meet.sh needs no edits):
 //   raw f32le, mono, 16000 Hz  → consumed as `-f f32le -ar 16000 -ac 1`.
 //
-// Lifecycle: runs until SIGTERM/SIGINT (record-meet.sh stop) or until the
-// stdout pipe breaks (ffmpeg exited). It NEVER exits on an SCStream error —
-// it self-heals by restarting the stream while the writer keeps the output
-// flowing as silence.
+// Lifecycle: runs until SIGTERM/SIGINT (record-meet.sh stop), until the
+// stdout pipe breaks (ffmpeg exited), until stdin hits EOF (the owning
+// script is gone), until the writer stays wedged past TAP_WEDGE_S, or until
+// TAP_MAX_S wall-clock. It NEVER exits on an SCStream error — it self-heals
+// by restarting the stream while the writer keeps the output flowing as
+// silence.
+//
+// EVERY terminal path must run through terminate(), which stops the SCStream
+// before exiting. This is load-bearing: an SCStream that is never stopped
+// stays registered with WindowServer for the lifetime of the process, and a
+// process that never exits therefore pins a capture client — and the purple
+// screen-recording indicator — forever. The 2026-08-17 leak was exactly
+// this: the broken-pipe path set `running = false` and broke out of the
+// writer loop, both worker threads returned, and RunLoop.main.run() then
+// idled at 0% CPU holding a live stream. One escaped tap survived 10 days
+// and drove WindowServer to ~28% sustained with nothing on screen.
 //
 // Requires Screen Recording permission (inherited from the spawning yCal
 // app's TCC grant, same as the binary it replaces). macOS 13+.
@@ -32,6 +44,33 @@ let OUT_SR: Double = 16000
 func elog(_ s: String) {
     FileHandle.standardError.write(Data(("coreaudio-tap: " + s + "\n").utf8))
 }
+
+private func envDouble(_ key: String, _ fallback: Double) -> Double {
+    guard let raw = ProcessInfo.processInfo.environment[key],
+          let v = Double(raw), v > 0 else { return fallback }
+    return v
+}
+
+// Hard wall-clock ceiling. record-meet.sh passes the meeting's own budget
+// (the same one it gives ffmpeg's -t); the 6h default only matters when the
+// tap is launched without one. A tap has no business outliving this no
+// matter what wedged upstream.
+let TAP_MAX_S = envDouble("YCAL_TAP_MAX_SECONDS", 6 * 3600)
+
+// How long the writer may stay parked inside out.write before we call the
+// downstream dead. monitorLoop already *detects* this at 5s and logs the
+// diagnosis; past this threshold the recording is unrecoverable anyway (the
+// FIFO is full, so every sample since the stall is already lost) and the
+// only thing still at stake is whether we leak the SCStream.
+let TAP_WEDGE_S = envDouble("YCAL_TAP_WEDGE_SECONDS", 120)
+
+// Watch stdin for EOF as the "my owner is gone" signal. record-meet.sh backs
+// our stdin with a FIFO whose write end it pins open with a `sleep` it owns,
+// specifically so this watcher has something to wait on — see its comment at
+// the `stdin_fifo` setup. The pre-rewrite vendored binary honoured that
+// contract; this rewrite dropped the watcher while the shell kept
+// provisioning for it. Set 0 to run the tap by hand off a terminal stdin.
+let TAP_STDIN_WATCH = ProcessInfo.processInfo.environment["YCAL_TAP_STDIN_WATCH"] != "0"
 
 final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
     private let sampleQueue = DispatchQueue(label: "coreaudio-tap.sample")
@@ -52,6 +91,12 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
     private var emitted = 0                     // total 16kHz samples written to stdout
     private var running = true
     private let out = FileHandle.standardOutput
+
+    // terminate() guard — several independent threads can reach a terminal
+    // condition at once (writer sees the broken pipe while monitorLoop trips
+    // the wedge timer while SIGTERM lands).
+    private let exitLock = NSLock()
+    private var exiting = false
 
     // Health/contract state (shared across sample/control queues + writer thread).
     // record-meet.sh's watch_tap_health() greps for `restart 10/10` + `dead audio`
@@ -79,6 +124,7 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
     func begin() {
         Thread.detachNewThread { [weak self] in self?.writerLoop() }
         Thread.detachNewThread { [weak self] in self?.monitorLoop() }
+        if TAP_STDIN_WATCH { Thread.detachNewThread { [weak self] in self?.stdinWatcher() } }
         Task { await self.startCapture() }
     }
 
@@ -86,6 +132,60 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
         running = false
         stream?.stopCapture { _ in }
         stream = nil
+    }
+
+    // The ONLY way this process exits. Callable from any thread, idempotent,
+    // and it always releases the SCStream first — see the leak note in the
+    // file header for why that ordering is the whole point.
+    //
+    // _exit rather than exit: the wedged-writer path calls this while another
+    // thread is parked in a write(2) that will never return, and we don't
+    // want an atexit handler to deadlock behind it. Nothing here is buffered
+    // (FileHandle.write is a bare syscall), so there is no flush to lose.
+    func terminate(_ reason: String, code: Int32 = 0) -> Never {
+        exitLock.lock()
+        if exiting {
+            exitLock.unlock()
+            // Another thread is already tearing down; park rather than race
+            // it to _exit, and let its call end the process.
+            while true { Thread.sleep(forTimeInterval: 1) }
+        }
+        exiting = true
+        exitLock.unlock()
+
+        elog("exiting: \(reason)")
+        running = false
+        if let s = stream {
+            stream = nil
+            // stopCapture is async and can itself wedge (same class of hang
+            // withTimeout() exists for), so bound the wait. Two seconds is
+            // plenty for ScreenCaptureKit to deregister; past that we accept
+            // that quitting the process is the stronger cleanup anyway.
+            let done = DispatchSemaphore(value: 0)
+            s.stopCapture { _ in done.signal() }
+            if done.wait(timeout: .now() + 2) == .timedOut {
+                elog("stopCapture did not return within 2s — exiting anyway")
+            }
+        }
+        _exit(code)
+    }
+
+    // MARK: – orphan watch
+
+    private func stdinWatcher() {
+        var buf = [UInt8](repeating: 0, count: 256)
+        while true {
+            let n = read(0, &buf, buf.count)
+            if n == 0 { terminate("stdin EOF — the recording's owner is gone") }
+            if n < 0 {
+                if errno == EINTR { continue }
+                // Don't treat a read error as an orphan signal — that would
+                // turn a stdin quirk into a killed recording. Just stand down
+                // and leave the other exit paths in charge.
+                elog("stdin watcher read error (errno \(errno)) — orphan watch off")
+                return
+            }
+        }
     }
 
     // MARK: – capture setup + restart
@@ -299,8 +399,15 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
             realSamplesWindow += take
             silencePadWindow += (need - take)
             stateLock.unlock()
-            if !ok { running = false; break }
+            // Broken pipe → ffmpeg is gone → the recording is over. This MUST
+            // exit, not merely stop the loop: leaving RunLoop.main.run() to
+            // idle here is what stranded a live SCStream for 10 days.
+            if !ok { terminate("stdout closed — ffmpeg exited") }
             emitted += need
+
+            if Date().timeIntervalSince(startDate) > TAP_MAX_S {
+                terminate("hit the \(Int(TAP_MAX_S))s wall-clock ceiling")
+            }
         }
     }
 
@@ -341,6 +448,23 @@ final class SystemAudioTap: NSObject, SCStreamDelegate, SCStreamOutput {
                 stateLock.lock(); blockedWarned = false; stateLock.unlock()
             }
 
+            // The writer cannot rescue itself here — it is parked in a write(2)
+            // that only returns if ffmpeg drains or dies, and a wedged ffmpeg
+            // does neither. This thread is the only one left that can act, so
+            // past TAP_WEDGE_S it ends the process rather than let the tap sit
+            // on a live SCStream indefinitely. Everything since the stall is
+            // already lost to the full FIFO; there is nothing to preserve by
+            // waiting longer.
+            if inFlight && writeAge > TAP_WEDGE_S {
+                terminate("writer wedged in stdout write for \(Int(writeAge))s — downstream is not coming back")
+            }
+
+            // Same ceiling the writer checks, enforced from a thread that keeps
+            // running even when the writer is blocked.
+            if now.timeIntervalSince(startDate) > TAP_MAX_S {
+                terminate("hit the \(Int(TAP_MAX_S))s wall-clock ceiling")
+            }
+
             // Silent SCK stall: real system samples stopped but SCStream never
             // fired didStopWithError, so restartCount stayed 0 and the existing
             // restart path never engaged. (A merely quiet room still arrives as
@@ -360,13 +484,20 @@ let tap = SystemAudioTap()
 
 signal(SIGTERM, SIG_IGN)
 signal(SIGINT, SIG_IGN)
+// These only fire while the main queue is being serviced, which is why they
+// are a convenience rather than the safety net: SIGTERM is SIG_IGN'd above,
+// so a wedged main queue swallows it outright and record-meet.sh's escalation
+// to SIGKILL is what actually lands. The self-termination paths inside the
+// tap (stdin EOF, broken pipe, wedge timer, wall clock) are what make the
+// process bounded without anyone having to signal it at all.
 let sigTerm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-sigTerm.setEventHandler { tap.stop(); exit(0) }
+sigTerm.setEventHandler { tap.terminate("SIGTERM") }
 sigTerm.resume()
 let sigInt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-sigInt.setEventHandler { tap.stop(); exit(0) }
+sigInt.setEventHandler { tap.terminate("SIGINT") }
 sigInt.resume()
 
-elog("starting (ScreenCaptureKit, resilient; out=\(Int(OUT_SR))Hz/1ch f32le)")
+elog("starting (ScreenCaptureKit, resilient; out=\(Int(OUT_SR))Hz/1ch f32le, "
+     + "maxS=\(Int(TAP_MAX_S)) wedgeS=\(Int(TAP_WEDGE_S)) stdinWatch=\(TAP_STDIN_WATCH))")
 tap.begin()
 RunLoop.main.run()

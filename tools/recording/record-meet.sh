@@ -229,12 +229,30 @@ start() {
   # silent `sleep` running under nohup. Sleep never writes, so the
   # dispatch read source on the tap side has no data + no EOF and
   # stays dormant until we SIGTERM either process on stop.
+  #
+  # This is the tap's ORPHAN signal, and it is the one teardown path that
+  # still works when the tap's own control path is wedged. Killing keep_pid
+  # (stop() does, and so does anything that takes down our process group)
+  # closes the write end, the tap reads EOF and exits. Don't back the tap's
+  # stdin with anything that can't signal EOF.
   local stdin_fifo="${STATE_DIR}/${event_id}.stdin"
   rm -f "$stdin_fifo"; mkfifo "$stdin_fifo"
   nohup bash -c "exec sleep 86400 > '$stdin_fifo'" >/dev/null 2>&1 &
   local keep_pid=$!
 
-  nohup "$TAP_BIN" < "$stdin_fifo" > "$fifo" 2> "${STATE_DIR}/${event_id}.tap.log" &
+  # Give the tap the same wall-clock budget we give ffmpeg, so a crashed yCal
+  # bounds BOTH legs of the pipe rather than just the encoder. Without it the
+  # tap falls back to its own 6h ceiling.
+  #
+  # `env` + ${x:+"$x"} rather than an array: this script's shebang resolves to
+  # /bin/bash (3.2) whenever yCal spawns it with a system PATH, and 3.2 under
+  # `set -u` treats "${empty[@]}" as an unbound variable. The :+ form expands
+  # to zero words when unset and exactly one when set, on both 3.2 and 5.x.
+  local tap_max_env=""
+  [[ -n "$max_seconds" ]] && tap_max_env="YCAL_TAP_MAX_SECONDS=$max_seconds"
+
+  nohup env ${tap_max_env:+"$tap_max_env"} "$TAP_BIN" \
+    < "$stdin_fifo" > "$fifo" 2> "${STATE_DIR}/${event_id}.tap.log" &
   local tap_pid=$!
 
   # Mic leg. VPIO path: a second FIFO fed by voiceproc-mic (48 kHz mono
