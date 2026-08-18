@@ -1,0 +1,2 @@
+{"kind":"watch-armed","at":"2026-08-18T10:00:00.000Z","tracked":2,"windowTo":"2026-09-01T00:00:00.000Z","pollSeconds":0}
+{"at":"2026-08-18T10:02:00.000Z","id":"z","title":"Far","calendar":"Work","url":"https://cal/z","allDay":false,"kind":"moved-out-of-window","was":{"start":"2026-08-31T06:00:00Z","end":"2026-08-31T07:00:00Z"},"confirmedPolls":2}

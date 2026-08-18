@@ -177,6 +177,7 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 | `ycal week` | Current Mon–Sun. |
 | `ycal next [N]` | Next N upcoming events (default 5). |
 | `ycal find <query>` | Search events `-7d` to `+90d`. |
+| `ycal watch` | **Stream calendar changes as they happen.** Never exits; one event per line. See "Watch". |
 | `ycal weather` | Forecast from the configured weather iCal feed. |
 | `ycal update` / `ycal upgrade` | Install the latest release and restart yCal. |
 | `ycal recordings` | List archived meeting recordings (Drive appdata). `--limit <n>`. |
@@ -196,6 +197,7 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 --search <text>          Substring match against title/description/location.
 --limit <n>              Cap result count after sorting by start.
 --include-declined       Keep events you've declined (default: drop).
+--include-attendees      Add the invite list to each event (default: drop).
 --include-read-only      Include read-only / subscribed calendars (default: drop).
 --include-holidays       Include calendars marked as holiday (default: drop).
 --all-calendars          Bypass GUI filters; mirror only Google's `selected` flag.
@@ -298,6 +300,64 @@ ycal note --query "Q3 DevOps" | llm -m claude-opus-4-8 \
 # The whole note as Markdown, transcript included:
 ycal note <event-id> --include-transcript --format markdown
 ```
+
+### Watch
+
+`ycal events` answers "what is on my calendar". `ycal watch` answers "what just
+changed" — for a program that has to react rather than read: reschedule a task
+it created, cancel one, hand you a link as a meeting starts.
+
+```bash
+ycal watch                       # NDJSON on stdout, one event per line, forever
+ycal watch --format text         # human-readable lines
+ycal watch --interval 30 --to-days 30
+```
+
+| Event | Meaning |
+| --- | --- |
+| `watch-armed` | State was seeded. Changes from **before** this moment were not replayed and will never arrive. |
+| `new-invite` | Somebody put a meeting on your calendar. An event you created yourself is not an invitation. Carries attendees (rooms excluded), `meetUrl`, and the times. |
+| `time-changed` | It moved. Carries **both** old and new — a consumer has to find the deadline it wrote and replace it. |
+| `cancelled` | It is gone, confirmed over consecutive clean polls. |
+| `moved-out-of-window` | It left the watched window. **Not** a cancellation. |
+| `rsvp-due` | `--rsvp-lead-hours` (24) before it starts, RSVP still `needsAction`. |
+| `starting` | `--prep-lead-minutes` (10) before it starts. |
+| `watch-error` | Something went wrong — **including what was deliberately not concluded, and why**. |
+
+**Why most of this feature is guard rails.** Google's `events.list` omits
+cancelled events rather than flagging them, so a cancellation can only ever be
+observed as an *absence* — and a rate-limited calendar, a calendar you hid in
+the sidebar, a re-timed recurring series, and the window rolling forward at
+midnight all look exactly like one. A naive differ reports phantom
+cancellations constantly. So before the word "cancelled" is used, an absence
+passes a partial-fetch gate, series pairing on `recurringEventId`, an
+edge-of-window check, a quarantine of `--quarantine-polls` (2) clean polls, and
+a mass-vanish circuit breaker. Nothing is dropped silently: whatever was not
+concluded arrives as a `watch-error` saying so.
+
+Detection runs only while at least one `ycal watch` is attached, and the
+snapshot is persisted to `watch-state.json` in userData. Together those make a
+consumer's downtime lossless: on reattach, the first poll diffs against the
+last saved snapshot, so everything that changed while it was away arrives at
+once rather than being missed.
+
+Multiple watchers share one loop and one state file, and all receive the same
+events. The first one's window and interval win; a later watcher asking for
+different settings is told so in a `watch-error` rather than silently getting
+someone else's.
+
+#### Testing it
+
+```bash
+npm run test:watch               # 16 golden-file cases, no GUI/Google/network
+npm run test:watch -- bless      # rewrite expectations after a deliberate change
+```
+
+Each case in `tests/watch/` is a `.jsonl` of recorded snapshots plus the events
+they must produce. `ycal watch --replay <file>` runs the same detection code
+offline, with a `"now"` per snapshot so the timers are reproducible. Every case
+encodes one way to report a change that never happened — read the diff before
+blessing one away.
 
 ### Exit codes
 

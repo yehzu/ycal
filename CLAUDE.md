@@ -131,6 +131,8 @@ npm run dist             # build signed dmg + zip (needs codesign setup)
 
 **The validation loop is `npm run typecheck && npm run build`.** No test runner, no linter — keep changes small enough to verify by reading and by running the result.
 
+**One exception: `npm run test:watch`.** The change-detection logic behind `ycal watch` is the one part of this app whose failure mode is silent and wrong rather than loud and broken (it reports a cancellation that never happened), so it has 16 golden-file cases in `tests/watch/`. They need no framework — each is a `.jsonl` of recorded snapshots plus the events they must produce, replayed through the real code by `ycal watch --replay`. Run them after touching `src/shared/calendarWatch.ts`.
+
 ## CLI architecture (the recently-added bit)
 
 Two execution modes share `runCli()` from `src/main/cli.ts`:
@@ -178,12 +180,55 @@ Both expose `invalidateCalendarCache()` / `invalidateEventsCache()` and are bust
 
 An `inFlightRef` guard inside `useStore` blocks overlapping fetches if multiple triggers fire close together despite the throttle.
 
+## Watch subsystem (`ycal watch`)
+
+Three files, split so the judgement is testable without Electron:
+
+| File | Role |
+| --- | --- |
+| `src/shared/calendarWatch.ts` | **Pure.** No Electron, no I/O, no clock — every function is `(state, snapshot, now) -> events`. All the guard rails live here. |
+| `src/main/watchRunner.ts` | Supplies what the engine deliberately lacks: a clock, Google, a disk. Poll loop, `watch-state.json` persistence, subscriber fan-out. |
+| `src/main/cli.ts` (`cmdWatch`) | Streams events to the caller, and hosts `--replay` for offline testing. |
+
+`src/main/calendarTargets.ts` (extracted from `cli.ts`) resolves which
+(account, calendar) pairs to read. **`ycal events`, `ycal watch` and the GUI
+agenda all go through it** — if the watcher watched a different set from the
+one you see, every sidebar toggle would look to a consumer like a batch of
+events appearing or disappearing. Its `calKey` must stay byte-identical to the
+renderer's (`src/renderer/src/store.ts`); those strings index the persisted
+`calVisible` / `calRoles` maps, so a different separator silently reads every
+calendar as un-configured.
+
+**Why the guard rails dominate the code.** `events.list` runs with
+`singleEvents: true` and no `showDeleted`, so a cancelled event is not flagged
+— it is simply absent. Cancellation is therefore only ever *inferred* from an
+absence, and a 429'd calendar, a hidden calendar, a re-timed series (whose
+instance ids all change at once, because an instance id embeds its ORIGINAL
+start) and the window rolling forward at midnight are indistinguishable from
+one. Same doctrine as invariant #12 for the Apple mirror: missing remote data
+must never become mass deletion.
+
+Two decisions worth not re-litigating:
+
+- **Detection runs only while a consumer is attached**, and state is persisted.
+  That combination is what makes consumer downtime lossless — on reattach the
+  first poll diffs against the saved snapshot. A loop running with nobody
+  attached would advance the snapshot past changes no one ever heard.
+- **A late reminder is sent, not withheld.** Every reminder states the time
+  remaining as measured at send, so it is true whenever it arrives. An earlier
+  version suppressed "stale" reminders and thereby killed the most common case
+  there is: an invite that arrives less than its lead time before the meeting,
+  whose 24h RSVP reminder is "overdue" 23 hours before we ever saw the event.
+  Lateness is measured from `max(due, first seen)` and reported in
+  `reminderLateMinutes`.
+
 ## Where to put new code
 
 - **Shared by main and renderer (types, pure helpers)** → `src/shared/`. Both ts-projects alias `@shared/*` here.
 - **Renderer-only (React component, hook, dates helper)** → `src/renderer/src/`. Aliased as `@renderer/*` in renderer-only.
 - **Main-only (Google API, IPC handler, OS integration)** → `src/main/`. Register IPC channel name in `@shared/types#IPC` first.
 - **CLI subcommand** → add a `cmdFoo(args, io)` to `src/main/cli.ts`, wire into `runCli`'s switch, document in the `helpText` string and in `README.md`.
+- **Change-detection rule** → `src/shared/calendarWatch.ts`, plus a case in `tests/watch/` (add it to `build-cases.mjs`, review the output, then bless).
 
 ## Release flow
 

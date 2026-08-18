@@ -6,6 +6,14 @@
 //   client → server : { "args": ["today", "--format", "markdown"] }   (then half-close)
 //   server → client : { "stdout": "...", "stderr": "...", "code": 0 }
 //
+// With { "stream": true } the server instead writes newline-delimited frames:
+//   { "type": "progress", "status": ... }   update/upgrade progress
+//   { "type": "out",      "data": "...\n" } one stdout line, as it happens
+//   { "type": "result",   "stdout": ..., "stderr": ..., "code": ... }  terminal
+// `watch` never reaches the terminal frame — it runs until the client hangs
+// up, at which point the socket's 'close' aborts the command so the poll loop
+// does not keep running for a consumer that has gone.
+//
 // Threading: each connection runs runCli with its own in-memory Writable
 // pair, so concurrent requests don't bleed into each other's output.
 import { app } from 'electron';
@@ -60,7 +68,22 @@ export function startCliServer(): void {
               }
             }
           : undefined;
-        const code = await runCli(args, out, err, sendProgress);
+        const sendLine = stream
+          ? (data: string) => {
+              if (!sock.destroyed) {
+                sock.write(`${JSON.stringify({ type: 'out', data })}\n`);
+              }
+            }
+          : undefined;
+        // A long-running command (watch) must learn that its consumer is gone.
+        // Without this the poll loop would keep running, and keep holding the
+        // shared watch state, for nobody.
+        const gone = new AbortController();
+        sock.on('close', () => gone.abort());
+        const code = await runCli(args, out, err, sendProgress, {
+          emit: sendLine,
+          signal: gone.signal,
+        });
         response = { stdout: out.data, stderr: err.data, code };
         if (stream) {
           try {

@@ -27,6 +27,15 @@ import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { listAccounts } from './tokenStore';
 import { fetchWeather } from './weather';
 import { getUiSettings } from './settings';
+import { calKey, resolveTargets, roleOf } from './calendarTargets';
+import { DEFAULT_WATCH_RUNNER, subscribeWatch } from './watchRunner';
+import {
+  DEFAULT_WATCH_CONFIG, emptyState, ingest, renderWatchEvent, runTimers,
+  snapshotOf,
+} from '@shared/calendarWatch';
+import type {
+  WatchConfig, WatchEvent, WatchInput,
+} from '@shared/calendarWatch';
 import {
   checkForUpdatesNow, getLastUpdateStatus, onUpdateStatus, requestInstall,
 } from './updater';
@@ -49,13 +58,6 @@ import type {
   UpdateStatus,
   UiSettings,
 } from '@shared/types';
-
-// Mirror the renderer's `calKey` so we can index UiSettings.calVisible /
-// calRoles the same way the GUI does. Imported logic kept tiny on purpose;
-// importing from `@renderer/*` would pull React into main.
-function calKey(accountId: string, calendarId: string): string {
-  return `${accountId}|${calendarId}`;
-}
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 
@@ -89,6 +91,13 @@ export interface CliIo {
   out: Writable;
   err: Writable;
   progress?: (status: UpdateStatus) => void;
+  // Push one stdout line to the caller NOW, rather than at exit. Only set for
+  // socket clients that opted into streaming; `watch` falls back to writing
+  // straight to `out` (in-process mode) when it is absent.
+  emit?: (line: string) => void;
+  // Fires when the caller went away — for `watch`, which otherwise never
+  // returns and would keep the poll loop alive for nobody.
+  signal?: AbortSignal;
 }
 
 interface ParsedArgs {
@@ -640,71 +649,30 @@ function readQueryOptions(args: ParsedArgs, fallback: EventRange): EventQueryOpt
   };
 }
 
-// Resolve role for a calendar key, falling back to 'normal' (matches renderer).
-function roleOf(ui: UiSettings, accountId: string, calendarId: string): CalRolePersisted {
-  return ui.calRoles[calKey(accountId, calendarId)] ?? 'normal';
-}
-
 async function fetchShapedEvents(opts: EventQueryOptions): Promise<ShapedEvents> {
   const accounts = listAccountSummaries();
   const allCalendars = await listAllCalendars();
   const ui = getUiSettings();
 
-  // Resolve target calendars. Precedence:
+  // Resolve target calendars — shared with `ycal watch`, so the watcher and
+  // the agenda can never drift apart. Precedence:
   //   1. Explicit --calendar <id> always wins (user is being deliberate).
   //   2. --all-calendars bypasses UI filters but still respects --account.
   //   3. Default: mirror the GUI agenda — only active accounts, only
   //      visible calendars, normal + team-OOO marker roles. Optional flags widen.
-  let targets = allCalendars;
-  if (opts.accountIds) {
-    const set = new Set(opts.accountIds);
-    targets = targets.filter((c) => set.has(c.accountId));
+  // Post-filtering by PAIR handles the shared-calendar-across-accounts case:
+  // account A has it visible while account B has it hidden, and a fetch keyed
+  // on calendar id alone would bring back both.
+  let targets;
+  try {
+    targets = resolveTargets(allCalendars, ui, opts);
+  } catch (e) {
+    throw new CliError(e instanceof Error ? e.message : String(e));
   }
-  // Resolve to (accountId, calendarId) pairs, then derive the calendarId list
-  // for the Google fetch (which is keyed by id only). We post-filter by pair
-  // to handle the shared-calendar-across-accounts case correctly: e.g. account
-  // A has the shared calendar visible while account B has it hidden — both
-  // would otherwise come back together.
-  let targetPairs: Array<{ accountId: string; calendarId: string }>;
-  if (opts.calendarIds && opts.calendarIds.length > 0) {
-    const allowed = new Set(targets.map((c) => c.id));
-    const bad = opts.calendarIds.filter((id) => !allowed.has(id));
-    if (bad.length > 0) {
-      throw new CliError(`unknown calendar id(s): ${bad.join(', ')}`);
-    }
-    const wanted = new Set(opts.calendarIds);
-    targetPairs = targets
-      .filter((c) => wanted.has(c.id))
-      .map((c) => ({ accountId: c.accountId, calendarId: c.id }));
-  } else if (opts.allCalendars) {
-    // Still respect Google's `selected` so we don't pull from calendars the
-    // user has hidden in Google Calendar itself — same behaviour as the
-    // legacy CLI default.
-    targetPairs = targets
-      .filter((c) => c.selected)
-      .map((c) => ({ accountId: c.accountId, calendarId: c.id }));
-  } else {
-    targetPairs = targets
-      .filter((c) => {
-        // accountsActive: missing key defaults to true (matches store.ts).
-        if (ui.accountsActive[c.accountId] === false) return false;
-        // calVisible: missing key defaults to Google's `selected` flag
-        // (matches refreshCalendars in store.ts).
-        const k = calKey(c.accountId, c.id);
-        const visible = ui.calVisible[k] ?? c.selected;
-        if (!visible) return false;
-        const role = roleOf(ui, c.accountId, c.id);
-        if (role === 'subscribed' && !opts.includeReadOnly) return false;
-        if (role === 'holiday' && !opts.includeHolidays) return false;
-        return true;
-      })
-      .map((c) => ({ accountId: c.accountId, calendarId: c.id }));
-  }
-  if (targetPairs.length === 0) {
+  if (targets.pairs.length === 0) {
     return { events: [], failures: [] };
   }
-  const calendarIds = Array.from(new Set(targetPairs.map((p) => p.calendarId)));
-  const pairKeys = new Set(targetPairs.map((p) => calKey(p.accountId, p.calendarId)));
+  const { calendarIds, pairKeys } = targets;
 
   const fetch = await listEvents({
     timeMin: opts.range.from.toISOString(),
@@ -894,6 +862,172 @@ async function cmdFind(args: ParsedArgs, io: CliIo): Promise<number> {
     () => format === 'markdown' ? renderEventsMarkdown(events, { ...opts, range: { from, to } }) : renderEventsText(events),
     io,
   );
+  return 0;
+}
+
+// ---------- watch ----------
+
+function watchConfigFrom(args: ParsedArgs): WatchConfig {
+  const num = (flag: string, fallback: number): number => {
+    const raw = args.flags[flag];
+    if (typeof raw !== 'string') return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new CliError(`--${flag} must be a non-negative number, got ${raw}`);
+    }
+    return n;
+  };
+  return {
+    ...DEFAULT_WATCH_CONFIG,
+    quarantinePolls: num('quarantine-polls', DEFAULT_WATCH_CONFIG.quarantinePolls),
+    rsvpLeadHours: num('rsvp-lead-hours', DEFAULT_WATCH_CONFIG.rsvpLeadHours),
+    prepLeadMinutes: num('prep-lead-minutes', DEFAULT_WATCH_CONFIG.prepLeadMinutes),
+  };
+}
+
+/** Map a recorded `ycal events` document into engine inputs. */
+function replayInputs(doc: Record<string, unknown>): WatchInput[] {
+  const rows = Array.isArray(doc.events) ? doc.events : [];
+  return rows.map((raw) => {
+    const ev = raw as Record<string, any>;
+    return {
+      id: String(ev.id ?? ''),
+      ...(ev.recurringEventId ? { recurringEventId: String(ev.recurringEventId) } : {}),
+      title: String(ev.title ?? ''),
+      start: String(ev.start ?? ''),
+      end: String(ev.end ?? ''),
+      allDay: !!ev.allDay,
+      status: String(ev.status ?? 'confirmed'),
+      eventType: ev.eventType ?? null,
+      location: ev.location ?? null,
+      url: ev.url ?? null,
+      ...(ev.meetUrl ? { meetUrl: String(ev.meetUrl) } : {}),
+      rsvp: ev.rsvp ?? null,
+      calendarName: String(ev.calendar?.name ?? ev.calendar?.id ?? ''),
+      attendees: Array.isArray(ev.attendees)
+        ? ev.attendees.map((a: Record<string, any>) => ({
+            email: String(a.email ?? ''),
+            name: a.name ?? null,
+            rsvp: String(a.rsvp ?? 'needsAction'),
+            organizer: !!a.organizer,
+            self: !!a.self,
+            resource: !!a.resource,
+          }))
+        : [],
+    } satisfies WatchInput;
+  });
+}
+
+/** Deterministic replay: feed recorded snapshots through the engine.
+ *
+ * This is how the detection logic is tested in a repo with no test runner —
+ * no GUI, no Google, no clock of its own. Each input line is one document in
+ * the shape `ycal events --format json` produces, optionally carrying a "now"
+ * (ISO) that sets the clock for that step so the timers are reproducible.
+ */
+function cmdWatchReplay(args: ParsedArgs, io: CliIo, cfg: WatchConfig): number {
+  const file = args.flags.replay;
+  if (typeof file !== 'string') throw new CliError('usage: ycal watch --replay <file.jsonl>');
+  let body: string;
+  try {
+    body = fs.readFileSync(file, 'utf-8');
+  } catch (e) {
+    throw new CliError(`cannot read ${file}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const format = getFormat(args);
+  const state = emptyState();
+  let seeded = false;
+
+  const write = (ev: WatchEvent): void => {
+    io.out.write(
+      (format === 'json' ? JSON.stringify(ev) : renderWatchEvent(ev)) + '\n',
+    );
+  };
+
+  for (const [i, line] of body.split('\n').entries()) {
+    if (!line.trim()) continue;
+    let doc: Record<string, unknown>;
+    try {
+      doc = JSON.parse(line) as Record<string, unknown>;
+    } catch (e) {
+      throw new CliError(`${file}:${i + 1} is not JSON: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    const nowRaw = typeof doc.now === 'string' ? Date.parse(doc.now) : NaN;
+    const now = Number.isNaN(nowRaw) ? Date.now() : nowRaw;
+    const windowTo = ((doc.params as Record<string, unknown>)?.to as string) ?? null;
+    const cur = snapshotOf(replayInputs(doc), cfg, now);
+
+    if (!seeded) {
+      seeded = true;
+      state.events = cur;
+      state.windowTo = windowTo;
+      runTimers(state, cfg, now, true);
+      write({
+        kind: 'watch-armed',
+        at: new Date(now).toISOString(),
+        tracked: Object.keys(state.events).length,
+        windowTo: windowTo ?? '',
+        pollSeconds: 0,
+      });
+      continue;
+    }
+    for (const ev of ingest(state, cur, { partial: !!doc.partial, windowTo, now, config: cfg })) {
+      write(ev);
+    }
+    for (const ev of runTimers(state, cfg, now).events) write(ev);
+  }
+  return 0;
+}
+
+async function cmdWatch(args: ParsedArgs, io: CliIo): Promise<number> {
+  const cfg = watchConfigFrom(args);
+  if (args.flags.replay !== undefined) return cmdWatchReplay(args, io, cfg);
+
+  ensureConfigured();
+  ensureAccounts();
+  const format = getFormat(args);
+  const intFlag = (flag: string, fallback: number): number => {
+    const raw = args.flags[flag];
+    if (typeof raw !== 'string') return fallback;
+    const n = parseInt(raw, 10);
+    if (Number.isNaN(n)) throw new CliError(`--${flag} must be an integer, got ${raw}`);
+    return n;
+  };
+
+  // Streaming when the caller opted in; otherwise straight to stdout, which is
+  // what `yCal --cli watch` (in-process) does.
+  const push = (line: string): void => {
+    if (io.emit) io.emit(line + '\n');
+    else io.out.write(line + '\n');
+  };
+
+  const unsubscribe = subscribeWatch(
+    {
+      fromDays: intFlag('from-days', DEFAULT_WATCH_RUNNER.fromDays),
+      toDays: intFlag('to-days', DEFAULT_WATCH_RUNNER.toDays),
+      pollSeconds: Math.max(15, intFlag('interval', DEFAULT_WATCH_RUNNER.pollSeconds)),
+      config: cfg,
+      filter: {
+        calendarIds: Array.isArray(args.flags.calendar) ? args.flags.calendar : null,
+        accountIds: Array.isArray(args.flags.account) ? args.flags.account : null,
+        allCalendars: !!args.flags['all-calendars'],
+        includeReadOnly: !!args.flags['include-read-only'],
+        includeHolidays: !!args.flags['include-holidays'],
+      },
+    },
+    (ev) => push(format === 'json' ? JSON.stringify(ev) : renderWatchEvent(ev)),
+  );
+
+  // `watch` does not return on its own — it ends when the caller goes away.
+  await new Promise<void>((resolve) => {
+    if (io.signal) {
+      if (io.signal.aborted) resolve();
+      else io.signal.addEventListener('abort', () => resolve(), { once: true });
+    }
+    // With no signal (in-process mode) this never resolves, which is correct:
+    // the process is the subscription, and Ctrl-C ends it.
+  });
+  unsubscribe();
   return 0;
 }
 
@@ -1264,6 +1398,14 @@ COMMANDS
   week                      Shortcut for the current Mon–Sun.
   next [N]                  Next N (default 5) upcoming events.
   find <query>              Search events (default: -7d to +90d).
+  watch                     Stream calendar CHANGES as they happen. Never
+                            exits; one event per line (JSON by default).
+                            Flags: --interval <sec>, --from-days <n>,
+                                   --to-days <n>, --rsvp-lead-hours <n>,
+                                   --prep-lead-minutes <n>,
+                                   --quarantine-polls <n>,
+                                   plus the calendar-filtering flags above,
+                                   --replay <file.jsonl> (offline)
   weather                   Forecast from the configured weather iCal feed.
   update                    Install the latest yCal release and restart.
   upgrade                   Alias for update.
@@ -1303,6 +1445,36 @@ GLOBAL FLAGS
   --format json|text|markdown   Output format. Default: json (LLM-friendly).
   --help, -h                    Show this help.
   --version, -v                 Print the yCal version.
+
+WATCH
+  \`ycal watch\` is for a program that must react to the calendar rather than
+  read it. Event kinds:
+
+    watch-armed          state was seeded; changes BEFORE this were not
+                         replayed and will never arrive
+    new-invite           somebody put a meeting on your calendar (an event you
+                         created yourself is not an invitation)
+    time-changed         it moved. Carries old AND new, because a consumer has
+                         to replace a deadline it wrote earlier
+    cancelled            it is gone, confirmed over consecutive clean polls
+    moved-out-of-window  it left the watched window; NOT a cancellation
+    rsvp-due             --rsvp-lead-hours out, RSVP still needsAction
+    starting             --prep-lead-minutes out
+    watch-error          something went wrong, INCLUDING what was deliberately
+                         not concluded and why
+
+  Google's list omits cancelled events rather than flagging them, so a
+  cancellation can only be seen as an absence — and a rate-limited calendar,
+  a hidden calendar, a re-timed recurring series and the window rolling
+  forward all look identical to one. Absences therefore pass a partial-fetch
+  gate, series pairing, an edge-of-window check, a quarantine of
+  --quarantine-polls clean polls, and a mass-vanish breaker before the word
+  "cancelled" is used. Nothing is withheld silently: what was not concluded
+  arrives as a watch-error.
+
+  --replay <file.jsonl> runs the same detection offline over recorded
+  snapshots — one \`ycal events\` JSON document per line, each optionally
+  carrying "now" (ISO) to drive the timers. No GUI, no Google, no network.
 
 DATE SHORTHAND
   today | tomorrow | yesterday | now
@@ -1417,8 +1589,9 @@ export async function runCli(
   out: Writable = process.stdout,
   err: Writable = process.stderr,
   progress?: (status: UpdateStatus) => void,
+  stream?: { emit?: (line: string) => void; signal?: AbortSignal },
 ): Promise<number> {
-  const io: CliIo = { out, err, progress };
+  const io: CliIo = { out, err, progress, ...stream };
   const version = readVersion();
   const args = parseArgs(argv);
 
@@ -1463,6 +1636,8 @@ export async function runCli(
         return await cmdNext(args, io);
       case 'find':
         return await cmdFind(args, io);
+      case 'watch':
+        return await cmdWatch(args, io);
       case 'weather':
         return await cmdWeather(args, io);
       case 'update':

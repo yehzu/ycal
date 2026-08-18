@@ -61,6 +61,12 @@ function findCommand(argv) {
 
 const command = findCommand(args);
 const isUpdateCommand = command === 'update' || command === 'upgrade';
+// `watch` streams too, but differently: it emits stdout lines as they happen
+// and never finishes on its own. It therefore gets NO read timeout — a quiet
+// calendar is the normal case, and cutting the connection after 30 silent
+// seconds would make the feature useless.
+const isWatchCommand = command === 'watch';
+const isStreamCommand = isUpdateCommand || isWatchCommand;
 // Updating can download a large release zip before the app hands off to the
 // swap helper. Keep the normal request budget short, but allow self-update
 // enough time on a slow connection.
@@ -182,15 +188,17 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
     sock.on('connect', () => {
       connected = true;
       clearTimeout(connectTimer);
-      sock.write(JSON.stringify({ args, stream: isUpdateCommand }));
+      sock.write(JSON.stringify({ args, stream: isStreamCommand }));
       sock.end(); // half-close: server reads until 'end'
-      readTimer = setTimeout(() => {
-        sock.destroy();
-        settle({ outcome: 'timeout' });
-      }, readTimeoutMs);
+      if (!isWatchCommand) {
+        readTimer = setTimeout(() => {
+          sock.destroy();
+          settle({ outcome: 'timeout' });
+        }, readTimeoutMs);
+      }
     });
     sock.on('data', (chunk) => {
-      if (!isUpdateCommand) {
+      if (!isStreamCommand) {
         buf += chunk;
         return;
       }
@@ -202,8 +210,11 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
         try {
           const frame = JSON.parse(line);
           if (frame.type === 'progress') renderProgress(frame.status);
+          // Straight through to stdout, unbuffered: a watcher's whole value is
+          // that the event arrives when it happens.
+          else if (frame.type === 'out') process.stdout.write(frame.data);
           else if (frame.type === 'result') buf = JSON.stringify(frame);
-        } catch (_e) { /* ignore malformed progress frame */ }
+        } catch (_e) { /* ignore malformed frame */ }
         newline = lineBuf.indexOf('\n');
       }
     });
@@ -211,6 +222,13 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
       clearTimeout(connectTimer);
       if (readTimer) clearTimeout(readTimer);
       try {
+        // `watch` ends when the GUI goes away, having already written every
+        // line to stdout. There is no terminal result frame to parse, and
+        // that is a clean exit, not an unusable response.
+        if (isWatchCommand && !buf) {
+          settle({ outcome: 'ok', result: { stdout: '', stderr: '', code: 0 } });
+          return;
+        }
         if (isUpdateCommand && !buf && lineBuf) {
           // Backwards compatibility with an older installed yCal that
           // answers with the original single-JSON response.

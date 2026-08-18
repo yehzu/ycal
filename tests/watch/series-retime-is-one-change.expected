@@ -1,0 +1,2 @@
+{"kind":"watch-armed","at":"2026-08-18T10:00:00.000Z","tracked":1,"windowTo":"2026-09-01T00:00:00.000Z","pollSeconds":0}
+{"at":"2026-08-18T10:01:00.000Z","id":"s1_20260820T080000Z","title":"1:1","calendar":"Work","url":"https://cal/s1_20260820T080000Z","allDay":false,"kind":"time-changed","old":{"start":"2026-08-20T06:00:00Z","end":"2026-08-20T07:00:00Z"},"new":{"start":"2026-08-20T08:00:00Z","end":"2026-08-20T09:00:00Z"},"prevId":"s1_20260820T060000Z","series":"s1"}
