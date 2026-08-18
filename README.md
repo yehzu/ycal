@@ -228,6 +228,8 @@ YYYY-MM-DDTHH:MM[:SS]    (local time, or include offset)
 
 Every JSON document has at minimum `{ "command", "count" }` and a payload array named after the command. All times are ISO 8601 (timed events carry the originating timezone offset; all-day events are naive YYYY-MM-DDT00:00:00). Durations are in minutes. Descriptions are plain text — HTML is stripped and entities decoded.
 
+Event commands (`events`, `today`, `tomorrow`, `week`, `next`, `find`) additionally carry `partial` and `failures`. **`"partial": true` means at least one calendar could not be read on this call**, so the event array is an incomplete view of the window — an event that is absent may simply be one we could not see. Anything that diffs two snapshots over time must check this before concluding an event was cancelled. The exit code stays 0 (partial data is still useful) and the same failures are printed on stderr.
+
 ```jsonc
 {
   "command": "events",
@@ -238,6 +240,8 @@ Every JSON document has at minimum `{ "command", "count" }` and a payload array 
     "calendarIds": null, "accountIds": null
   },
   "count": 1,
+  "partial": false,
+  "failures": [],                          // [{ account, calendar, message, transient, needsReauth }]
   "events": [
     {
       "id": "abc123",
@@ -251,6 +255,13 @@ Every JSON document has at minimum `{ "command", "count" }` and a payload array 
       "rsvp": "accepted",                    // accepted | tentative | declined | needsAction | null
       "status": "confirmed",
       "eventType": "default",                // default | workingLocation | outOfOffice | focusTime | birthday | fromGmail
+      "recurringEventId": "abc123",          // only on a recurring instance; see below
+      "meetUrl": "meet.google.com/xxx-yyyy", // protocol-less; omitted when there's no conference
+      "meetLabel": "Google Meet",
+      "attendees": [                         // only with --include-attendees
+        { "email": "her@x.com", "name": "Her", "rsvp": "accepted",
+          "organizer": false, "self": false, "optional": false, "resource": false }
+      ],
       "calendar": { "id": "...", "name": "Work", "account": "you@gmail.com", "primary": true },
       "url": "https://www.google.com/calendar/event?..."
     }
@@ -300,8 +311,11 @@ ycal note <event-id> --include-transcript --format markdown
 
 - **Cross-calendar duplicates are collapsed by default.** Same `(title + start)` events on multiple calendars become one row. Pass `--no-dedup` to see all rows.
 - **Declined events are hidden by default.** Pass `--include-declined` to include them.
+- **Attendees are opt-in.** Pass `--include-attendees`; an invite list is long and most callers never read it. Meeting rooms and equipment arrive as attendees with `"resource": true` — filter them out before calling them people.
+- **`recurringEventId` is the stable half of a recurring event's identity.** An instance's `id` embeds its *original* start time, so re-timing a series changes every instance id at once. Anything comparing snapshots over time should pair on `recurringEventId`, or it will read one rescheduled series as a batch of cancellations plus a batch of new invitations.
 - **GUI filters apply by default** (read-only, holidays, hidden calendars are dropped). See "Calendar filtering" above for the opt-in flags.
 - **Stderr is for diagnostics only.** stdout receives exactly one JSON document (or one text/markdown block). Pipe-safe.
+- **A partial fetch is never silent.** If a calendar rate-limits or its account's sign-in expired, the affected calendars are named on stderr *and* in the JSON's `failures`, with `partial: true`. Cancellation can only be observed as an event's *absence* (Google's list omits cancelled events entirely), so a consumer that treats a partial result as authoritative will report phantom cancellations.
 - **Default range** for `events` is today through 7 days out. Override with `--from`/`--to`.
 - **Caching:** the GUI process keeps a 5-minute calendar-list cache and a 30-second events cache, so back-to-back CLI calls in interactive use are near-instant. Caches are busted on account add/remove.
 

@@ -479,6 +479,7 @@ export async function listEvents(req: ListEventsRequest): Promise<ListEventsResu
               const attendees = resolveAttendees(ev);
               localRows.push({
                 id: ev.id,
+                ...(ev.recurringEventId ? { recurringEventId: ev.recurringEventId } : {}),
                 calendarId: cal.id,
                 accountId: cal.accountId,
                 start: startIso,

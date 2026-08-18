@@ -927,6 +927,22 @@ function registerIpc() {
   });
 }
 
+// process.stdout is ASYNCHRONOUS when it is a pipe, while app.exit() is
+// immediate — anything still queued when we exit is discarded, with exit code
+// 0 and no error anywhere. Measured 2026-08-18: a 145KB JSON document written
+// to a file arrived complete, and the same document piped into another process
+// arrived truncated at exactly 131072 bytes (one pipe buffer). That is silent
+// data loss on precisely the payloads worth piping, which is the documented
+// use for this mode. So: wait for the queue to drain first. The timeout is a
+// backstop — a stream that never drains must not hang the process forever.
+async function drainStream(stream: NodeJS.WriteStream, ms = 5000): Promise<void> {
+  if (stream.writableLength === 0) return;
+  await Promise.race([
+    new Promise<void>((resolve) => { stream.write('', () => resolve()); }),
+    new Promise<void>((resolve) => { setTimeout(resolve, ms); }),
+  ]);
+}
+
 if (isCliInvocation(process.argv)) {
   // Headless CLI mode. We still need Electron's runtime (safeStorage relies
   // on it) but we skip the window, dock icon, missing-config dialog, and
@@ -948,6 +964,8 @@ if (isCliInvocation(process.argv)) {
       code = 1;
     } finally {
       console.log = origLog;
+      await drainStream(process.stdout);
+      await drainStream(process.stderr);
       app.exit(code);
     }
   });

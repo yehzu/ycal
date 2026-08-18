@@ -23,6 +23,12 @@ export interface CalendarSummary {
 
 export interface CalendarEvent {
   id: string;
+  // Google's parent-series id, present only on a recurring INSTANCE. The
+  // instance `id` embeds the instance's ORIGINAL start time, so re-timing a
+  // series changes every instance id in one go. Anything that tracks events
+  // across time needs this stable series identity to tell a rescheduled series
+  // apart from a batch of cancellations plus a batch of new invitations.
+  recurringEventId?: string;
   calendarId: string;
   accountId: string;
   // ISO date for all-day events; ISO datetime for timed events.

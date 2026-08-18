@@ -42,6 +42,7 @@ import type {
   AccountSummary,
   CalendarSummary,
   CalendarEvent,
+  CalendarFetchFailure,
   CalRolePersisted,
   MeetingArtifactKind,
   MeetingNote,
@@ -285,8 +286,25 @@ function buildLookup(calendars: CalendarSummary[], accounts: AccountSummary[]): 
   };
 }
 
+interface PublicAttendee {
+  email: string;
+  name: string | null;
+  rsvp: string;
+  organizer: boolean;
+  self: boolean;
+  optional: boolean;
+  // Meeting rooms and equipment come back as attendees too. Without this flag
+  // a consumer writing "who is in this meeting" lists the Chromebox.
+  resource: boolean;
+}
+
 interface PublicEvent {
   id: string;
+  // Present only on a recurring instance. `id` embeds the instance's original
+  // start, so a re-timed series changes every id at once; this is the stable
+  // half, and the only way a consumer tracking events over time can tell that
+  // apart from a wave of cancellations.
+  recurringEventId?: string;
   title: string;
   start: string;
   end: string;
@@ -298,15 +316,71 @@ interface PublicEvent {
   status: string;
   eventType: string | null;
   workingLocation?: { kind: string; label: string };
+  // Conference URL, protocol-less (matches how the GUI stores it). Cheap
+  // enough to always include — it is the one thing you actually need at the
+  // moment a meeting starts.
+  meetUrl?: string;
+  meetLabel?: string;
+  // Opt-in via --include-attendees: an all-hands invite list is long, and
+  // every other caller would pay for it in tokens on every single event.
+  attendees?: PublicAttendee[];
   calendar: { id: string; name: string; account: string | null; primary: boolean };
   url: string | null;
 }
 
-function shapeEvent(ev: CalendarEvent, look: CalendarLookup): PublicEvent {
+// A calendar we could not read this time. Until now these only reached
+// `process.stderr` from inside fetchShapedEvents, which in socket mode (the
+// default `bin/ycal` path) is the GUI process's stderr — not the caller's —
+// so a partial fetch was invisible to the client and absent from the JSON.
+// That matters to any machine consumer that DIFFS two snapshots: without a
+// way to tell "nothing changed" from "we could not see part of the calendar",
+// one rate-limited calendar reads as a batch of cancellations.
+interface PublicFailure {
+  account: string;
+  // null = whole-account failure (the OAuth refresh itself rejected), so we
+  // never got far enough to name a calendar.
+  calendar: string | null;
+  message: string;
+  transient: boolean;
+  needsReauth: boolean;
+}
+
+// What fetchShapedEvents returns: what we could see, plus what we could not.
+interface ShapedEvents {
+  events: PublicEvent[];
+  failures: PublicFailure[];
+}
+
+function shapeFailure(f: CalendarFetchFailure): PublicFailure {
+  return {
+    account: f.accountEmail,
+    calendar: f.calendarName,
+    message: f.message,
+    transient: f.transient,
+    needsReauth: f.needsReauth,
+  };
+}
+
+// Partial fetches keep exit code 0 — partial data is still useful — but they
+// must be audible on the CALLER's stderr, which means io.err, never
+// process.stderr.
+function reportFailures(failures: PublicFailure[], io: CliIo): void {
+  for (const f of failures) {
+    const target = f.calendar ? `${f.account}/${f.calendar}` : f.account;
+    io.err.write(`[ycal] ${target}: ${f.message}\n`);
+  }
+}
+
+function shapeEvent(
+  ev: CalendarEvent,
+  look: CalendarLookup,
+  includeAttendees = false,
+): PublicEvent {
   const cal = look.byId.get(ev.calendarId);
   const acc = look.accountById.get(ev.accountId);
   return {
     id: ev.id,
+    ...(ev.recurringEventId ? { recurringEventId: ev.recurringEventId } : {}),
     title: ev.title,
     start: ev.start,
     end: ev.end,
@@ -318,6 +392,21 @@ function shapeEvent(ev: CalendarEvent, look: CalendarLookup): PublicEvent {
     status: ev.status,
     eventType: ev.eventType,
     ...(ev.workingLocation ? { workingLocation: ev.workingLocation } : {}),
+    ...(ev.meetUrl ? { meetUrl: ev.meetUrl } : {}),
+    ...(ev.meetLabel ? { meetLabel: ev.meetLabel } : {}),
+    ...(includeAttendees && ev.attendees
+      ? {
+          attendees: ev.attendees.map((a) => ({
+            email: a.email,
+            name: a.name,
+            rsvp: a.rsvp,
+            organizer: a.organizer,
+            self: a.self,
+            optional: a.optional,
+            resource: a.resource,
+          })),
+        }
+      : {}),
     calendar: {
       id: ev.calendarId,
       name: cal?.name ?? ev.calendarId,
@@ -524,6 +613,7 @@ interface EventQueryOptions {
   allCalendars: boolean;
   includeReadOnly: boolean;
   includeHolidays: boolean;
+  includeAttendees: boolean;
 }
 
 function readQueryOptions(args: ParsedArgs, fallback: EventRange): EventQueryOptions {
@@ -546,6 +636,7 @@ function readQueryOptions(args: ParsedArgs, fallback: EventRange): EventQueryOpt
     allCalendars: !!args.flags['all-calendars'],
     includeReadOnly: !!args.flags['include-read-only'],
     includeHolidays: !!args.flags['include-holidays'],
+    includeAttendees: !!args.flags['include-attendees'],
   };
 }
 
@@ -554,7 +645,7 @@ function roleOf(ui: UiSettings, accountId: string, calendarId: string): CalRoleP
   return ui.calRoles[calKey(accountId, calendarId)] ?? 'normal';
 }
 
-async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]> {
+async function fetchShapedEvents(opts: EventQueryOptions): Promise<ShapedEvents> {
   const accounts = listAccountSummaries();
   const allCalendars = await listAllCalendars();
   const ui = getUiSettings();
@@ -610,7 +701,7 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
       .map((c) => ({ accountId: c.accountId, calendarId: c.id }));
   }
   if (targetPairs.length === 0) {
-    return [];
+    return { events: [], failures: [] };
   }
   const calendarIds = Array.from(new Set(targetPairs.map((p) => p.calendarId)));
   const pairKeys = new Set(targetPairs.map((p) => calKey(p.accountId, p.calendarId)));
@@ -620,15 +711,8 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
     timeMax: opts.range.to.toISOString(),
     calendarIds,
   });
-  if (fetch.failures.length > 0) {
-    // CLI surfaces sync failures on stderr so the user knows the JSON
-    // / markdown / text output below is partial. Exit code stays 0 —
-    // partial data is still useful to LLM callers.
-    for (const f of fetch.failures) {
-      const target = f.calendarName ? `${f.accountEmail}/${f.calendarName}` : f.accountEmail;
-      process.stderr.write(`[ycal] ${target}: ${f.message}\n`);
-    }
-  }
+  // Carried out to the command, which reports them on io.err AND in the JSON.
+  const failures = fetch.failures.map(shapeFailure);
   let events = fetch.events.filter((ev) => pairKeys.has(calKey(ev.accountId, ev.calendarId)));
   // Google's timeMin is documented as exclusive on event end, but multi-day
   // all-day events whose exclusive end.date equals our local midnight still
@@ -651,7 +735,7 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
   const lookup = buildLookup(allCalendars, accounts);
   let shaped = events
     .filter((ev) => opts.includeDeclined || ev.rsvp !== 'declined')
-    .map((ev) => shapeEvent(ev, lookup));
+    .map((ev) => shapeEvent(ev, lookup, opts.includeAttendees));
 
   if (opts.search) {
     const q = opts.search.toLowerCase();
@@ -665,7 +749,7 @@ async function fetchShapedEvents(opts: EventQueryOptions): Promise<PublicEvent[]
 
   shaped.sort(compareEvents);
   if (opts.limit !== undefined) shaped = shaped.slice(0, opts.limit);
-  return shaped;
+  return { events: shaped, failures };
 }
 
 function renderEventsText(events: PublicEvent[]): string {
@@ -720,7 +804,8 @@ async function cmdEvents(args: ParsedArgs, defaultRange: EventRange, io: CliIo):
   ensureConfigured();
   ensureAccounts();
   const opts = readQueryOptions(args, defaultRange);
-  const events = await fetchShapedEvents(opts);
+  const { events, failures } = await fetchShapedEvents(opts);
+  reportFailures(failures, io);
   const format = getFormat(args);
   emit(
     {
@@ -735,6 +820,8 @@ async function cmdEvents(args: ParsedArgs, defaultRange: EventRange, io: CliIo):
         accountIds: opts.accountIds,
       },
       count: events.length,
+      partial: failures.length > 0,
+      failures,
       events,
     },
     format,
@@ -759,7 +846,9 @@ async function cmdNext(args: ParsedArgs, io: CliIo): Promise<number> {
   const to = addDays(from, 30);
   const opts = readQueryOptions({ ...args, flags: { ...args.flags, limit: undefined as any } }, { from, to });
   // Override limit and force from=now (so we don't return events that started earlier today).
-  const events = (await fetchShapedEvents({ ...opts, range: { from, to } }))
+  const fetched = await fetchShapedEvents({ ...opts, range: { from, to } });
+  reportFailures(fetched.failures, io);
+  const events = fetched.events
     .filter((ev) => new Date(ev.end).getTime() > from.getTime())
     .slice(0, n);
   const format = getFormat(args);
@@ -768,6 +857,8 @@ async function cmdNext(args: ParsedArgs, io: CliIo): Promise<number> {
       command: 'next',
       params: { count_requested: n, lookahead_days: 30 },
       count: events.length,
+      partial: fetched.failures.length > 0,
+      failures: fetched.failures,
       events,
     },
     format,
@@ -787,10 +878,18 @@ async function cmdFind(args: ParsedArgs, io: CliIo): Promise<number> {
   const from = parseDate(fromStr, 'start');
   const to = parseDate(toStr, 'end');
   const opts = readQueryOptions({ ...args, flags: { ...args.flags, search: query } }, { from, to });
-  const events = await fetchShapedEvents({ ...opts, search: query });
+  const { events, failures } = await fetchShapedEvents({ ...opts, search: query });
+  reportFailures(failures, io);
   const format = getFormat(args);
   emit(
-    { command: 'find', params: { query, from: from.toISOString(), to: to.toISOString() }, count: events.length, events },
+    {
+      command: 'find',
+      params: { query, from: from.toISOString(), to: to.toISOString() },
+      count: events.length,
+      partial: failures.length > 0,
+      failures,
+      events,
+    },
     format,
     () => format === 'markdown' ? renderEventsMarkdown(events, { ...opts, range: { from, to } }) : renderEventsText(events),
     io,
@@ -1155,6 +1254,7 @@ COMMANDS
                                    --search <text>,
                                    --limit <n>,
                                    --include-declined,
+                                   --include-attendees,
                                    --include-read-only,
                                    --include-holidays,
                                    --all-calendars,
@@ -1189,6 +1289,9 @@ CALENDAR FILTERING
     • only visible calendars (per the sidebar toggles)
     • normal and Team OOO marker calendars (read-only and holidays excluded)
   Flags to widen the set:
+    --include-attendees     Add the invite list to each event (email, name,
+                            RSVP, organizer/self/optional flags). Off by
+                            default: it is long, and most callers never read it.
     --include-read-only     Include calendars marked read-only (subscribed)
                             — useful while planning, to see colleague schedules.
     --include-holidays      Include calendars marked as holiday calendars.
@@ -1226,6 +1329,12 @@ JSON OUTPUT
   Every JSON document has at minimum: { "command", "count" } plus a payload
   array named after the command (events|accounts|calendars|days). Times are
   ISO 8601; durations are minutes; descriptions are plain text (HTML stripped).
+
+  Event commands also carry { "partial", "failures" }. "partial": true means
+  at least one calendar could not be read on this call, so the event array is
+  an INCOMPLETE view — an absent event may simply be one we could not see.
+  Anything that diffs two snapshots must check this before concluding that an
+  event was cancelled. Exit code stays 0; the same failures go to stderr.
 
 EXIT CODES
   0  success
