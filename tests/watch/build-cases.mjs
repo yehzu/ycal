@@ -172,6 +172,40 @@ write('window-roll-is-not-an-invite', [
     { windowTo: '2026-09-08T00:00:00.000Z' }),
 ]);
 
+// 9b. The window's NEAR edge rolls forward every midnight too, and everything
+//     on the day that drops off the back vanishes from the snapshot at once.
+//     That is not a cancellation — nothing about those meetings changed, our
+//     view moved past them — and reporting it would mean a batch of phantom
+//     cancellations every single night.
+//
+//     The second half of this case is what makes it worth having: a FUTURE
+//     event is deleted in the same roll and must STILL be reported. Without
+//     it, muting the whole quarantine would pass.
+const yest = (n) => ev(`y${n}`, `Yesterday ${n}`, `2026-08-17T0${n}:00:00Z`, `2026-08-17T0${n}:30:00Z`);
+const soonEv = (n) => ev(`s${n}`, `Later ${n}`, `2026-08-2${n}T06:00:00Z`, `2026-08-2${n}T07:00:00Z`);
+const rolled = (now, events) => ({
+  now,
+  // Both edges one day further on than WINDOW_FROM/WINDOW_TO below.
+  params: { from: '2026-08-17T16:00:00.000Z', to: '2026-09-02T15:59:59.999Z' },
+  count: events.length,
+  partial: false,
+  failures: [],
+  events,
+});
+write('near-edge-ages-out-silently', [
+  {
+    now: '2026-08-17T20:00:00Z',
+    params: { from: '2026-08-16T16:00:00.000Z', to: '2026-09-01T15:59:59.999Z' },
+    count: 5, partial: false, failures: [],
+    events: [yest(1), yest(2), yest(3), soonEv(1), soonEv(2)],
+  },
+  // Midnight: the three 08-17 events fall off the back, and someone also
+  // deletes a future one.
+  rolled('2026-08-18T00:01:00Z', [soonEv(1)]),
+  rolled('2026-08-18T00:02:00Z', [soonEv(1)]),
+  rolled('2026-08-18T00:03:00Z', [soonEv(1)]),
+]);
+
 // 10. Timers. Nothing changes at T-minus-N; the clock simply arrives.
 const SOON = '2026-08-18T10:20:00Z';        // 20 min after t(0)
 const meeting = mine('t1', 'Sync', SOON, '2026-08-18T11:20:00Z', {

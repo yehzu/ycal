@@ -954,7 +954,9 @@ function cmdWatchReplay(args: ParsedArgs, io: CliIo, cfg: WatchConfig): number {
     }
     const nowRaw = typeof doc.now === 'string' ? Date.parse(doc.now) : NaN;
     const now = Number.isNaN(nowRaw) ? Date.now() : nowRaw;
-    const windowTo = ((doc.params as Record<string, unknown>)?.to as string) ?? null;
+    const params = doc.params as Record<string, unknown> | undefined;
+    const windowFrom = (params?.from as string) ?? null;
+    const windowTo = (params?.to as string) ?? null;
     const cur = snapshotOf(replayInputs(doc), cfg, now);
 
     if (!seeded) {
@@ -971,7 +973,9 @@ function cmdWatchReplay(args: ParsedArgs, io: CliIo, cfg: WatchConfig): number {
       });
       continue;
     }
-    for (const ev of ingest(state, cur, { partial: !!doc.partial, windowTo, now, config: cfg })) {
+    for (const ev of ingest(state, cur, {
+      partial: !!doc.partial, windowFrom, windowTo, now, config: cfg,
+    })) {
       write(ev);
     }
     for (const ev of runTimers(state, cfg, now).events) write(ev);

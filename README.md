@@ -330,9 +330,17 @@ observed as an *absence* — and a rate-limited calendar, a calendar you hid in
 the sidebar, a re-timed recurring series, and the window rolling forward at
 midnight all look exactly like one. A naive differ reports phantom
 cancellations constantly. So before the word "cancelled" is used, an absence
-passes a partial-fetch gate, series pairing on `recurringEventId`, an
-edge-of-window check, a quarantine of `--quarantine-polls` (2) clean polls, and
-a mass-vanish circuit breaker. Nothing is dropped silently: whatever was not
+passes a partial-fetch gate, series pairing on `recurringEventId`, checks
+against **both** edges of the window, a quarantine of `--quarantine-polls` (2)
+clean polls, and a mass-vanish circuit breaker.
+
+Both edges matter, for different reasons. Past the *far* edge is a reschedule
+beyond the horizon, reported as `moved-out-of-window`. Off the *near* edge is
+not an event at all: a `-1d..+14d` window moves its start forward every
+midnight, so everything on the day that drops off the back vanishes at once —
+nothing about those meetings changed, your view moved past them, and they are
+dropped silently. A meeting still inside the window that disappears is
+reported normally, whatever else rolled that night. Nothing is dropped silently: whatever was not
 concluded arrives as a `watch-error` saying so.
 
 Detection runs only while at least one `ycal watch` is attached, and the

@@ -336,6 +336,13 @@ function pairSeries(
 
 export interface IngestOptions {
   partial: boolean;
+  // BOTH edges are needed, and for different reasons. The far edge classifies
+  // an event rescheduled past the horizon as moved-out-of-window rather than
+  // cancelled. The NEAR edge is what stops the watcher reporting every one of
+  // yesterday's meetings as cancelled at midnight: a window of -1d..+14d moves
+  // its start forward every night, and everything on the day that drops off
+  // the back vanishes from the snapshot at once.
+  windowFrom: string | null;
   windowTo: string | null;
   now: number;
   config: WatchConfig;
@@ -385,6 +392,27 @@ export function ingest(
 
   let vanished = Object.keys(prev).filter((id) => !cur[id]);
   let appeared = Object.keys(cur).filter((id) => !prev[id]);
+
+  // Aged out of the back of the window. NOT a change and NOT reported: the
+  // event did not move and was not cancelled, our view moved past it. It is
+  // also unambiguous — an event genuinely cancelled while still inside the
+  // window disappears while its start is still at or after the near edge, so
+  // this only ever catches meetings that have already happened, where there is
+  // nothing for a consumer to do anyway. Dropped before the partial gate
+  // because the window no longer covers them either way; they are never
+  // coming back.
+  const nearEdge = ms(opts.windowFrom);
+  if (nearEdge !== null) {
+    const agedOut = vanished.filter((id) => {
+      const start = ms(prev[id].start);
+      return start !== null && start < nearEdge;
+    });
+    for (const id of agedOut) {
+      delete prev[id];
+      delete state.missing[id];
+    }
+    vanished = vanished.filter((id) => !agedOut.includes(id));
+  }
 
   // 2. A re-timed recurring SERIES changes every instance id at once. This
   // runs BEFORE the partial gate on purpose: a series lives on ONE calendar,

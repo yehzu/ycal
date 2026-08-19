@@ -125,6 +125,7 @@ function toWatchInput(ev: CalendarEvent, calendarName: string): WatchInput {
 interface Fetched {
   events: WatchInput[];
   partial: boolean;
+  windowFrom: string;
   windowTo: string;
 }
 
@@ -137,7 +138,12 @@ async function fetchSnapshot(opts: WatchRunnerOptions): Promise<Fetched> {
   const ui = getUiSettings();
   const targets = resolveTargets(all, ui, opts.filter);
   if (targets.pairs.length === 0) {
-    return { events: [], partial: false, windowTo: timeMax.toISOString() };
+    return {
+      events: [],
+      partial: false,
+      windowFrom: timeMin.toISOString(),
+      windowTo: timeMax.toISOString(),
+    };
   }
   const byId = new Map(all.map((c) => [c.id, c]));
 
@@ -160,6 +166,7 @@ async function fetchSnapshot(opts: WatchRunnerOptions): Promise<Fetched> {
   return {
     events,
     partial: res.failures.length > 0,
+    windowFrom: timeMin.toISOString(),
     windowTo: timeMax.toISOString(),
   };
 }
@@ -232,6 +239,7 @@ async function loop(opts: WatchRunnerOptions): Promise<void> {
         const cur = snapshotOf(got.events, opts.config, now);
         for (const ev of ingest(state, cur, {
           partial: got.partial,
+          windowFrom: got.windowFrom,
           windowTo: got.windowTo,
           now,
           config: opts.config,

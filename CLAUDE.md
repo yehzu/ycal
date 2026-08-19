@@ -208,6 +208,15 @@ start) and the window rolling forward at midnight are indistinguishable from
 one. Same doctrine as invariant #12 for the Apple mirror: missing remote data
 must never become mass deletion.
 
+**Both window edges need guarding, and they are not symmetric.** The far edge
+catches a reschedule past the horizon (`moved-out-of-window`). The near edge
+catches nothing changing at all: a `-1d..+14d` window moves its start forward
+every midnight, so yesterday's meetings leave the snapshot as a batch. Shipped
+without that guard in 0.8.41 and it reported every one of them as cancelled,
+once a night — see `tests/watch/near-edge-ages-out-silently.jsonl`, whose
+second half deletes a future event in the same roll so that muting the
+quarantine wholesale cannot pass.
+
 Two decisions worth not re-litigating:
 
 - **Detection runs only while a consumer is attached**, and state is persisted.

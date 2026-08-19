@@ -1,0 +1,2 @@
+{"kind":"watch-armed","at":"2026-08-17T20:00:00.000Z","tracked":5,"windowTo":"2026-09-01T15:59:59.999Z","pollSeconds":0}
+{"at":"2026-08-18T00:02:00.000Z","id":"s2","title":"Later 2","calendar":"Work","url":"https://cal/s2","allDay":false,"kind":"cancelled","was":{"start":"2026-08-22T06:00:00Z","end":"2026-08-22T07:00:00Z"},"confirmedPolls":2}
