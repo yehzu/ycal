@@ -331,17 +331,31 @@ the sidebar, a re-timed recurring series, and the window rolling forward at
 midnight all look exactly like one. A naive differ reports phantom
 cancellations constantly. So before the word "cancelled" is used, an absence
 passes a partial-fetch gate, series pairing on `recurringEventId`, checks
-against **both** edges of the window, a quarantine of `--quarantine-polls` (2)
-clean polls, and a mass-vanish circuit breaker.
+against **both** edges of the window, eviction of calendars no longer watched,
+a quarantine of `--quarantine-polls` (2) clean polls, and a mass-vanish
+circuit breaker.
 
 Both edges matter, for different reasons. Past the *far* edge is a reschedule
 beyond the horizon, reported as `moved-out-of-window`. Off the *near* edge is
 not an event at all: a `-1d..+14d` window moves its start forward every
 midnight, so everything on the day that drops off the back vanishes at once —
-nothing about those meetings changed, your view moved past them, and they are
-dropped silently. A meeting still inside the window that disappears is
-reported normally, whatever else rolled that night. Nothing is dropped silently: whatever was not
-concluded arrives as a `watch-error` saying so.
+nothing about those meetings changed, your view moved past them. A meeting
+still inside the window that disappears is reported normally, whatever else
+rolled that night.
+
+Unticking a calendar in the sidebar is the same kind of non-event, and is
+passed over in the same silence: your view changed, the calendar did not. That
+one is worth spelling out because getting it wrong is not merely noisy — the
+mass-vanish breaker does catch the phantom cancellations, but the orphaned
+events stay in the baseline and re-trip it on every later poll, so the watcher
+stops reporting real cancellations for good. As a backstop for absences
+nothing can attribute (an account removed, a shared calendar revoked), the
+breaker gives up after 5 consecutive trips on the same absences and adopts the
+smaller world as the new baseline — announced as a `watch-error`, and still
+without calling any of it a cancellation.
+
+Those two silences are the only ones. Everything else that was deliberately
+not concluded arrives as a `watch-error` saying so.
 
 Detection runs only while at least one `ycal watch` is attached, and the
 snapshot is persisted to `watch-state.json` in userData. Together those make a
@@ -357,7 +371,7 @@ someone else's.
 #### Testing it
 
 ```bash
-npm run test:watch               # 16 golden-file cases, no GUI/Google/network
+npm run test:watch               # 19 golden-file cases, no GUI/Google/network
 npm run test:watch -- bless      # rewrite expectations after a deliberate change
 ```
 

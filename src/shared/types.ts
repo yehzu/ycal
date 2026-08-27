@@ -151,6 +151,16 @@ export interface WeatherDay {
 
 // User-controlled UI state that survives across launches.
 export type CalRolePersisted = 'normal' | 'subscribed' | 'holiday' | 'teamOoo';
+
+// A role the user has marked as somebody else's calendar: it may sit on the
+// grid, but it is not the user's own agenda and nothing in it is theirs to
+// answer for. THE ONE DEFINITION — main (calendar targets, Apple mirror) and
+// renderer (agenda filtering) both read it here. They drifted once: the
+// watcher kept polling Team OOO feeds the agenda had already excluded, so a
+// colleague's OOO moving read as the user's own meeting moving.
+export function isReadOnlyRole(role: CalRolePersisted | undefined): boolean {
+  return role === 'subscribed' || role === 'teamOoo';
+}
 export type SidebarSection = 'almanac' | 'agenda' | 'calendars';
 export type TempUnits = 'F' | 'C';
 

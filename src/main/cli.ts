@@ -30,7 +30,7 @@ import { getUiSettings } from './settings';
 import { calKey, resolveTargets, roleOf } from './calendarTargets';
 import { DEFAULT_WATCH_RUNNER, subscribeWatch } from './watchRunner';
 import {
-  DEFAULT_WATCH_CONFIG, emptyState, ingest, renderWatchEvent, runTimers,
+  DEFAULT_WATCH_CONFIG, emptyState, evictUnwatched, ingest, renderWatchEvent, runTimers,
   snapshotOf,
 } from '@shared/calendarWatch';
 import type {
@@ -536,8 +536,9 @@ async function cmdCalendars(args: ParsedArgs, io: CliIo): Promise<number> {
     const accountActive = ui.accountsActive[c.accountId] !== false;
     const visible = ui.calVisible[calKey(c.accountId, c.id)] ?? c.selected;
     const role = roleOf(ui, c.accountId, c.id);
-    const included = accountActive && visible
-      && (role === 'normal' || role === 'teamOoo');
+    // Mirrors resolveTargets' default filter exactly — this field exists to
+    // answer "why isn't event X showing up", so it is worthless if it drifts.
+    const included = accountActive && visible && role === 'normal';
     return {
       id: c.id,
       name: c.name,
@@ -893,6 +894,11 @@ function replayInputs(doc: Record<string, unknown>): WatchInput[] {
     return {
       id: String(ev.id ?? ''),
       ...(ev.recurringEventId ? { recurringEventId: String(ev.recurringEventId) } : {}),
+      // The recorded document identifies an account by email, which is the
+      // stable key AT THIS LAYER; the live runner uses the internal accountId.
+      // Both only ever have to agree with the `watched` set beside them.
+      accountId: String(ev.calendar?.account ?? ''),
+      calendarId: String(ev.calendar?.id ?? ''),
       title: String(ev.title ?? ''),
       start: String(ev.start ?? ''),
       end: String(ev.end ?? ''),
@@ -923,7 +929,10 @@ function replayInputs(doc: Record<string, unknown>): WatchInput[] {
  * This is how the detection logic is tested in a repo with no test runner —
  * no GUI, no Google, no clock of its own. Each input line is one document in
  * the shape `ycal events --format json` produces, optionally carrying a "now"
- * (ISO) that sets the clock for that step so the timers are reproducible.
+ * (ISO) that sets the clock for that step so the timers are reproducible, and
+ * a `"watched"` array of `<account>|<calendarId>` keys standing in for the
+ * calendars the sidebar had ticked at that moment. Omit `watched` and no
+ * eviction runs, which is what every case that predates it wants.
  */
 function cmdWatchReplay(args: ParsedArgs, io: CliIo, cfg: WatchConfig): number {
   const file = args.flags.replay;
@@ -958,6 +967,9 @@ function cmdWatchReplay(args: ParsedArgs, io: CliIo, cfg: WatchConfig): number {
     const windowFrom = (params?.from as string) ?? null;
     const windowTo = (params?.to as string) ?? null;
     const cur = snapshotOf(replayInputs(doc), cfg, now);
+    const watched = Array.isArray(doc.watched)
+      ? new Set((doc.watched as unknown[]).map(String))
+      : null;
 
     if (!seeded) {
       seeded = true;
@@ -973,6 +985,7 @@ function cmdWatchReplay(args: ParsedArgs, io: CliIo, cfg: WatchConfig): number {
       });
       continue;
     }
+    if (watched) evictUnwatched(state, watched);
     for (const ev of ingest(state, cur, {
       partial: !!doc.partial, windowFrom, windowTo, now, config: cfg,
     })) {

@@ -5,6 +5,7 @@
 // from the one the user sees, every toggle in the sidebar would look to a
 // consumer like a batch of events appearing or disappearing.
 import type { CalendarSummary, CalRolePersisted, UiSettings } from '@shared/types';
+import { isReadOnlyRole } from '@shared/types';
 
 // Mirrors the renderer's `calKey` (src/renderer/src/store.ts) EXACTLY: these
 // strings index the persisted UiSettings.calVisible / calRoles maps, so a
@@ -29,6 +30,8 @@ export interface TargetFilter {
   accountIds?: string[] | null;
   // Bypass every UI filter; still respects Google's own `selected` flag.
   allCalendars?: boolean;
+  // Read-only means the role says the calendar is somebody else's: both
+  // `subscribed` and `teamOoo`. See isReadOnlyRole in @shared/types.
   includeReadOnly?: boolean;
   includeHolidays?: boolean;
 }
@@ -83,7 +86,7 @@ export function resolveTargets(
         const visible = ui.calVisible[calKey(c.accountId, c.id)] ?? c.selected;
         if (!visible) return false;
         const role = roleOf(ui, c.accountId, c.id);
-        if (role === 'subscribed' && !filter.includeReadOnly) return false;
+        if (isReadOnlyRole(role) && !filter.includeReadOnly) return false;
         if (role === 'holiday' && !filter.includeHolidays) return false;
         return true;
       })

@@ -20,6 +20,7 @@ import {
   DEFAULT_WATCH_CONFIG,
   WATCH_STATE_VERSION,
   emptyState,
+  evictUnwatched,
   ingest,
   runTimers,
   snapshotOf,
@@ -99,6 +100,8 @@ async function saveState(state: WatchState): Promise<void> {
 function toWatchInput(ev: CalendarEvent, calendarName: string): WatchInput {
   return {
     id: ev.id,
+    accountId: ev.accountId,
+    calendarId: ev.calendarId,
     ...(ev.recurringEventId ? { recurringEventId: ev.recurringEventId } : {}),
     title: ev.title,
     start: ev.start,
@@ -127,6 +130,10 @@ interface Fetched {
   partial: boolean;
   windowFrom: string;
   windowTo: string;
+  // The (account, calendar) pairs this poll actually watched. Carried out of
+  // the fetch because the set is resolved fresh every poll — untick a
+  // calendar and the state file is still full of its events.
+  watched: Set<string>;
 }
 
 async function fetchSnapshot(opts: WatchRunnerOptions): Promise<Fetched> {
@@ -143,6 +150,7 @@ async function fetchSnapshot(opts: WatchRunnerOptions): Promise<Fetched> {
       partial: false,
       windowFrom: timeMin.toISOString(),
       windowTo: timeMax.toISOString(),
+      watched: targets.pairKeys,
     };
   }
   const byId = new Map(all.map((c) => [c.id, c]));
@@ -168,6 +176,7 @@ async function fetchSnapshot(opts: WatchRunnerOptions): Promise<Fetched> {
     partial: res.failures.length > 0,
     windowFrom: timeMin.toISOString(),
     windowTo: timeMax.toISOString(),
+    watched: targets.pairKeys,
   };
 }
 
@@ -237,6 +246,10 @@ async function loop(opts: WatchRunnerOptions): Promise<void> {
         const got = await fetchSnapshot(opts);
         const now = Date.now();
         const cur = snapshotOf(got.events, opts.config, now);
+        // BEFORE the diff, not after: an event on a calendar we stopped
+        // watching must never reach ingest, where its absence would read as a
+        // cancellation. Silent on purpose — see evictUnwatched.
+        evictUnwatched(state, got.watched);
         for (const ev of ingest(state, cur, {
           partial: got.partial,
           windowFrom: got.windowFrom,

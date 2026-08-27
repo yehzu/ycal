@@ -1,4 +1,5 @@
 import type { CalendarEvent } from '@shared/types';
+import { isReadOnlyRole } from '@shared/types';
 import { calKey } from './store';
 
 export type CalRole = 'normal' | 'subscribed' | 'holiday' | 'teamOoo';
@@ -46,9 +47,10 @@ export function isExcludedFromAgenda(
   return r === 'holiday' || isReadOnlyRole(r);
 }
 
-export function isReadOnlyRole(role: CalRole | undefined): boolean {
-  return role === 'subscribed' || role === 'teamOoo';
-}
+// Re-exported, not re-implemented: main resolves its calendar targets from
+// the same predicate (@shared/types), and the two drifting is exactly how the
+// watcher ended up polling Team OOO feeds the agenda excludes.
+export { isReadOnlyRole };
 
 // True if the calendar (by account|calendar key) is specifically subscribed
 // — kept for callers that need to distinguish the two read-only presentations.

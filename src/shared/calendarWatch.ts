@@ -38,6 +38,10 @@
 //   edge-of-window      vanished from near the far edge -> moved-out-of-window
 //   quarantine          an absence must survive N consecutive clean polls
 //   mass-vanish breaker too many at once -> report the anomaly, judge nothing
+//   eviction            a calendar we no longer WATCH is not an absence at
+//                       all: drop its events silently, like the near edge
+//   baseline reset      a breaker that trips forever is its own silent
+//                       failure -> adopt the smaller world, judging nothing
 //
 // The same doctrine already governs this app's Apple Calendar mirror: "a
 // partial Google fetch aborts before the helper runs, so missing remote data
@@ -59,6 +63,11 @@ export interface WatchAttendee {
 export interface WatchInput {
   id: string;
   recurringEventId?: string;
+  // WHICH calendar, by id — not by name. `calendarName` is for humans and
+  // changes when the owner renames it; these two are what eviction matches
+  // against the current target set.
+  accountId: string;
+  calendarId: string;
   title: string;
   start: string;
   end: string;
@@ -86,6 +95,10 @@ export interface WatchRecord {
   meetUrl?: string;
   series: string | null;
   calendar: string;
+  // Stable identity of the source calendar, kept so a record can be matched
+  // against the watched set after the fact. See evictUnwatched.
+  accountId: string;
+  calendarId: string;
   rsvp: string | null;
   attendees: WatchAttendee[];
   // When we FIRST saw this event. Carried across polls. Without it there is no
@@ -101,6 +114,9 @@ export interface WatchState {
   missing: Record<string, { polls: number; since: number; rec: WatchRecord }>;
   fired: Record<string, number>;
   windowTo: string | null;
+  // How long the mass-vanish breaker has been tripped on the SAME set of
+  // absences. Null whenever the last poll judged normally. See the breaker.
+  breaker: { sig: string; polls: number } | null;
 }
 
 export interface WatchConfig {
@@ -112,9 +128,13 @@ export interface WatchConfig {
   prepLeadMinutes: number;
   lateNoticeMinutes: number;
   skipEventTypes: string[];
+  breakerReseedPolls: number;
 }
 
-export const WATCH_STATE_VERSION = 1;
+// 2: records carry accountId/calendarId and the state carries `breaker`.
+// A version bump re-seeds silently, which is itself the cure for any state
+// stuck in the pre-2 mass-vanish trap.
+export const WATCH_STATE_VERSION = 2;
 
 export const DEFAULT_WATCH_CONFIG: WatchConfig = {
   // 2 polls is ~2 minutes of extra latency on a real cancellation, which is
@@ -131,6 +151,11 @@ export const DEFAULT_WATCH_CONFIG: WatchConfig = {
   lateNoticeMinutes: 15,
   // Working locations are not meetings; they only add churn.
   skipEventTypes: ['workingLocation'],
+  // A tripped breaker that never clears is not caution, it is a watcher that
+  // has quietly stopped reporting cancellations. 5 polls (~5 min at the
+  // default interval) of the SAME absences with a clean fetch every time is
+  // no longer consistent with a blip; adopt the smaller world and say so.
+  breakerReseedPolls: 5,
 };
 
 export type WatchEventKind =
@@ -189,7 +214,7 @@ export type WatchEvent =
   | {
       kind: 'watch-error';
       at: string;
-      what: 'absence-withheld' | 'mass-vanish' | 'fetch' | 'internal';
+      what: 'absence-withheld' | 'mass-vanish' | 'baseline-reset' | 'fetch' | 'internal';
       detail: string;
     }
   // Emitted once, by the runner, when a fresh state file has been seeded. It
@@ -211,6 +236,7 @@ export function emptyState(): WatchState {
     missing: {},
     fired: {},
     windowTo: null,
+    breaker: null,
   };
 }
 
@@ -237,6 +263,8 @@ export function toRecord(ev: WatchInput, now: number): WatchRecord {
     ...(ev.meetUrl ? { meetUrl: ev.meetUrl } : {}),
     series: ev.recurringEventId ?? seriesFromId(ev.id),
     calendar: ev.calendarName,
+    accountId: ev.accountId,
+    calendarId: ev.calendarId,
     rsvp: ev.rsvp,
     // Rooms and projectors arrive as attendees too. Dropping them HERE rather
     // than at each point of use means nothing downstream can report a
@@ -258,6 +286,57 @@ export function snapshotOf(
     out[ev.id] = toRecord(ev, now);
   }
   return out;
+}
+
+/** Stop tracking events on calendars we no longer watch. SILENT BY DESIGN.
+ *
+ * Untick a calendar in the sidebar and every event on it leaves the next
+ * snapshot at once. That is not a cancellation and not a move — the calendar
+ * did not change, our view of the world did, exactly like an event ageing off
+ * the near edge of the window. Judging it produces either a batch of phantom
+ * cancellations or, once the mass-vanish breaker catches those, a baseline
+ * that can never agree with reality again: the breaker refuses to judge, the
+ * orphans stay tracked, and every later poll trips it afresh. Observed in the
+ * wild as "206 of 281 tracked events vanished" repeating once a minute.
+ *
+ * `watched` holds `accountId|calendarId` keys — the same strings
+ * resolveTargets emits as `pairKeys`.
+ *
+ * Returns the evicted ids so the caller can log them. Emits nothing: there is
+ * no news here, only a smaller world.
+ */
+export function evictUnwatched(state: WatchState, watched: Set<string>): string[] {
+  const gone: string[] = [];
+  for (const [id, rec] of Object.entries(state.events)) {
+    // Records written before this field existed cannot be matched, and a
+    // version bump means they never reach here — but be explicit rather than
+    // evicting on an undefined key.
+    if (!rec.calendarId) continue;
+    if (watched.has(`${rec.accountId}|${rec.calendarId}`)) continue;
+    delete state.events[id];
+    delete state.missing[id];
+    gone.push(id);
+  }
+  // The absences we were mid-quarantine on may have been these; whatever the
+  // breaker was counting, it is counting a world that no longer exists.
+  if (gone.length > 0) state.breaker = null;
+  return gone;
+}
+
+/** Cheap stable fingerprint of an absence set (FNV-1a). Only ever compared
+ * with itself, so collision resistance is not the property that matters —
+ * "are these the same absences as last poll" is. */
+function signatureOf(ids: string[]): string {
+  let h = 0x811c9dc5;
+  for (const id of [...ids].sort()) {
+    for (let i = 0; i < id.length; i++) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    h ^= 0x2c; // separator, so ["ab","c"] and ["a","bc"] differ
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${ids.length}:${h.toString(16)}`;
 }
 
 function ms(iso: string | null | undefined): number | null {
@@ -490,19 +569,54 @@ export function ingest(
     Math.floor(tracked * cfg.massVanishRatio),
   );
   if (vanished.length > 0 && vanished.length >= threshold) {
-    out.push({
-      kind: 'watch-error',
-      at,
-      what: 'mass-vanish',
-      detail:
-        `${vanished.length} of ${tracked} tracked events vanished in one poll ` +
-        `(threshold ${threshold}) — that is a fetch or config problem, not ` +
-        `${vanished.length} cancellations. Judging nothing this round.`,
-    });
+    // Tripping is the easy half. The hard half is un-tripping: a breaker that
+    // holds forever stops reporting cancellations forever, and does it
+    // silently — the same class of failure it exists to prevent, pointed the
+    // other way. So count consecutive trips on the SAME absences (a flapping
+    // or growing set resets the count) and eventually adopt the smaller world
+    // WITHOUT calling any of it a cancellation.
+    const sig = signatureOf(vanished);
+    const polls = state.breaker?.sig === sig ? state.breaker.polls + 1 : 1;
+    if (polls >= cfg.breakerReseedPolls) {
+      for (const id of vanished) {
+        delete prev[id];
+        delete state.missing[id];
+      }
+      state.breaker = null;
+      out.push({
+        kind: 'watch-error',
+        at,
+        what: 'baseline-reset',
+        detail:
+          `the same ${vanished.length} event(s) have been missing from ${polls} ` +
+          'consecutive complete fetches — treating the smaller set as the new ' +
+          'baseline. NONE of them was reported as cancelled: an absence this ' +
+          'persistent with no fetch failure is a calendar leaving the watched ' +
+          'set, not a cancellation. Re-tick the calendar (or check `ycal ' +
+          'calendars`) if you expected them to still be watched.',
+      });
+    } else {
+      state.breaker = { sig, polls };
+      out.push({
+        kind: 'watch-error',
+        at,
+        what: 'mass-vanish',
+        detail:
+          `${vanished.length} of ${tracked} tracked events vanished in one poll ` +
+          `(threshold ${threshold}) — that is a fetch or config problem, not ` +
+          `${vanished.length} cancellations. Judging nothing this round ` +
+          `(${polls}/${cfg.breakerReseedPolls} before the baseline resets).`,
+      });
+    }
+    // Deliberately a merge, not a replace: everything we could not judge stays
+    // tracked. That is what makes the breaker safe, and — until the reset
+    // above existed — also what made it permanent.
     Object.assign(prev, cur);
     state.windowTo = windowTo;
     return out;
   }
+  // Judged normally, so whatever the breaker was counting is over.
+  state.breaker = null;
 
   // 5. Quarantine. An absence must survive N consecutive clean polls before
   // anyone hears the word "cancelled".

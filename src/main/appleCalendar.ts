@@ -14,7 +14,7 @@ import type {
   AppleCalendarStatus,
   CalendarEvent,
 } from '@shared/types';
-import { DEFAULT_MERGE_CRITERIA, IPC } from '@shared/types';
+import { DEFAULT_MERGE_CRITERIA, IPC, isReadOnlyRole } from '@shared/types';
 import { listAllCalendars, listEvents } from './calendar';
 import {
   getAppleMirrorEnabled, getAppleMirrorSourceId,
@@ -184,8 +184,7 @@ async function canonicalMirrorEvents(
     if (!(ui.calVisible[key] ?? calendar.selected)) return false;
     // Match yCal's read-only roles, not Google's accessRole: users explicitly
     // classify feeds they don't want in their agenda/mirror.
-    const role = ui.calRoles[key] ?? 'normal';
-    return role !== 'subscribed' && role !== 'teamOoo';
+    return !isReadOnlyRole(ui.calRoles[key]);
   });
   if (targets.length === 0) {
     throw new Error(

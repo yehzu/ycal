@@ -257,3 +257,55 @@ write('timer-answered-invite-is-not-nagged', [
   snap(t(121), [A, decide('accepted')]),
   snap(t(122), [A, decide('accepted')]),
 ]);
+
+// 11. Untick a calendar in the sidebar and every event on it leaves the next
+//     snapshot at once. NOTHING is reported: the calendar did not change, our
+//     view did — the same reasoning as the near edge in 9b. Without the
+//     eviction this reads as a mass cancellation, and once the breaker catches
+//     THAT, the orphaned events stay in the baseline and re-trip it on every
+//     later poll forever (seen in the wild as "206 of 281 vanished", once a
+//     minute, until the state file was deleted).
+//
+//     The last three snapshots are what make the case honest: a real
+//     cancellation on the calendar we STILL watch must survive the change.
+const onCal = (base, id, name) => ({ ...base, calendar: { ...base.calendar, id, name } });
+const work = (n) => ev(`w${n}`, `Work ${n}`, `2026-08-2${n}T06:00:00Z`, `2026-08-2${n}T07:00:00Z`);
+const team = (n) => onCal(ev(`o${n}`, `Someone OOO ${n}`, `2026-08-2${n}T01:00:00Z`, `2026-08-2${n}T02:00:00Z`), 'c2', 'Team OOO');
+const WORK = [1, 2, 3, 4, 5, 6].map(work);
+const TEAM = [1, 2, 3, 4, 5, 6].map(team);
+const BOTH_CALS = ['me@x.com|c1', 'me@x.com|c2'];
+const watch1 = (now, events) => ({ ...snap(now, events), watched: ['me@x.com|c1'] });
+write('untick-a-calendar-is-silent', [
+  { ...snap(t(0), [...WORK, ...TEAM]), watched: BOTH_CALS },
+  watch1(t(1), WORK),                     // c2 unticked: silence
+  watch1(t(2), WORK),                     // and it stays silent
+  watch1(t(3), WORK.slice(1)),            // a real cancellation on c1
+  watch1(t(4), WORK.slice(1)),
+  watch1(t(5), WORK.slice(1)),
+]);
+
+// 12. The breaker's own failure mode. It refuses to judge, which is right, but
+//     it also keeps the vanished events in the baseline — so if the absence is
+//     permanent (a calendar left the watched set while nobody recorded a
+//     `watched` list, an account was removed, a shared calendar was revoked)
+//     every later poll trips it again and the watcher never reports another
+//     cancellation as long as it lives. After breakerReseedPolls consecutive
+//     trips on the SAME absences it adopts the smaller world instead, and says
+//     so — WITHOUT calling any of them cancelled.
+//
+//     The tail proves the watcher actually recovered rather than going quiet:
+//     a new invite is announced, and its later disappearance is judged the
+//     ordinary way.
+const AFTER = invited('after', 'Post-reset', '2026-08-22T06:00:00Z', '2026-08-22T07:00:00Z');
+write('breaker-resets-after-persistent-absence', [
+  snap(t(0), many),
+  snap(t(1), []),                         // 1/5
+  snap(t(2), []),                         // 2/5
+  snap(t(3), []),                         // 3/5
+  snap(t(4), []),                         // 4/5
+  snap(t(5), []),                         // 5/5 -> baseline-reset
+  snap(t(6), [AFTER]),                    // the world is live again
+  snap(t(7), []),                         // and ordinary judgement resumes
+  snap(t(8), []),
+  snap(t(9), []),
+]);

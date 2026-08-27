@@ -131,7 +131,10 @@ npm run dist             # build signed dmg + zip (needs codesign setup)
 
 **The validation loop is `npm run typecheck && npm run build`.** No test runner, no linter — keep changes small enough to verify by reading and by running the result.
 
-**One exception: `npm run test:watch`.** The change-detection logic behind `ycal watch` is the one part of this app whose failure mode is silent and wrong rather than loud and broken (it reports a cancellation that never happened), so it has 16 golden-file cases in `tests/watch/`. They need no framework — each is a `.jsonl` of recorded snapshots plus the events they must produce, replayed through the real code by `ycal watch --replay`. Run them after touching `src/shared/calendarWatch.ts`.
+**The exceptions are the two suites under `tests/`, both frameworkless, and both covering the same failure mode: silent and wrong rather than loud and broken.**
+
+- **`npm run test:watch`** — the change detection behind `ycal watch`, whose way of being wrong is reporting a cancellation that never happened. 19 golden-file cases in `tests/watch/`: each is a `.jsonl` of recorded snapshots plus the events they must produce, replayed through the real code by `ycal watch --replay`. Run after touching `src/shared/calendarWatch.ts`.
+- **`npm run test:targets`** — which (account, calendar) pairs a query reads, whose way of being wrong is the watcher watching a wider set than the agenda shows, so somebody else's calendar churn arrives as your own. `tests/targets/check.mjs` calls the pure `resolveTargets` directly (esbuild supplies only the `@shared/*` alias). Run after touching `src/main/calendarTargets.ts` or the role predicates in `@shared/types`.
 
 ## CLI architecture (the recently-added bit)
 
@@ -208,6 +211,26 @@ start) and the window rolling forward at midnight are indistinguishable from
 one. Same doctrine as invariant #12 for the Apple mirror: missing remote data
 must never become mass deletion.
 
+**An absence you can attribute is not an absence.** Two are known and both are
+silent: an event ageing off the near edge, and an event on a calendar that has
+left the watched set (`evictUnwatched`, called from the runner BEFORE `ingest`
+with `resolveTargets`' `pairKeys` — which is why `WatchRecord` carries
+`accountId`/`calendarId` and not just the display name). The second is not
+merely noisy when you get it wrong: the breaker does catch the phantom
+cancellations, but the orphans stay in the baseline and re-trip it every poll
+after, so the watcher stops reporting real cancellations permanently. Seen in
+the wild as "206 of 281 tracked events vanished", once a minute — see
+`tests/watch/untick-a-calendar-is-silent.jsonl`, whose tail cancels an event on
+a calendar still watched so that muting the quarantine wholesale cannot pass.
+
+**A breaker that never un-trips is its own silent failure.** After
+`breakerReseedPolls` (5) consecutive trips on the SAME absence set — compared
+by signature, so a flapping or growing set restarts the count — `ingest` drops
+those ids and emits `watch-error` / `baseline-reset`. It still never says
+"cancelled": adopting a smaller world and inventing 206 cancellations are very
+different admissions. `state.breaker` holds the counter, cleared by any poll
+that judges normally and by any eviction.
+
 **Both window edges need guarding, and they are not symmetric.** The far edge
 catches a reschedule past the horizon (`moved-out-of-window`). The near edge
 catches nothing changing at all: a `-1d..+14d` window moves its start forward
@@ -238,6 +261,7 @@ Two decisions worth not re-litigating:
 - **Main-only (Google API, IPC handler, OS integration)** → `src/main/`. Register IPC channel name in `@shared/types#IPC` first.
 - **CLI subcommand** → add a `cmdFoo(args, io)` to `src/main/cli.ts`, wire into `runCli`'s switch, document in the `helpText` string and in `README.md`.
 - **Change-detection rule** → `src/shared/calendarWatch.ts`, plus a case in `tests/watch/` (add it to `build-cases.mjs`, review the output, then bless).
+- **Which calendars a query reads** → `src/main/calendarTargets.ts`, plus a case in `tests/targets/check.mjs`. A role that means "somebody else's calendar" belongs in `isReadOnlyRole` (`@shared/types`), which main and renderer both read — never re-tested inline.
 
 ## Release flow
 

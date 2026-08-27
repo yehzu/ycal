@@ -10,8 +10,11 @@ npm run test:watch -- bless # rewrite .expected from current behaviour
 ```
 
 Each `.jsonl` line is one document in the shape `ycal events --format json`
-emits, plus a `"now"` (ISO) that drives the clock for that step. The first line
-seeds; seeding is silent by design, so it only ever produces `watch-armed`.
+emits, plus a `"now"` (ISO) that drives the clock for that step and an optional
+`"watched"` array of `<account>|<calendarId>` keys standing in for the
+calendars ticked in the sidebar at that moment. Omit `watched` and no eviction
+runs, which is what every case that predates it wants. The first line seeds;
+seeding is silent by design, so it only ever produces `watch-armed`.
 Output is compared as JSON, not text, because the human rendering goes through
 `toLocaleString` and would differ by machine locale and timezone.
 
@@ -26,3 +29,8 @@ expectation" but "which of those did we just start getting wrong".
 Before blessing a change, read the diff: an event kind flipping from
 `moved-out-of-window` to `cancelled`, or a `watch-error` disappearing, is a
 regression wearing the costume of a passing test.
+
+Two of the cases assert a *silence* — `near-edge-ages-out-silently` and
+`untick-a-calendar-is-silent`. Both end by cancelling something that is still
+watched, so that muting the quarantine wholesale cannot make them pass. If you
+add another silent case, give it the same tail.
