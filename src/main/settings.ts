@@ -194,7 +194,8 @@ export function setUiSettings(patch: Partial<UiSettings>): void {
     // because the renderer's setUiSettings call landed on a setter that
     // didn't know about the key. Clone-by-spread so a renderer that
     // only sends `{ enabled: true }` doesn't blow away the existing
-    // hfToken (and vice versa).
+    // hfToken (and vice versa). The token is legacy since Nemotron, but a
+    // Mac on an older build sharing settings.json still needs it.
     next.recorderDiarize = {
       enabled: patch.recorderDiarize.enabled ?? next.recorderDiarize?.enabled ?? false,
       hfToken: patch.recorderDiarize.hfToken !== undefined

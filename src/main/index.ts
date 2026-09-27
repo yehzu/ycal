@@ -663,8 +663,8 @@ function registerIpc() {
   });
   ipcMain.handle(IPC.RecorderRunDiarizeSetup, () => {
     // Same fire-and-forget pattern as runRecorderSetup. Sets up the
-    // pyannote.audio Python venv at ~/.ycal/diarize-venv/. ~1.5 GB
-    // download (torch + pyannote weights) — UI shows progress over the
+    // Nemotron diarization Python venv (transformers + torch) at
+    // ~/.ycal/diarize-venv/ — UI shows progress over the
     // RecorderSetupProgress push channel with phase='diarize'.
     void runDiarizeSetup();
     return { ok: true as const };

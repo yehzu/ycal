@@ -264,18 +264,19 @@ export interface UiSettings {
   // helper falls back to raw automatically if the voiceproc-mic binary is
   // missing. macOS-only (the binary is darwin/AVAudioEngine).
   recordingVoiceProcessing?: boolean;
-  // Speaker diarization (pyannote.audio). When enabled AND `hfToken` is
-  // set, post-meet.sh runs the diarization Python script on the system-
-  // audio channel and splices speaker labels ([SPK1]/[SPK2]/…) into the
-  // transcript before claude summarisation. The summary prompt is told
-  // to map labels to actual attendees from the calendar invite.
+  // Speaker diarization (NVIDIA Nemotron-3-Diarization, up to 8
+  // speakers). When enabled AND the diarize venv is ready, post-meet.sh
+  // runs the diarization Python script on the system-audio channel and
+  // splices speaker labels ([SPK1]/[SPK2]/…) into the transcript before
+  // claude summarisation. The summary prompt is told to map labels to
+  // actual attendees from the calendar invite.
   //
-  // Both fields live in settings.json (cloudStore-routed) — the HF token
-  // is read-only access to a public model registry, not a personal
-  // credential like Todoist's key or a Google refresh token. Sync across
-  // Macs is the whole point: set up once, every Mac gets diarized
-  // summaries for free. The downloaded pyannote model (~500 MB) is NOT
-  // synced — it lives in ~/.ycal/diarize-venv/ per machine.
+  // Both fields live in settings.json (cloudStore-routed), so the toggle
+  // follows the user across Macs. `hfToken` is legacy: the pyannote model
+  // it unlocked is gone and Nemotron is not gated, so nothing reads it any
+  // more. It is kept (not cleared) because a Mac still on a pre-Nemotron
+  // build shares this settings.json and needs it. The downloaded model
+  // (~379 MB) is NOT synced — it lives in the per-machine HF cache.
   recorderDiarize?: {
     enabled: boolean;
     hfToken: string | null;
@@ -304,18 +305,19 @@ export interface RecorderSetupStatus {
   // Speaker-diarization Python venv at ~/.ycal/diarize-venv/. Optional —
   // recordings work without it, just with [Me]/[Other] labels only.
   // `pythonPath` reports the system Python the venv was built from, so
-  // the UI can surface "needs Python 3.10–3.12" diagnostics.
+  // the UI can surface "needs Python 3.10–3.13" diagnostics.
   diarizeVenv: {
     installed: boolean;
     venvPath: string;
     pythonPath: string | null;
-    // Installed pyannote.audio version (read cheaply from the venv's
-    // dist-info dir name), or null when the venv is absent/unreadable.
-    pyannoteVersion: string | null;
-    // Marker present but pyannote is older than the required 4.x — the
-    // diarize script loads the community-1 model with the 4.x API and will
-    // fail at load on 3.x, so we treat this as "installed but needs re-setup"
-    // rather than silently falling back to [Me]/[Other] on every recording.
+    // Commit the venv's transformers was installed from (read cheaply from
+    // its dist-info direct_url.json), or null when absent/unreadable.
+    transformersCommit: string | null;
+    // Marker present but the venv was built for an older engine — a
+    // pre-Nemotron pyannote venv, or a transformers commit other than the
+    // pinned one. diarize.py cannot run on it, so we treat this as
+    // "installed but needs re-setup" rather than silently falling back to
+    // [Me]/[Other] on every recording.
     stale: boolean;
   };
   // Aggregate: true when everything required for auto-record (brew is

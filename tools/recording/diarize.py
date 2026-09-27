@@ -3,20 +3,22 @@
 yCal — speaker diarization splicer.
 
 Reads the system-audio (right) channel WAV from a stereo recording, runs
-pyannote.audio speaker diarization, then rewrites a yCal stereo transcript
-by replacing [Other] labels with [SPK1]/[SPK2]/… based on the speaker
-active at each segment's timestamp.
+NVIDIA Nemotron-3-Diarization through Hugging Face Transformers, then
+rewrites a yCal stereo transcript by replacing [Other] labels with
+[SPK1]/[SPK2]/… based on the speaker active at each segment's timestamp.
 
-Why a separate Python process: pyannote.audio needs Python + PyTorch +
-~500 MB of model weights. Keeping it out-of-process means the main Electron
-app stays Node-only and the venv is purely opt-in. post-meet.sh shells out
-to this script when YCAL_DIARIZE_ENABLED=1.
+Why a separate Python process: the model needs Python + PyTorch + ~379 MB
+of weights. Keeping it out-of-process means the main Electron app stays
+Node-only and the venv is purely opt-in. post-meet.sh shells out to this
+script when YCAL_DIARIZE_ENABLED=1.
 
-Uses pyannote.audio 4.x and the speaker-diarization-community-1 model.
-Compared to 3.1: better speaker separation (matched +1 speaker correctly
-on the same audio in PoC), no version pins required for torch/hf_hub.
-Trade-off: needs one extra HuggingFace license click for the
-community-1 repo on top of segmentation-3.0.
+Why Nemotron rather than pyannote speaker-diarization-community-1 (used
+until this change): on a 15-minute recording on Apple Silicon it ran in
+~7 s against pyannote's ~57 s, the two agreed on ~90% of speaker time,
+and the model is not gated — no Hugging Face token or licence click.
+Trade-offs: Transformers supports it only on an unreleased main-branch
+commit (pinned in src/main/recorderSetup.ts), and the model has a fixed
+8 speaker channels, so a meeting can have at most 8 separated speakers.
 """
 
 from __future__ import annotations
@@ -25,7 +27,29 @@ import argparse
 import os
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
+
+MODEL_ID = "nvidia/Nemotron-3-Diarization"
+# Pin the model snapshot as well as the code. The Transformers support is an
+# unreleased commit whose config format may still move; an upstream edit to
+# the model repo must not be able to break an already-installed venv.
+MODEL_REVISION = "f667ed73aee57d40cc39428eb768b4fd87a0a29e"
+# The model emits exactly 8 speaker channels, ordered by first arrival, so
+# a ninth voice cannot get a channel of its own.
+MODEL_MAX_SPEAKERS = 8
+# A 10 ms frame counts as speech for a speaker when that speaker's
+# probability exceeds this (the model card's default).
+SPEECH_THRESHOLD = 0.5
+# Phantom-speaker filter. In the trial recording one channel collected 18 s
+# of "speech" made entirely of fragments under 2 s (median ~0.3 s): not a
+# person, but noise and crosstalk the model parked on a spare channel. The
+# quietest real participant had less in total (12 s) yet several turns of
+# 2–3 s, so total time alone cannot tell them apart. A channel therefore
+# counts as a speaker only when its turns of at least MIN_TURN_S add up to
+# at least MIN_SPEAKER_S (the real quiet speaker: ~9 s; the phantom: 0 s).
+MIN_TURN_S = 2.0
+MIN_SPEAKER_S = 5.0
 
 
 def parse_transcript(path: Path) -> list[tuple[float, str, str]]:
@@ -45,71 +69,90 @@ def main() -> int:
     ap.add_argument("--audio", required=True, help="mono wav of system-audio channel")
     ap.add_argument("--transcript", required=True, help="original [Me]/[Other] transcript")
     ap.add_argument("--out", required=True, help="output diarized transcript path")
-    ap.add_argument("--min-speakers", type=int, default=2)
-    ap.add_argument("--max-speakers", type=int, default=12)
-    ap.add_argument("--hf-token", default=os.environ.get("HF_TOKEN") or os.environ.get("YCAL_HF_TOKEN"))
+    ap.add_argument("--max-speakers", type=int, default=MODEL_MAX_SPEAKERS)
     args = ap.parse_args()
 
-    if not args.hf_token:
-        print("[diarize] HF token missing (--hf-token / HF_TOKEN / YCAL_HF_TOKEN)", file=sys.stderr)
-        return 2
+    max_speakers = max(1, min(args.max_speakers, MODEL_MAX_SPEAKERS))
+    if max_speakers != args.max_speakers:
+        print(f"[diarize] --max-speakers clamped to {max_speakers} (model limit {MODEL_MAX_SPEAKERS})",
+              file=sys.stderr)
+
+    # The model is public; nothing here needs to phone home beyond the
+    # one-time weight download.
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
     try:
-        from pyannote.audio import Pipeline
+        import librosa
+        import soundfile as sf
         import torch
+        from transformers import AutoModelForAudioFrameClassification, AutoProcessor
     except ImportError as e:
         print(f"[diarize] missing dependency: {e}. Run Setup Diarization in yCal.", file=sys.stderr)
         return 3
 
-    print("[diarize] loading pipeline (first run downloads ~500 MB)…", file=sys.stderr, flush=True)
+    print("[diarize] loading Nemotron-3-Diarization (first run downloads ~379 MB)…",
+          file=sys.stderr, flush=True)
     try:
-        pipe = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-community-1",
-            token=args.hf_token,
-        )
+        processor = AutoProcessor.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
+        model = AutoModelForAudioFrameClassification.from_pretrained(
+            MODEL_ID, revision=MODEL_REVISION, dtype=torch.float32,
+        ).eval()
     except Exception as e:
-        msg = str(e)
-        if "gated" in msg.lower() or "403" in msg:
-            print(
-                "[diarize] HuggingFace returned 403. Accept the model license at all three URLs:\n"
-                "  https://huggingface.co/pyannote/speaker-diarization-community-1\n"
-                "  https://huggingface.co/pyannote/speaker-diarization-3.1\n"
-                "  https://huggingface.co/pyannote/segmentation-3.0",
-                file=sys.stderr,
-            )
-        else:
-            print(f"[diarize] pipeline load failed: {e}", file=sys.stderr)
+        print(f"[diarize] model load failed: {e}", file=sys.stderr)
         return 4
 
-    if pipe is None:
-        print("[diarize] pipeline is None — token likely invalid or missing scope", file=sys.stderr)
-        return 4
+    # post-meet.sh hands us 16 kHz mono already; convert anyway so a
+    # reprocess of an odd file can't feed the model the wrong rate.
+    sr = processor.feature_extractor.sampling_rate
+    audio, file_sr = sf.read(args.audio, dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if file_sr != sr:
+        audio = librosa.resample(audio, orig_sr=file_sr, target_sr=sr)
 
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"[diarize] device: {device}", file=sys.stderr, flush=True)
-    pipe.to(torch.device(device))
+    # MPS first, CPU as the fallback: an op the MPS backend doesn't cover
+    # must cost speed, not the speaker labels.
+    devices = ["mps", "cpu"] if torch.backends.mps.is_available() else ["cpu"]
+    raw: list[dict] | None = None
+    for device in devices:
+        print(f"[diarize] running on {args.audio} (device: {device})…", file=sys.stderr, flush=True)
+        try:
+            model.to(device)
+            inputs = processor(audio, sampling_rate=sr).to(device, dtype=model.dtype)
+            with torch.inference_mode():
+                logits = model(**inputs).logits  # (1, frames, 8), one frame per 10 ms
+            mask = inputs.get("attention_mask")
+            raw = processor.extract_speaker_dict(
+                logits.cpu(),
+                mask.cpu() if mask is not None else None,
+                threshold=SPEECH_THRESHOLD,
+            )[0]
+            break
+        except Exception as e:
+            print(f"[diarize] inference on {device} failed: {e}", file=sys.stderr, flush=True)
+    if raw is None:
+        return 5
 
-    print(f"[diarize] running on {args.audio}…", file=sys.stderr, flush=True)
-    annotation = pipe(
-        args.audio,
-        min_speakers=args.min_speakers,
-        max_speakers=args.max_speakers,
+    segs = [(s["Start"], s["End"], s["Speaker"]) for s in raw if s["End"] > s["Start"]]
+    sustained: dict[int, float] = defaultdict(float)
+    for s, e, spk in segs:
+        if e - s >= MIN_TURN_S:
+            sustained[spk] += e - s
+    keep = {spk for spk, t in sustained.items() if t >= MIN_SPEAKER_S}
+    if len(keep) > max_speakers:
+        keep = set(sorted(keep, key=lambda spk: -sustained[spk])[:max_speakers])
+    dropped = sorted({spk for _, _, spk in segs} - keep)
+
+    intervals = sorted((s, e, spk) for s, e, spk in segs if spk in keep)
+    n_spk = len({i[2] for i in intervals})
+    print(
+        f"[diarize] {len(intervals)} turns, {n_spk} speakers detected"
+        f" ({len(dropped)} fragment-only channel(s) dropped)",
+        file=sys.stderr, flush=True,
     )
 
-    # pyannote 4.x: pipeline returns a DiarizeOutput wrapping two
-    # Annotations. Use the non-exclusive speaker_diarization so overlapping
-    # speech still maps to a label rather than disappearing.
-    diar = annotation.speaker_diarization
-    intervals = [
-        (turn.start, turn.end, label)
-        for turn, _, label in diar.itertracks(yield_label=True)
-    ]
-    intervals.sort(key=lambda r: r[0])
-    n_spk = len({i[2] for i in intervals})
-    print(f"[diarize] {len(intervals)} turns, {n_spk} speakers detected", file=sys.stderr, flush=True)
-
     # Compact labels by first-appearance order (SPK1, SPK2, …).
-    seen: dict[str, str] = {}
+    seen: dict[int, str] = {}
     for _, _, lab in intervals:
         if lab not in seen:
             seen[lab] = f"SPK{len(seen) + 1}"
