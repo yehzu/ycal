@@ -1,6 +1,6 @@
 {
   "name": "ycal",
-  "version": "0.8.43",
+  "version": "0.8.44",
   "description": "An editorial-styled macOS calendar with multi-Google-account support and per-event colors.",
   "main": "out/main/index.js",
   "author": "yCal",
@@ -21,7 +21,7 @@
     "ycal": "electron . --cli",
     "release": "sh scripts/release.sh",
     "test:targets": "node tests/targets/check.mjs",
-  "test:watch": "sh scripts/watch-check.sh"
+    "test:watch": "sh scripts/watch-check.sh"
   },
   "bin": {
     "ycal": "bin/ycal"
