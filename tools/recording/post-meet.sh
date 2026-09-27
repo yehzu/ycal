@@ -63,6 +63,7 @@ sys_wav=""
 mic_json_base=""
 sys_json_base=""
 align_file=""
+segs_file=""
 context_block_file=""
 trap '[[ -n "$work" ]]               && rm -f "$work"; \
       [[ -n "$mic_wav" ]]            && rm -f "$mic_wav"; \
@@ -70,6 +71,7 @@ trap '[[ -n "$work" ]]               && rm -f "$work"; \
       [[ -n "$mic_json_base" ]]      && rm -f "${mic_json_base}.json"; \
       [[ -n "$sys_json_base" ]]      && rm -f "${sys_json_base}.json"; \
       [[ -n "$align_file" ]]         && rm -f "$align_file"; \
+      [[ -n "$segs_file" ]]          && rm -f "$segs_file"; \
       [[ -n "$context_block_file" ]] && rm -f "$context_block_file"; \
       true' EXIT
 
@@ -152,13 +154,16 @@ if [[ "$channels" -ge 2 ]]; then
   # the transcript reflects who actually spoke. System channel wins;
   # mic-only content (user speaking when others aren't) is preserved.
   # The merge writes the channel offset it applied (ms) to $align_file so
-  # diarization can move the speaker turns onto the same clock.
+  # diarization can move the speaker turns onto the same clock, and the
+  # segments it merged to $segs_file so diarization can label each one
+  # before same-speaker runs are joined.
   align_file="$(mktemp -t ycal-align)"
-  if ! python3 - "${mic_json_base}.json" "${sys_json_base}.json" "$transcript" "$align_file" <<'PY' 2>&2; then
+  segs_file="$(mktemp -t ycal-segs)"
+  if ! python3 - "${mic_json_base}.json" "${sys_json_base}.json" "$transcript" "$align_file" "$segs_file" <<'PY' 2>&2; then
 import json, sys, unicodedata, statistics
 from difflib import SequenceMatcher
 
-mic_path, sys_path, out_path, align_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+mic_path, sys_path, out_path, align_path, segs_path = sys.argv[1:6]
 
 DEDUP_THRESHOLD = 0.5
 
@@ -288,6 +293,13 @@ if suppressed > 0:
 all_segs = kept_mic + sys_segs
 all_segs.sort(key=lambda x: x['off'])
 
+# Unmerged, for diarize.py: a run of [Other] segments can span several
+# speakers, and labelling the merged line by its first moment would hand
+# the whole run to whoever opened it.
+with open(segs_path, "w", encoding="utf-8") as f:
+    for s in all_segs:
+        f.write(json.dumps({'off': s['off'], 'label': s['label'], 'text': s['text']}, ensure_ascii=False) + "\n")
+
 merged = []
 for s in all_segs:
     if merged and merged[-1]['label'] == s['label']:
@@ -307,11 +319,11 @@ PY
   # === Speaker diarization (optional, stereo-only) =========================
   # When the GUI's recorderDiarize.enabled toggle is on AND the diarize venv
   # is ready (yCal sets YCAL_DIARIZE_ENABLED only then), replace [Other]
-  # labels in the merged transcript with [SPK1]/[SPK2]/… (up to 8) based on
-  # Nemotron-3-Diarization's speaker separation of the system-audio (right)
-  # channel. No HF token needed — the model is not gated. The summary prompt
-  # knows what to do with these labels — map them to attendees from the
-  # calendar invite.
+  # labels with [SPK1]/[SPK2]/… (up to 8) — segment by segment from
+  # $segs_file, then re-joined — based on Nemotron-3-Diarization's speaker
+  # separation of the system-audio (right) channel. No HF token needed — the
+  # model is not gated. The summary prompt knows what to do with these
+  # labels — map them to attendees from the calendar invite.
   #
   # We only run on the stereo path because the system-audio WAV ($sys_wav)
   # is what holds the multi-speaker mix; the mono path has no separable
@@ -331,6 +343,7 @@ PY
          --audio "$sys_wav" \
          --transcript "$transcript" \
          --sys-offset-ms "$sys_offset_ms" \
+         --segments "$segs_file" \
          --out "$diarized" >&2; then
       mv "$diarized" "$transcript"
       echo "[post-meet] transcript upgraded with speaker labels" >&2

@@ -24,6 +24,7 @@ commit (pinned in src/main/recorderSetup.ts), and the model has a fixed
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -68,6 +69,16 @@ def parse_transcript(path: Path) -> list[tuple[float, str, str]]:
             continue
         mins, secs, spk, txt = m.groups()
         out.append((float(int(mins) * 60 + int(secs)), spk, txt))
+    return out
+
+
+def load_segments(path: Path) -> list[tuple[float, str, str]]:
+    """post-meet.sh's unmerged segments (JSONL: off in ms, label, text)."""
+    out: list[tuple[float, str, str]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            d = json.loads(line)
+            out.append((d["off"] / 1000.0, d["label"], d["text"]))
     return out
 
 
@@ -159,6 +170,9 @@ def main() -> int:
     ap.add_argument("--sys-offset-ms", type=int, default=0,
                     help="how far post-meet.sh moved the system channel earlier to align it"
                          " with the mic; speaker turns move by the same amount")
+    ap.add_argument("--segments",
+                    help="post-meet.sh's unmerged segments (JSONL); when present each segment"
+                         " is labelled on its own and same-speaker runs are joined afterwards")
     args = ap.parse_args()
 
     max_speakers = max(1, min(args.max_speakers, MODEL_MAX_SPEAKERS))
@@ -257,26 +271,37 @@ def main() -> int:
     )
     label_at = make_labeler(intervals, dropped_spans)
 
-    lines = parse_transcript(Path(args.transcript))
-    out_lines: list[str] = []
+    # Label segment by segment when post-meet.sh supplied them: its merged
+    # transcript joins every run of [Other] segments into one line, and a run
+    # can hold several speakers. The merged transcript stays the fallback.
+    seg_path = Path(args.segments) if args.segments else None
+    if seg_path is not None and seg_path.is_file() and seg_path.stat().st_size > 0:
+        lines = load_segments(seg_path)
+    else:
+        lines = parse_transcript(Path(args.transcript))
+    rows: list[list] = []  # [t, label, text], same-label neighbours joined
     upgraded = 0
     unmatched = 0
     for t, spk, txt in lines:
         if spk == "Me":
-            out_lines.append(f"[{int(t // 60):02d}:{int(t % 60):02d}] Me: {txt}")
-            continue
-        lab = label_at(t)
-        if lab:
-            upgraded += 1
+            lab = "Me"
         else:
-            unmatched += 1
-            lab = "Other"
-        out_lines.append(f"[{int(t // 60):02d}:{int(t % 60):02d}] {lab}: {txt}")
+            lab = label_at(t)
+            if lab:
+                upgraded += 1
+            else:
+                unmatched += 1
+                lab = "Other"
+        if rows and rows[-1][1] == lab:
+            rows[-1][2] += " " + txt
+        else:
+            rows.append([t, lab, txt])
+    out_lines = [f"[{int(t // 60):02d}:{int(t % 60):02d}] {lab}: {txt}" for t, lab, txt in rows]
 
     Path(args.out).write_text("\n".join(out_lines) + "\n")
     print(
-        f"[diarize] upgraded {upgraded} [Other] lines, "
-        f"{unmatched} unmatched (kept as [Other])",
+        f"[diarize] upgraded {upgraded} [Other] segments, "
+        f"{unmatched} unmatched (kept as [Other]); {len(out_lines)} lines written",
         file=sys.stderr,
     )
     return 0
