@@ -309,6 +309,38 @@ function shellQuote(a) {
   return /^[\w@%+=:,./-]+$/.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`;
 }
 
+// Config keys whose value is a credential: the `secret: true` entries of
+// src/main/configKeys.ts, repeated here because this script imports nothing
+// from the app — keep the two lists in step. SECRET_NAME is configKeys.ts's
+// credential-name backstop, so a bare `hfToken` is caught as well.
+const SECRET_CONFIG_KEYS = ['recorderDiarize.hfToken', 'weatherIcsUrl'];
+const SECRET_NAME = /token|secret|password|passwd|api[-_]?key|credential/i;
+const REDACTED = '<redacted>';
+
+function isSecretConfigKey(arg) {
+  const a = arg.toLowerCase();
+  return SECRET_NAME.test(a) || SECRET_CONFIG_KEYS.some((k) => {
+    const key = k.toLowerCase();
+    return a === key || a === key.slice(key.lastIndexOf('.') + 1);
+  });
+}
+
+// The argv as it is safe to echo back. In a `config` call, everything after
+// a secret key is the secret (or could be) — `config set weatherIcsUrl <url>`
+// must not land in a terminal scrollback or a log just because the call
+// timed out. Hides too much rather than too little: flags after the key go
+// as well, and the key is recognised wherever it sits, since a flag without
+// `=` swallows the next word and shifts the positionals.
+function displayArgs() {
+  const inConfig = args.includes('config');
+  let hideRest = false;
+  return args.map((a) => {
+    if (hideRest) return REDACTED;
+    if (inConfig && isSecretConfigKey(a)) hideRest = true;
+    return shellQuote(a);
+  });
+}
+
 function describeCommand() {
   if (isRecorderSetup) return '`ycal recorder setup`';
   return command ? `\`ycal ${command}\`` : 'the request';
@@ -327,20 +359,35 @@ function reportLiveFailure(attempt) {
     const secs = readTimeoutMs / 1000;
     // Don't round a 1.5s override up to "2s" — the number is the whole point.
     const budget = `${secs >= 10 ? Math.round(secs) : Math.round(secs * 10) / 10}s`;
-    const suggested = Math.max(readTimeoutMs * 3, 120000);
-    const retry = ['ycal', ...args.map(shellQuote)].join(' ');
-    process.stderr.write(
-      `ycal: connected to yCal, but ${describeCommand()} did not answer within ${budget}.\n`
-      + '  The socket accepted, so yCal is up — it is either slow to answer this\n'
-      + '  command (listings of the whole Drive archive get slower as it grows) or\n'
-      + '  stuck. This cannot tell the two apart.\n'
-      + `  If you think it is slow, give this one call more room:\n    YCAL_TIMEOUT_MS=${suggested} ${retry}\n`
-      + '  If that times out too, or it keeps happening, restart yCal.\n'
-      + (isRecorderSetup
-        ? '  The setup itself keeps running inside yCal: `ycal recorder status` shows\n'
-          + '  it, and running `ycal recorder setup` again follows it to the end.\n'
-        : ''),
-    );
+    const shown = displayArgs();
+    const retry = ['ycal', ...shown].join(' ');
+    const redactNote = shown.includes(REDACTED)
+      ? `  (${REDACTED} stands in for the secret value — put it back before running it.)\n`
+      : '';
+    if (isRecorderSetup) {
+      // Only this client gave up. The setup runs inside yCal and outlives the
+      // connection, so restarting yCal is the one wrong move: it would kill a
+      // pip install or model download half-way and leave a venv to rebuild.
+      process.stderr.write(
+        `ycal: connected to yCal, but ${describeCommand()} did not finish within ${budget}.\n`
+        + '  The setup is still running inside yCal — only this command stopped\n'
+        + '  waiting. Do not restart yCal: that would cut the install off mid-way.\n'
+        + '  `ycal recorder status` shows how far it has got; running the same\n'
+        + `  command again picks the running setup up and follows it to the end:\n    ${retry}\n`
+        + redactNote,
+      );
+    } else {
+      const suggested = Math.max(readTimeoutMs * 3, 120000);
+      process.stderr.write(
+        `ycal: connected to yCal, but ${describeCommand()} did not answer within ${budget}.\n`
+        + '  The socket accepted, so yCal is up — it is either slow to answer this\n'
+        + '  command (listings of the whole Drive archive get slower as it grows) or\n'
+        + '  stuck. This cannot tell the two apart.\n'
+        + `  If you think it is slow, give this one call more room:\n    YCAL_TIMEOUT_MS=${suggested} ${retry}\n`
+        + redactNote
+        + '  If that times out too, or it keeps happening, restart yCal.\n',
+      );
+    }
   } else {
     process.stderr.write(
       `ycal: connected to yCal, but ${describeCommand()} returned no usable response`

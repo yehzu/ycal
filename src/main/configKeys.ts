@@ -164,6 +164,23 @@ export const CONFIG_KEYS: ConfigKeyDef[] = [
     patch: (s, v) => ({
       ui: { loadBands: { ...DEFAULT_LOAD_BANDS, ...(s.ui.loadBands ?? {}), [field]: v as number } },
     }),
+    // Same rule the Settings modal enforces (LoadBandsEditor.commit):
+    // 0 < calmMax < steadyMax < fullMax, judged on the whole triple as it
+    // would be stored. Raising all three means writing fullMax first.
+    check: (s, v) => {
+      const b = { ...DEFAULT_LOAD_BANDS, ...(s.ui.loadBands ?? {}), [field]: v as number };
+      const broken: string[] = [];
+      if (!(b.calmMax > 0)) {
+        broken.push(`loadBands.calmMax (${b.calmMax}) must be greater than 0`);
+      }
+      if (!(b.calmMax < b.steadyMax)) {
+        broken.push(`loadBands.calmMax (${b.calmMax}) must be below loadBands.steadyMax (${b.steadyMax})`);
+      }
+      if (!(b.steadyMax < b.fullMax)) {
+        broken.push(`loadBands.steadyMax (${b.steadyMax}) must be below loadBands.fullMax (${b.fullMax})`);
+      }
+      return broken.length === 0 ? null : broken.join('; ');
+    },
   })),
 
   // ── Recording ───────────────────────────────────────────────────────
