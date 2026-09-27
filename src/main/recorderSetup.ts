@@ -44,7 +44,7 @@ const DIARIZE_VENV_PY = path.join(DIARIZE_VENV, 'bin', 'python');
 // (5.17.0 lacks it), so we pin the exact commit validated on Apple Silicon
 // (5.18.0.dev0; Python 3.10, 3.12, 3.13; 2026-09-27). librosa computes the mel filters
 // the feature extractor needs; torchaudio is no longer used. Needs `git` on
-// PATH for the git+ install.
+// PATH for the git+ install (runDiarizeSetup checks it up front).
 //
 // The pin doubles as the readiness gate: a venv counts as ready only when
 // its transformers came from exactly this commit (see diarizeVenvOk), so
@@ -443,9 +443,10 @@ export async function runRecorderSetup(): Promise<void> {
 
 // Build the diarize venv: create it from a compatible system Python,
 // install the pinned transformers/librosa/torch stack, then drop a
-// sentinel marker so the next status probe sees it as ready. A stale venv
-// (built for an older engine, e.g. pyannote) is rebuilt from scratch
-// rather than patched, so no leftover package can shadow the new stack.
+// sentinel marker so the next status probe sees it as ready. Any existing
+// venv that isn't ready (built for an older engine, e.g. pyannote, or an
+// unfinished setup) is rebuilt from scratch rather than patched, so no
+// leftover package can shadow the new stack.
 // Runs in the same in-flight gate as runRecorderSetup so the UI can't kick
 // both at once.
 export async function runDiarizeSetup(): Promise<void> {
@@ -471,16 +472,39 @@ export async function runDiarizeSetup(): Promise<void> {
 
     pushProgress({ phase: 'diarize', line: `Using Python: ${py}` });
 
-    // Step 1: create venv if missing; wipe and recreate it if stale.
-    const stale = diarizeMarkerPresent() && !diarizeVenvOk();
-    if (!fs.existsSync(DIARIZE_VENV_PY) || stale) {
-      if (stale) {
+    // Step 0: pip needs git for the git+ transformers pin. Check before
+    // touching the venv, so a missing git can't cost a --clear rebuild.
+    pushProgress({ phase: 'diarize', line: '$ git --version' });
+    const git = await runStreaming(
+      'git',
+      ['--version'],
+      (line) => pushProgress({ phase: 'diarize', line }),
+    );
+    if (!git.ok) {
+      pushProgress({
+        phase: 'error',
+        error:
+          'git is required: the diarizer installs a pinned Transformers commit straight from GitHub, ' +
+          `and \`git --version\` failed (exit ${git.code}).\n` +
+          'Install Apple\'s command line tools:  xcode-select --install\n' +
+          '(or: brew install git), then re-run Setup.',
+      });
+      return;
+    }
+
+    // Step 1: create the venv if missing. Any existing venv that is not
+    // ready — built for an older engine (e.g. pyannote), or left behind by
+    // a setup that never finished — is wiped and recreated rather than
+    // reused, so a broken one can't keep failing the import check.
+    const rebuild = fs.existsSync(DIARIZE_VENV) && !diarizeVenvOk();
+    if (!fs.existsSync(DIARIZE_VENV_PY) || rebuild) {
+      if (rebuild) {
         pushProgress({
           phase: 'diarize',
-          line: `Existing venv was built for an older diarization engine — rebuilding ${DIARIZE_VENV} from scratch`,
+          line: `Existing venv is not ready (older engine or unfinished setup) — rebuilding ${DIARIZE_VENV} from scratch`,
         });
       }
-      const venvArgs = ['-m', 'venv', ...(stale ? ['--clear'] : []), DIARIZE_VENV];
+      const venvArgs = ['-m', 'venv', ...(rebuild ? ['--clear'] : []), DIARIZE_VENV];
       pushProgress({ phase: 'diarize', line: `$ ${py} ${venvArgs.join(' ')}` });
       const venv = await runStreaming(
         py,

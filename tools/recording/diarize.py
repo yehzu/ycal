@@ -47,9 +47,16 @@ SPEECH_THRESHOLD = 0.5
 # quietest real participant had less in total (12 s) yet several turns of
 # 2–3 s, so total time alone cannot tell them apart. A channel therefore
 # counts as a speaker only when its turns of at least MIN_TURN_S add up to
-# at least MIN_SPEAKER_S (the real quiet speaker: ~9 s; the phantom: 0 s).
+# at least MIN_SPEAKER_S.
 MIN_TURN_S = 2.0
 MIN_SPEAKER_S = 5.0
+# Turns are measured after joining same-speaker segments separated by at
+# most this gap, so a real speaker whose speech the model chops at every
+# breath is not mistaken for fragments. 0.3 s, not 0.5 s: on the trial
+# recording 0.3 s lifts the quiet real speaker from ~9 s to ~10 s of
+# qualifying turns while the phantom stays at ~2 s, but 0.5 s stitches the
+# phantom's bursts into ~9 s and it would pass as a person.
+MERGE_GAP_S = 0.3
 
 
 def parse_transcript(path: Path) -> list[tuple[float, str, str]]:
@@ -62,6 +69,85 @@ def parse_transcript(path: Path) -> list[tuple[float, str, str]]:
         mins, secs, spk, txt = m.groups()
         out.append((float(int(mins) * 60 + int(secs)), spk, txt))
     return out
+
+
+def merge_turns(segs: list[tuple[float, float, int]], gap: float) -> list[tuple[float, float, int]]:
+    """Join same-speaker segments separated by at most `gap` seconds."""
+    by_spk: dict[int, list[tuple[float, float]]] = defaultdict(list)
+    for s, e, spk in segs:
+        by_spk[spk].append((s, e))
+    out: list[tuple[float, float, int]] = []
+    for spk, spans in by_spk.items():
+        spans.sort()
+        cur_s, cur_e = spans[0]
+        for s, e in spans[1:]:
+            if s - cur_e <= gap + 1e-6:  # times are 2-decimal floats; 1.3 - 1.0 > 0.3
+                cur_e = max(cur_e, e)
+            else:
+                out.append((cur_s, cur_e, spk))
+                cur_s, cur_e = s, e
+        out.append((cur_s, cur_e, spk))
+    return sorted(out)
+
+
+def select_speakers(
+    segs: list[tuple[float, float, int]], max_speakers: int,
+) -> tuple[set[int], int, int | None]:
+    """Channels that count as real speakers (see MIN_TURN_S / MERGE_GAP_S).
+
+    Returns (kept channels, number of turns after merging, fallback channel).
+    The fallback is set when every channel failed the filter: we then keep
+    the busiest one rather than label nobody, since an all-[Other]
+    transcript reads downstream as "diarization failed, re-run Setup".
+    """
+    turns = merge_turns(segs, MERGE_GAP_S)
+    sustained: dict[int, float] = defaultdict(float)
+    total: dict[int, float] = defaultdict(float)
+    for s, e, spk in turns:
+        total[spk] += e - s
+        if e - s >= MIN_TURN_S:
+            sustained[spk] += e - s
+    keep = {spk for spk, t in sustained.items() if t >= MIN_SPEAKER_S}
+    if len(keep) > max_speakers:
+        keep = set(sorted(keep, key=lambda spk: -sustained[spk])[:max_speakers])
+    fallback: int | None = None
+    if not keep and total:
+        fallback = max(total, key=lambda spk: (sustained[spk], total[spk]))
+        keep = {fallback}
+    return keep, len(turns), fallback
+
+
+def make_labeler(
+    intervals: list[tuple[float, float, int]],
+    dropped_spans: list[tuple[float, float]],
+):
+    """label_at(t): the SPKn talking at t, else the nearest within 2 s.
+
+    Labels are compacted by first-appearance order (SPK1, SPK2, …). A time
+    inside a dropped channel's segment and inside no kept interval returns
+    None (the line stays [Other]): the proximity fallback would otherwise
+    hand speech the filter rejected to whichever speaker talked nearby.
+    """
+    seen: dict[int, str] = {}
+    for _, _, lab in intervals:
+        if lab not in seen:
+            seen[lab] = f"SPK{len(seen) + 1}"
+
+    def label_at(t: float) -> str | None:
+        best: str | None = None
+        best_dist = float("inf")
+        for s, e, lab in intervals:
+            if s <= t <= e:
+                return seen[lab]
+            d = min(abs(t - s), abs(t - e))
+            if d < best_dist and d <= 2.0:
+                best_dist = d
+                best = seen[lab]
+        if any(s <= t <= e for s, e in dropped_spans):
+            return None
+        return best
+
+    return label_at
 
 
 def main() -> int:
@@ -134,40 +220,30 @@ def main() -> int:
         return 5
 
     segs = [(s["Start"], s["End"], s["Speaker"]) for s in raw if s["End"] > s["Start"]]
-    sustained: dict[int, float] = defaultdict(float)
-    for s, e, spk in segs:
-        if e - s >= MIN_TURN_S:
-            sustained[spk] += e - s
-    keep = {spk for spk, t in sustained.items() if t >= MIN_SPEAKER_S}
-    if len(keep) > max_speakers:
-        keep = set(sorted(keep, key=lambda spk: -sustained[spk])[:max_speakers])
+    keep, n_turns, fallback = select_speakers(segs, max_speakers)
     dropped = sorted({spk for _, _, spk in segs} - keep)
+    print(
+        f"[diarize] {len(segs)} raw segments, {n_turns} after joining gaps <= {MERGE_GAP_S} s",
+        file=sys.stderr, flush=True,
+    )
+    if fallback is not None:
+        print(
+            f"[diarize] no channel passed the fragment filter — keeping the busiest"
+            f" (channel {fallback}) so the transcript is not left all [Other]",
+            file=sys.stderr, flush=True,
+        )
 
+    # Labelling uses the raw segments; the merge only decides which channels
+    # are people.
     intervals = sorted((s, e, spk) for s, e, spk in segs if spk in keep)
+    dropped_spans = [(s, e) for s, e, spk in segs if spk not in keep]
     n_spk = len({i[2] for i in intervals})
     print(
         f"[diarize] {len(intervals)} turns, {n_spk} speakers detected"
         f" ({len(dropped)} fragment-only channel(s) dropped)",
         file=sys.stderr, flush=True,
     )
-
-    # Compact labels by first-appearance order (SPK1, SPK2, …).
-    seen: dict[int, str] = {}
-    for _, _, lab in intervals:
-        if lab not in seen:
-            seen[lab] = f"SPK{len(seen) + 1}"
-
-    def label_at(t: float) -> str | None:
-        best: str | None = None
-        best_dist = float("inf")
-        for s, e, lab in intervals:
-            if s <= t <= e:
-                return seen[lab]
-            d = min(abs(t - s), abs(t - e))
-            if d < best_dist and d <= 2.0:
-                best_dist = d
-                best = seen[lab]
-        return best
+    label_at = make_labeler(intervals, dropped_spans)
 
     lines = parse_transcript(Path(args.transcript))
     out_lines: list[str] = []
