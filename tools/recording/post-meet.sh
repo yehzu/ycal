@@ -62,12 +62,14 @@ mic_wav=""
 sys_wav=""
 mic_json_base=""
 sys_json_base=""
+align_file=""
 context_block_file=""
 trap '[[ -n "$work" ]]               && rm -f "$work"; \
       [[ -n "$mic_wav" ]]            && rm -f "$mic_wav"; \
       [[ -n "$sys_wav" ]]            && rm -f "$sys_wav"; \
       [[ -n "$mic_json_base" ]]      && rm -f "${mic_json_base}.json"; \
       [[ -n "$sys_json_base" ]]      && rm -f "${sys_json_base}.json"; \
+      [[ -n "$align_file" ]]         && rm -f "$align_file"; \
       [[ -n "$context_block_file" ]] && rm -f "$context_block_file"; \
       true' EXIT
 
@@ -149,11 +151,14 @@ if [[ "$channels" -ge 2 ]]; then
   # of nearby [Other] segments. We drop those duplicate [Me] entries so
   # the transcript reflects who actually spoke. System channel wins;
   # mic-only content (user speaking when others aren't) is preserved.
-  if ! python3 - "${mic_json_base}.json" "${sys_json_base}.json" "$transcript" <<'PY' 2>&2; then
+  # The merge writes the channel offset it applied (ms) to $align_file so
+  # diarization can move the speaker turns onto the same clock.
+  align_file="$(mktemp -t ycal-align)"
+  if ! python3 - "${mic_json_base}.json" "${sys_json_base}.json" "$transcript" "$align_file" <<'PY' 2>&2; then
 import json, sys, unicodedata, statistics
 from difflib import SequenceMatcher
 
-mic_path, sys_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+mic_path, sys_path, out_path, align_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 DEDUP_THRESHOLD = 0.5
 
@@ -180,19 +185,30 @@ mic = load_segments(mic_path, "Me")
 sys_segs = load_segments(sys_path, "Other")
 
 # === Channel-offset alignment ============================================
-# The coreaudio-tap helper writes the system channel ~1–1.5s LATE relative to
-# the mic (a tap-startup artifact: ~1s of FIFO-buffered silence is read by
-# ffmpeg before the real audio + SCStream warm-up). Left uncorrected this
-# misorders turn-taking and throws the bleed-suppression window off-center.
+# The coreaudio-tap helper writes the system channel LATE relative to the mic
+# (a tap-startup artifact: FIFO-buffered audio is read by ffmpeg before the
+# real audio + SCStream warm-up). The lag is steady within a recording but not
+# across builds: ~1.5 s when this was written (0.8.7), ~5.45 s on the Aug–Sep
+# 2026 recordings. Left uncorrected it misorders turn-taking, and once it
+# outgrows the bleed-suppression window the mic's copy of the far end comes
+# through as [Me] lines that repeat an [Other] line seconds later.
 #
 # We recover the offset from the data we already have: when the user isn't on
 # headphones the SAME far-end words land in BOTH channels (mic via acoustic
 # bleed), so a matched [Me]/[Other] pair has sys_off - mic_off ≈ the offset.
-# The median over strong matches is a robust estimate (no audio reprocessing,
-# no numpy). We only trust it with enough matches and within a plausible range;
-# otherwise we leave timing untouched (headphone recordings have no bleed to
-# measure, but also no cross-channel content to misorder).
-SEARCH_MS = 6000
+# Each mic segment votes with the lag of its best text match; the estimate is
+# the median of the densest CLUSTER_MS-wide group of votes. Bleed piles its
+# votes onto one lag, while chance matches (stock phrases, the user repeating
+# someone) scatter across the search window — so we shift only when that
+# group is big enough both absolutely and as a share of all votes, and lies in
+# the plausible range. Otherwise timing is left untouched (headphone
+# recordings have no bleed to measure, but also no cross-channel content to
+# misorder). Stdlib only: no audio reprocessing, no numpy.
+SEARCH_MIN_MS, SEARCH_MAX_MS = -2000, 10000   # vote window (sys minus mic)
+MIN_OFFSET_MS, MAX_OFFSET_MS = 200, 9000      # offsets we will apply
+CLUSTER_MS = 1000
+MIN_VOTES = 8
+MIN_SHARE = 0.5
 deltas = []
 sys_sorted = sorted(sys_segs, key=lambda x: x['off'])
 for m in mic:
@@ -201,9 +217,9 @@ for m in mic:
     best_dt, best_r = None, 0.0
     for o in sys_sorted:
         dt = o['off'] - m['off']
-        if dt < -SEARCH_MS:
+        if dt < SEARCH_MIN_MS:
             continue
-        if dt > SEARCH_MS:
+        if dt > SEARCH_MAX_MS:
             break
         if len(o['norm']) < 4:
             continue
@@ -213,16 +229,28 @@ for m in mic:
     if best_dt is not None and best_r >= 0.7:
         deltas.append(best_dt)
 
+deltas.sort()
+group, lo = [], 0
+for hi in range(len(deltas)):
+    while deltas[hi] - deltas[lo] > CLUSTER_MS:
+        lo += 1
+    if hi - lo + 1 > len(group):
+        group = deltas[lo:hi + 1]
 offset_ms = 0
-if len(deltas) >= 4:
-    cand = statistics.median(deltas)
-    if 200 <= cand <= 4000:
-        offset_ms = int(cand)
-if offset_ms:
-    for o in sys_segs:
-        o['off'] = max(0, o['off'] - offset_ms)
-    sys_sorted = sorted(sys_segs, key=lambda x: x['off'])
-    sys.stderr.write(f"[post-meet] aligned system channel −{offset_ms}ms ({len(deltas)} bleed matches)\n")
+if group:
+    cand = int(statistics.median(group))
+    agree = f"{len(group)}/{len(deltas)} bleed matches agree on {cand}ms"
+    if (len(group) >= MIN_VOTES and len(group) >= MIN_SHARE * len(deltas)
+            and MIN_OFFSET_MS <= cand <= MAX_OFFSET_MS):
+        offset_ms = cand
+        for o in sys_segs:
+            o['off'] = max(0, o['off'] - offset_ms)
+        sys_sorted = sorted(sys_segs, key=lambda x: x['off'])
+        sys.stderr.write(f"[post-meet] aligned system channel −{offset_ms}ms ({agree})\n")
+    else:
+        sys.stderr.write(f"[post-meet] channel offset left at 0 ({agree}; below confidence or out of range)\n")
+with open(align_path, "w") as f:
+    f.write(f"{offset_ms}\n")
 
 # === Bleed suppression ===================================================
 # For each [Me] segment, drop it if a nearby [Other] segment is text-similar
@@ -294,9 +322,15 @@ PY
         && -s "$sys_wav" ]]; then
     echo "[post-meet] running speaker diarization (under a minute per hour of audio; first run downloads the model)…" >&2
     diarized="${transcript}.diarized"
+    # $sys_wav is still on the system channel's own clock; the transcript's
+    # [Other] times were moved onto the mic clock by the merge above. Hand
+    # diarize.py the same offset so it looks each line up at the right moment.
+    sys_offset_ms="$(cat "$align_file" 2>/dev/null || true)"
+    [[ "$sys_offset_ms" =~ ^[0-9]+$ ]] || sys_offset_ms=0
     if "$YCAL_DIARIZE_VENV_PY" "$YCAL_DIARIZE_PY" \
          --audio "$sys_wav" \
          --transcript "$transcript" \
+         --sys-offset-ms "$sys_offset_ms" \
          --out "$diarized" >&2; then
       mv "$diarized" "$transcript"
       echo "[post-meet] transcript upgraded with speaker labels" >&2

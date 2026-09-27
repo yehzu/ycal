@@ -156,6 +156,9 @@ def main() -> int:
     ap.add_argument("--transcript", required=True, help="original [Me]/[Other] transcript")
     ap.add_argument("--out", required=True, help="output diarized transcript path")
     ap.add_argument("--max-speakers", type=int, default=MODEL_MAX_SPEAKERS)
+    ap.add_argument("--sys-offset-ms", type=int, default=0,
+                    help="how far post-meet.sh moved the system channel earlier to align it"
+                         " with the mic; speaker turns move by the same amount")
     args = ap.parse_args()
 
     max_speakers = max(1, min(args.max_speakers, MODEL_MAX_SPEAKERS))
@@ -219,7 +222,16 @@ def main() -> int:
     if raw is None:
         return 5
 
-    segs = [(s["Start"], s["End"], s["Speaker"]) for s in raw if s["End"] > s["Start"]]
+    # The model's times are on the system channel's own clock, but the
+    # transcript's [Other] times were shifted onto the mic clock when
+    # post-meet.sh aligned the channels. Move the turns the same way (and
+    # clamp at 0 the same way) or every lookup lands that many seconds early.
+    offset_s = max(0, args.sys_offset_ms) / 1000.0
+    segs = [(max(0.0, s["Start"] - offset_s), s["End"] - offset_s, s["Speaker"])
+            for s in raw if s["End"] > s["Start"] and s["End"] - offset_s > 0]
+    if offset_s:
+        print(f"[diarize] speaker turns moved −{offset_s:.2f} s to match the aligned transcript",
+              file=sys.stderr, flush=True)
     keep, n_turns, fallback = select_speakers(segs, max_speakers)
     dropped = sorted({spk for _, _, spk in segs} - keep)
     print(
