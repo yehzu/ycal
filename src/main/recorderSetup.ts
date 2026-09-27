@@ -4,7 +4,9 @@
 // on open to render the "what's missing" grid, and `runRecorderSetup`
 // when the user clicks "Install". The runner streams progress over an
 // IPC push channel; the renderer keeps a transcript and updates the
-// status grid live.
+// status grid live. `ycal recorder status` / `ycal recorder setup` (cli.ts)
+// call the same probe and the same runners, so a terminal and the Settings
+// button can never disagree about what "ready" means.
 //
 // What we DO install:
 //   * Homebrew formulae (ffmpeg, whisper-cpp) via `brew install`.
@@ -50,7 +52,7 @@ const DIARIZE_VENV_PY = path.join(DIARIZE_VENV, 'bin', 'python');
 // its transformers came from exactly this commit (see diarizeVenvOk), so
 // bumping it — or a leftover pyannote venv — reads as "stale, re-run Setup"
 // instead of silently running whatever is installed.
-const DIARIZE_TRANSFORMERS_COMMIT = '96331a9f93b72697f160a958d2883d4b49a56739';
+export const DIARIZE_TRANSFORMERS_COMMIT = '96331a9f93b72697f160a958d2883d4b49a56739';
 const DIARIZE_PINS = [
   `transformers @ git+https://github.com/huggingface/transformers@${DIARIZE_TRANSFORMERS_COMMIT}`,
   'librosa',
@@ -291,17 +293,74 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
 
 // ── Setup runner ────────────────────────────────────────────────────────
 
-let setupInFlight = false;
+// Two callers drive the runners: Settings → Recording (fire-and-forget over
+// IPC, progress pushed to the window) and `ycal recorder setup` (awaits the
+// result, progress streamed to the terminal through onRecorderSetupProgress).
+// Both see the same progress events whoever started the run, so the Settings
+// log fills in while a CLI-started setup is running, and vice versa.
+export type RecorderSetupKind = 'deps' | 'diarize';
+export interface RecorderSetupResult {
+  ok: boolean;
+  // Populated when ok is false — the same text as the terminal 'error' event.
+  error?: string;
+}
+export interface RecorderSetupJob {
+  kind: RecorderSetupKind;
+  promise: Promise<RecorderSetupResult>;
+}
+
+let inFlight: RecorderSetupJob | null = null;
 let mainWindowRef: BrowserWindow | null = null;
+const progressListeners = new Set<(p: RecorderSetupProgress) => void>();
 
 export function bindRecorderSetup(win: BrowserWindow): void {
   mainWindowRef = win;
 }
 
+export function onRecorderSetupProgress(
+  handler: (p: RecorderSetupProgress) => void,
+): () => void {
+  progressListeners.add(handler);
+  return () => { progressListeners.delete(handler); };
+}
+
+// The run currently holding the gate, if any — lets the CLI follow a setup
+// started from Settings (or by an earlier CLI call whose client timed out)
+// instead of bouncing off "already in progress".
+export function getRecorderSetupInFlight(): RecorderSetupJob | null {
+  return inFlight;
+}
+
 function pushProgress(payload: RecorderSetupProgress): void {
+  for (const h of progressListeners) {
+    try { h(payload); } catch { /* a listener must not break the run */ }
+  }
   const win = mainWindowRef;
   if (!win || win.isDestroyed()) return;
   try { win.webContents.send(IPC.RecorderSetupProgress, payload); } catch { /* best-effort */ }
+}
+
+// Terminal failure: tell every listener, and hand the same text back to an
+// awaiting caller.
+function fail(error: string): RecorderSetupResult {
+  pushProgress({ phase: 'error', error });
+  return { ok: false, error };
+}
+
+// One setup at a time: the deps installer and the diarize venv builder share
+// this gate so neither the UI nor the CLI can run two at once (two pip runs
+// against one venv would corrupt it).
+function runExclusive(
+  kind: RecorderSetupKind,
+  body: () => Promise<RecorderSetupResult>,
+): Promise<RecorderSetupResult> {
+  if (inFlight) return Promise.resolve(fail('setup already in progress'));
+  const job: RecorderSetupJob = { kind, promise: Promise.resolve({ ok: false }) };
+  inFlight = job;
+  job.promise = body().finally(() => {
+    if (inFlight === job) inFlight = null;
+  });
+  return job.promise;
 }
 
 function streamLine(line: string): void {
@@ -377,12 +436,11 @@ async function downloadModel(): Promise<{ ok: boolean; error?: string }> {
   return { ok: true };
 }
 
-export async function runRecorderSetup(): Promise<void> {
-  if (setupInFlight) {
-    pushProgress({ phase: 'error', error: 'setup already in progress' });
-    return;
-  }
-  setupInFlight = true;
+export function runRecorderSetup(): Promise<RecorderSetupResult> {
+  return runExclusive('deps', installDeps);
+}
+
+async function installDeps(): Promise<RecorderSetupResult> {
   try {
     pushProgress({ phase: 'starting' });
 
@@ -392,8 +450,7 @@ export async function runRecorderSetup(): Promise<void> {
       const msg = 'Homebrew is not installed. yCal won\'t install it for you — '
         + 'open Terminal and run:\n  /bin/bash -c "$(curl -fsSL '
         + 'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"';
-      pushProgress({ phase: 'error', error: msg });
-      return;
+      return fail(msg);
     }
 
     // Step 1: brew install whatever's missing among ffmpeg + whisper-cpp.
@@ -408,11 +465,7 @@ export async function runRecorderSetup(): Promise<void> {
         (line) => pushProgress({ phase: 'brew', line }),
       );
       if (!brewResult.ok) {
-        pushProgress({
-          phase: 'error',
-          error: `brew install ${formulae.join(' ')} exited with code ${brewResult.code}`,
-        });
-        return;
+        return fail(`brew install ${formulae.join(' ')} exited with code ${brewResult.code}`);
       }
     } else {
       pushProgress({ phase: 'brew', line: '(no brew formulae missing)' });
@@ -423,21 +476,16 @@ export async function runRecorderSetup(): Promise<void> {
       pushProgress({ phase: 'model', line: `Downloading model → ${activeModel().path}` });
       const dl = await downloadModel();
       if (!dl.ok) {
-        pushProgress({ phase: 'error', error: dl.error ?? 'model download failed' });
-        return;
+        return fail(dl.error ?? 'model download failed');
       }
     } else {
       pushProgress({ phase: 'model', line: '(model already present)' });
     }
 
     pushProgress({ phase: 'done' });
+    return { ok: true };
   } catch (e) {
-    pushProgress({
-      phase: 'error',
-      error: e instanceof Error ? e.message : String(e),
-    });
-  } finally {
-    setupInFlight = false;
+    return fail(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -449,25 +497,21 @@ export async function runRecorderSetup(): Promise<void> {
 // leftover package can shadow the new stack.
 // Runs in the same in-flight gate as runRecorderSetup so the UI can't kick
 // both at once.
-export async function runDiarizeSetup(): Promise<void> {
-  if (setupInFlight) {
-    pushProgress({ phase: 'error', error: 'setup already in progress' });
-    return;
-  }
-  setupInFlight = true;
+export function runDiarizeSetup(): Promise<RecorderSetupResult> {
+  return runExclusive('diarize', buildDiarizeVenv);
+}
+
+async function buildDiarizeVenv(): Promise<RecorderSetupResult> {
   try {
     pushProgress({ phase: 'starting', line: 'Setting up diarization venv…' });
 
     const py = findCompatiblePython();
     if (!py) {
-      pushProgress({
-        phase: 'error',
-        error:
-          'No compatible Python found. The diarization stack needs Python 3.10–3.13 built\n' +
-          'with lzma support (some pyenv builds lack it).\n' +
-          'Install via Homebrew:  brew install python@3.12',
-      });
-      return;
+      return fail(
+        'No compatible Python found. The diarization stack needs Python 3.10–3.13 built\n' +
+        'with lzma support (some pyenv builds lack it).\n' +
+        'Install via Homebrew:  brew install python@3.12',
+      );
     }
 
     pushProgress({ phase: 'diarize', line: `Using Python: ${py}` });
@@ -481,15 +525,12 @@ export async function runDiarizeSetup(): Promise<void> {
       (line) => pushProgress({ phase: 'diarize', line }),
     );
     if (!git.ok) {
-      pushProgress({
-        phase: 'error',
-        error:
-          'git is required: the diarizer installs a pinned Transformers commit straight from GitHub, ' +
-          `and \`git --version\` failed (exit ${git.code}).\n` +
-          'Install Apple\'s command line tools:  xcode-select --install\n' +
-          '(or: brew install git), then re-run Setup.',
-      });
-      return;
+      return fail(
+        'git is required: the diarizer installs a pinned Transformers commit straight from GitHub, ' +
+        `and \`git --version\` failed (exit ${git.code}).\n` +
+        'Install Apple\'s command line tools:  xcode-select --install\n' +
+        '(or: brew install git), then re-run Setup.',
+      );
     }
 
     // Step 1: create the venv if missing. Any existing venv that is not
@@ -512,11 +553,7 @@ export async function runDiarizeSetup(): Promise<void> {
         (line) => pushProgress({ phase: 'diarize', line }),
       );
       if (!venv.ok) {
-        pushProgress({
-          phase: 'error',
-          error: `venv creation failed (exit ${venv.code})`,
-        });
-        return;
+        return fail(`venv creation failed (exit ${venv.code})`);
       }
     } else {
       pushProgress({ phase: 'diarize', line: '(venv directory already present)' });
@@ -531,11 +568,7 @@ export async function runDiarizeSetup(): Promise<void> {
       (line) => pushProgress({ phase: 'diarize', line }),
     );
     if (!upgrade.ok) {
-      pushProgress({
-        phase: 'error',
-        error: `pip upgrade failed (exit ${upgrade.code})`,
-      });
-      return;
+      return fail(`pip upgrade failed (exit ${upgrade.code})`);
     }
 
     // Step 3: install pinned stack. The transformers git clone + torch
@@ -550,11 +583,7 @@ export async function runDiarizeSetup(): Promise<void> {
       (line) => pushProgress({ phase: 'diarize', line }),
     );
     if (!install.ok) {
-      pushProgress({
-        phase: 'error',
-        error: `transformers/librosa/torch install failed (exit ${install.code})`,
-      });
-      return;
+      return fail(`transformers/librosa/torch install failed (exit ${install.code})`);
     }
 
     // Step 4: import smoke test — catches broken wheels before the
@@ -571,11 +600,7 @@ export async function runDiarizeSetup(): Promise<void> {
       (line) => pushProgress({ phase: 'diarize', line }),
     );
     if (!smoke.ok) {
-      pushProgress({
-        phase: 'error',
-        error: `Nemotron diarization import failed after install (exit ${smoke.code}). Check the log above.`,
-      });
-      return;
+      return fail(`Nemotron diarization import failed after install (exit ${smoke.code}). Check the log above.`);
     }
 
     // Step 5: drop sentinel.
@@ -585,21 +610,13 @@ export async function runDiarizeSetup(): Promise<void> {
         `${new Date().toISOString()}\nPython: ${py}\n${DIARIZE_PINS.join('\n')}\n`,
       );
     } catch (e) {
-      pushProgress({
-        phase: 'error',
-        error: `sentinel write failed: ${e instanceof Error ? e.message : String(e)}`,
-      });
-      return;
+      return fail(`sentinel write failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     pushProgress({ phase: 'done', line: 'Diarization environment ready.' });
+    return { ok: true };
   } catch (e) {
-    pushProgress({
-      phase: 'error',
-      error: e instanceof Error ? e.message : String(e),
-    });
-  } finally {
-    setupInFlight = false;
+    return fail(e instanceof Error ? e.message : String(e));
   }
 }
 

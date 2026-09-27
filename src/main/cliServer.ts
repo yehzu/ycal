@@ -9,7 +9,10 @@
 // With { "stream": true } the server instead writes newline-delimited frames:
 //   { "type": "progress", "status": ... }   update/upgrade progress
 //   { "type": "out",      "data": "...\n" } one stdout line, as it happens
+//   { "type": "err",      "data": "...\n" } one stderr line, as it happens
+//                                            (`recorder setup` progress)
 //   { "type": "result",   "stdout": ..., "stderr": ..., "code": ... }  terminal
+// Clients ignore frame types they don't know, so adding one is compatible.
 // `watch` never reaches the terminal frame — it runs until the client hangs
 // up, at which point the socket's 'close' aborts the command so the poll loop
 // does not keep running for a consumer that has gone.
@@ -75,6 +78,13 @@ export function startCliServer(): void {
               }
             }
           : undefined;
+        const sendNote = stream
+          ? (data: string) => {
+              if (!sock.destroyed) {
+                sock.write(`${JSON.stringify({ type: 'err', data })}\n`);
+              }
+            }
+          : undefined;
         // A long-running command (watch) must learn that its consumer is gone.
         // Without this the poll loop would keep running, and keep holding the
         // shared watch state, for nobody.
@@ -82,6 +92,7 @@ export function startCliServer(): void {
         sock.on('close', () => gone.abort());
         const code = await runCli(args, out, err, sendProgress, {
           emit: sendLine,
+          note: sendNote,
           signal: gone.signal,
         });
         response = { stdout: out.data, stderr: err.data, code };

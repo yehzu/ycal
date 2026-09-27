@@ -245,6 +245,15 @@ export function getSettingsSnapshotStrict(): {
   };
 }
 
+// Strict read for `ycal config`: null when settings.json exists but can't be
+// parsed right now (an iCloud placeholder mid-sync). The CLI refuses to act
+// on that state rather than report — or merge a write into — the defaults.
+export function getSettingsStrict(): { ui: UiSettings; weatherIcsUrl: string | null } | null {
+  const { settings, corrupt } = read();
+  if (corrupt) return null;
+  return { ui: settings.ui, weatherIcsUrl: settings.weatherIcsUrl };
+}
+
 export function setTaskProviderId(id: TaskProviderId): void {
   writeJson(TASK_PROVIDER_FILE, { id });
   lastTaskProviderId = id;

@@ -43,6 +43,7 @@ src/
 │   ├── glossary.ts        Org terminology dictionary (feeds whisper prompt + substitution + claude)
 │   ├── notesStore.ts      Builds a structured MeetingNote from the archive + meeting-notes.json overlay
 │   ├── cli.ts            Argv-driven CLI (LLM-friendly, JSON/text/markdown)
+│   ├── configKeys.ts     `ycal config` key registry: dotted keys → settings.json, types, defaults, secrets
 │   └── cliServer.ts      Unix socket server bridging external clients to runCli
 ├── preload/      contextBridge → window.ycal; the only renderer↔main surface
 ├── renderer/     React UI; styled in src/renderer/src/styles.css (+ notes.css)
@@ -148,12 +149,21 @@ Two execution modes share `runCli()` from `src/main/cli.ts`:
 **Wire protocol on the socket** (`<userData>/cli.sock`, mode 0600):
 - Client → server: `{"args": ["today", "--format", "markdown"]}` then half-close write side
 - Server → client: `{"stdout": "...", "stderr": "...", "code": 0}`
-- `update` / `upgrade` opt into streaming with `"stream": true`. The server
-  then writes newline-delimited `{"type":"progress","status":...}` frames and
-  finishes with one `{"type":"result","stdout":...,"stderr":...,"code":...}`
-  frame. The launcher keeps progress on interactive stderr so stdout remains
-  pipe-safe. Both directions are backward-compatible: old clients still get
-  the original single response, and new clients accept that legacy response.
+- `update` / `upgrade`, `watch` and `recorder setup` opt into streaming with
+  `"stream": true`. The server then writes newline-delimited frames —
+  `progress` (updater status), `out` (a stdout line, `watch`), `err` (a stderr
+  line, `recorder setup`'s log) — and finishes with one
+  `{"type":"result","stdout":...,"stderr":...,"code":...}` frame. The
+  launcher keeps progress on stderr so stdout remains pipe-safe. Both
+  directions are backward-compatible: clients ignore frame types they don't
+  know, old clients still get the original single response, and new clients
+  accept that legacy response.
+- Which commands stream, and their read budgets, are decided **client-side**
+  in `bin/ycal` (30 s default; `update` 10 min; `recorder setup` 60 min;
+  `watch` none). So a new long-running command needs a `bin/ycal` change —
+  and `bin/ycal` is not in the dmg (see "Auto-update"). An old client running
+  `recorder setup` times out at 30 s while the setup carries on inside the
+  app; re-running follows the in-flight run (`getRecorderSetupInFlight`).
 
 **Two non-obvious gotchas live here:**
 
@@ -161,6 +171,19 @@ Two execution modes share `runCli()` from `src/main/cli.ts`:
 2. **Connect and read timeouts must be split.** A unified 2s budget worked for `--version` (instant) but cut off `today`/`events` mid-Google-API-call. Current split: 1s connect, 30s read.
 
 `runCli(argv, out, err)` writes to injected `Writable` streams — don't go back to `process.stdout.write`. The same function serves stdio (in-process mode) and `StringSink` buffers (socket mode), and the server can serve concurrent connections safely.
+
+**`ycal config` writes must be broadcast.** It writes through the GUI's own
+setters (`setUiSettings` / `setWeatherUrl`), then pushes `SettingsChanged`
+itself (`broadcastSettingsChange` in `cli.ts`). The push is not optional:
+the write updates cloudStore's `lastSeen`, so the file watcher never reports
+it, and the renderer's save effect sends *every* slice on its next change —
+without the push, the GUI would silently revert the CLI's edit. The keys are
+a closed registry in `configKeys.ts` (unknown key = error, never a new field);
+secrets (`secret: true`, or a name matching token/key/password) are only ever
+reported as set + length. `recorder status` / `recorder setup` call the
+Settings → Recording probe and runners directly; the runners return
+`{ ok, error }` and fan progress out to both the window and
+`onRecorderSetupProgress` listeners.
 
 **CLI mirrors GUI filtering by default.** `src/main/cli.ts` reads `settings.json` UI prefs (`accountsActive`, `calVisible`, `calRoles`) and applies them like the renderer's agenda would: only active accounts × visible calendars × `normal` or `teamOoo` role calendars. Opt-in flags widen the set: `--include-read-only` (subscribed), `--include-holidays`, `--all-calendars` (full bypass). `--calendar <id>` always wins. Calendar-set filtering is account-scoped (pair-based) so a shared calendar visible on account A but hidden on account B fetches only the A copy.
 
@@ -259,7 +282,8 @@ Two decisions worth not re-litigating:
 - **Shared by main and renderer (types, pure helpers)** → `src/shared/`. Both ts-projects alias `@shared/*` here.
 - **Renderer-only (React component, hook, dates helper)** → `src/renderer/src/`. Aliased as `@renderer/*` in renderer-only.
 - **Main-only (Google API, IPC handler, OS integration)** → `src/main/`. Register IPC channel name in `@shared/types#IPC` first.
-- **CLI subcommand** → add a `cmdFoo(args, io)` to `src/main/cli.ts`, wire into `runCli`'s switch, document in the `helpText` string and in `README.md`.
+- **CLI subcommand** → add a `cmdFoo(args, io)` to `src/main/cli.ts`, wire into `runCli`'s switch, document in the `helpText` string and in `README.md`. If it can outlast 30 s, `bin/ycal` needs to know (streaming + budget).
+- **A new setting the CLI should reach** → an entry in `src/main/configKeys.ts` (type, default mirroring `App.tsx`, `secret` if it is a credential). The setter branch in `settings.ts#setUiSettings` must exist too, or the write is silently dropped.
 - **Change-detection rule** → `src/shared/calendarWatch.ts`, plus a case in `tests/watch/` (add it to `build-cases.mjs`, review the output, then bless).
 - **Which calendars a query reads** → `src/main/calendarTargets.ts`, plus a case in `tests/targets/check.mjs`. A role that means "somebody else's calendar" belongs in `isReadOnlyRole` (`@shared/types`), which main and renderer both read — never re-tested inline.
 
@@ -417,7 +441,7 @@ A fourth top-level view (`view === 'notes'` in `MainToolbar`'s `ViewMode`) that 
 
 **Gotchas:**
 - **Don't display `meta.json`'s `startedAt`.** A reprocess used to stamp it with "now". The fix: `uploadMeetingArtifacts` derives `startedAt` from the immutable filename stamp `<YYYY-MM-DD_HHMM>__…`, and `notesStore.getNote` prefers that stamp over meta. The filename stamp is the one source never rewritten.
-- **Diarization runs NVIDIA Nemotron-3-Diarization through Hugging Face Transformers, pinned to an unreleased commit.** PyPI Transformers (≤5.17) lacks the model, so `recorderSetup.ts` installs `transformers @ git+…@<full SHA>` + `librosa` + `torch` into `~/.ycal/diarize-venv`. The model is not gated (no HF token — the old `recorderDiarize.hfToken` setting is kept but unread, because a Mac on a pre-Nemotron build shares `settings.json`) and separates **at most 8 speakers** (fixed output channels). `diarize.py` also pins the model revision, runs MPS with CPU fallback, and drops "phantom" channels made only of sub-2 s fragments (`MIN_TURN_S` / `MIN_SPEAKER_S` measured after joining ≤`MERGE_GAP_S` gaps — 0.3 s, because 0.5 s stitches the trial's phantom into a "person"; reasoning in the file). Speech inside a dropped channel stays `[Other]` rather than borrowing a nearby speaker's label, and if every channel fails the filter the busiest is kept so the run doesn't read as a failed setup. **The readiness gate is the pin itself:** ready = sentinel marker + the venv's transformers `direct_url.json` commit equals `DIARIZE_TRANSFORMERS_COMMIT` (no slow import). Anything else with a marker — a pre-Nemotron pyannote venv, or an older pin — is `stale`: Settings → Recording shows the outdated banner. Setup rebuilds *any* existing venv that isn't ready (stale, or left by an unfinished setup) from scratch with `python -m venv --clear`, after first checking `git --version` (the git+ pin needs it; failure points at `xcode-select --install`). Bumping the pin therefore forces every Mac through re-setup; that is the point. `findCompatiblePython` (3.12 → 3.13 → 3.11 → 3.10) also rejects any Python that can't `import lzma` — pyenv builds made without xz lack it, librosa needs it via pooch, and because librosa imports lazily a venv built on such a Python passes a plain import check and then fails every recording; the Setup smoke test imports `librosa.filters` for the same reason. With the toggle on and the venv not ready, a recording skips diarization with a `warning` on its `RecordingStatus` (never silently, never on the old stack); a run that produced no `[SPKn]` labels gets the same kind of warning. To get speaker labels on an existing recording: Settings → "Setup/Upgrade diarize venv", then Reprocess.
+- **Diarization runs NVIDIA Nemotron-3-Diarization through Hugging Face Transformers, pinned to an unreleased commit.** PyPI Transformers (≤5.17) lacks the model, so `recorderSetup.ts` installs `transformers @ git+…@<full SHA>` + `librosa` + `torch` into `~/.ycal/diarize-venv`. The model is not gated (no HF token — the old `recorderDiarize.hfToken` setting is kept but unread, because a Mac on a pre-Nemotron build shares `settings.json`) and separates **at most 8 speakers** (fixed output channels). `diarize.py` also pins the model revision, runs MPS with CPU fallback, and drops "phantom" channels made only of sub-2 s fragments (`MIN_TURN_S` / `MIN_SPEAKER_S` measured after joining ≤`MERGE_GAP_S` gaps — 0.3 s, because 0.5 s stitches the trial's phantom into a "person"; reasoning in the file). Speech inside a dropped channel stays `[Other]` rather than borrowing a nearby speaker's label, and if every channel fails the filter the busiest is kept so the run doesn't read as a failed setup. **The readiness gate is the pin itself:** ready = sentinel marker + the venv's transformers `direct_url.json` commit equals `DIARIZE_TRANSFORMERS_COMMIT` (no slow import). Anything else with a marker — a pre-Nemotron pyannote venv, or an older pin — is `stale`: Settings → Recording shows the outdated banner. Setup rebuilds *any* existing venv that isn't ready (stale, or left by an unfinished setup) from scratch with `python -m venv --clear`, after first checking `git --version` (the git+ pin needs it; failure points at `xcode-select --install`). Bumping the pin therefore forces every Mac through re-setup; that is the point. `findCompatiblePython` (3.12 → 3.13 → 3.11 → 3.10) also rejects any Python that can't `import lzma` — pyenv builds made without xz lack it, librosa needs it via pooch, and because librosa imports lazily a venv built on such a Python passes a plain import check and then fails every recording; the Setup smoke test imports `librosa.filters` for the same reason. With the toggle on and the venv not ready, a recording skips diarization with a `warning` on its `RecordingStatus` (never silently, never on the old stack); a run that produced no `[SPKn]` labels gets the same kind of warning. To get speaker labels on an existing recording: Settings → "Setup/Upgrade diarize venv" (or `ycal recorder setup`), then Reprocess. `ycal recorder status` shows the venv's commit against the pin.
 - Segment text is rendered as HTML via `contentEditable` (`Editable`). `notesStore` escapes the transcript text and only injects its own markup (`<span class="nt-lc">` flagged terms, `<mark class="nt-hl">` highlights), so it round-trips through the `segHtml` overlay safely.
 
 ## Drag-and-drop bug to remember
@@ -432,4 +456,5 @@ The task-drag system uses a custom pointer + HTML5 hybrid controller (`src/rende
 - **`fs.existsSync` on socket files reports the file, not a live listener.** A stale socket file + no listener still passes existsSync; you have to actually try `connect()`.
 - **macOS APFS is case-insensitive by default,** so `ycal/cli.sock` and `yCal/cli.sock` resolve identically — but case-sensitive volumes exist. Use the lowercase canonical path.
 - **Smoke testing the socket end-to-end requires the new app to be installed.** Typecheck + build catch type errors but not runtime protocol bugs. Plan for "release a fix and iterate" rather than expecting first-shot perfection on socket changes.
-- **The dev-tree `bin/ycal` is CommonJS but the project is `"type": "module"`,** so `node ./bin/ycal …` from this checkout fails with "require is not defined". Drive the in-process CLI via `./node_modules/.bin/electron . --cli …` for local smoke tests, or hit the socket directly. The installed `/Applications/yCal.app` binary is unaffected.
+- **The dev-tree `bin/ycal` is CommonJS but the project is `"type": "module"`,** so `node ./bin/ycal …` from this checkout fails with "require is not defined". Drive the in-process CLI via `./node_modules/.bin/electron . --cli …` for local smoke tests, or copy the client to a `.cjs` file and run that against the socket. The installed `/Applications/yCal.app` binary is unaffected.
+- **Smoke-testing without touching the real install needs BOTH `HOME=<scratch>` and `--user-data-dir=<scratch>/Library/Application Support/ycal`.** On macOS Electron resolves `userData` from the real home, ignoring `$HOME` — a HOME override alone still reads and writes the real `settings.json`. HOME is still needed for `~/.ycal` (venv, scripts, models) and the iCloud root. Set `YCAL_CONFIG` to a dummy oauth-client.json, or the blocking "OAuth not configured" dialog stops startup before the socket exists. A copied client must also get its `APP_PATH` pointed somewhere nonexistent, or an unreachable socket makes it `open` the real `/Applications/yCal.app`. Keep the scratch HOME short: a socket path over macOS's 104-byte `sun_path` is bound at a truncated path, which `startCliServer`'s unlink-then-listen can't clean up, so the next launch fails with `EADDRINUSE`.

@@ -16,8 +16,9 @@
 //   • All times ISO 8601 with offset; durations explicit in minutes.
 //   • Descriptions HTML-stripped; null when empty.
 //   • Calendar/account references include both id + human label.
-import { app } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { readFileSync, existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Writable } from 'node:stream';
@@ -25,8 +26,21 @@ import type { Writable } from 'node:stream';
 import { isConfigured } from './config';
 import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { listAccounts } from './tokenStore';
-import { fetchWeather } from './weather';
-import { getUiSettings } from './settings';
+import { clearWeatherCache, fetchWeather } from './weather';
+import {
+  getSettingsSnapshotStrict, getSettingsStrict, getUiSettings, setUiSettings, setWeatherUrl,
+} from './settings';
+import { scheduleAppleCalendarAutoSync } from './appleCalendar';
+import {
+  CONFIG_KEYS, isSecretKey, lookupKey, parseValue, renderViewValue, viewOf,
+} from './configKeys';
+import type { ConfigKeyDef, ConfigSnapshot, ConfigValue, ConfigView } from './configKeys';
+import {
+  DIARIZE_TRANSFORMERS_COMMIT, getRecorderSetupInFlight, getRecorderSetupStatus,
+  isDiarizeVenvReady, onRecorderSetupProgress, runDiarizeSetup, runRecorderSetup,
+} from './recorderSetup';
+import type { RecorderSetupKind, RecorderSetupResult } from './recorderSetup';
+import { getModelById } from '@shared/whisperModels';
 import { calKey, resolveTargets, roleOf } from './calendarTargets';
 import { DEFAULT_WATCH_RUNNER, subscribeWatch } from './watchRunner';
 import {
@@ -45,7 +59,7 @@ import {
 import { getNote, listNotes } from './notesStore';
 import { dedupEvents } from '@shared/dedup';
 import { htmlToPlainText } from '@shared/htmlText';
-import { DEFAULT_MERGE_CRITERIA } from '@shared/types';
+import { DEFAULT_MERGE_CRITERIA, IPC } from '@shared/types';
 import fs from 'node:fs';
 import type {
   AccountSummary,
@@ -95,6 +109,10 @@ export interface CliIo {
   // socket clients that opted into streaming; `watch` falls back to writing
   // straight to `out` (in-process mode) when it is absent.
   emit?: (line: string) => void;
+  // Push one stderr line to the caller NOW — live progress for a long job
+  // (`recorder setup`). Absent → write to `err`, which in-process mode shows
+  // live and a non-streaming socket client receives at the end.
+  note?: (line: string) => void;
   // Fires when the caller went away — for `watch`, which otherwise never
   // returns and would keep the poll loop alive for nobody.
   signal?: AbortSignal;
@@ -1388,6 +1406,388 @@ async function cmdNote(args: ParsedArgs, io: CliIo): Promise<number> {
   return 0;
 }
 
+// ---------- Settings: `ycal config` ----------
+// Reads and writes the same settings.json the Settings window does, through
+// the same setters (setUiSettings / setWeatherUrl), then tells the GUI. The
+// key list, types and defaults live in configKeys.ts.
+
+function readConfigSnapshot(): ConfigSnapshot {
+  const s = getSettingsStrict();
+  if (!s) {
+    throw new CliError(
+      'settings.json is unreadable right now (iCloud Drive may be mid-sync). '
+      + 'Nothing was read or written — try again in a moment.',
+    );
+  }
+  return s;
+}
+
+function lookupConfigKey(key: string): ConfigKeyDef {
+  try {
+    return lookupKey(key);
+  } catch (e) {
+    throw new CliError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+// Tell the GUI about a write it did not make. Our own write updated
+// cloudStore's `lastSeen`, so the file watcher will — correctly — never
+// report it; without this push the renderer keeps its stale copy, and its
+// next auto-save (which sends every slice) quietly reverts the CLI's change.
+// Same payload the watcher sends for a remote edit, applied idempotently.
+function broadcastSettingsChange(): void {
+  // In-process mode (`yCal --cli`) is a separate process: the running GUI's
+  // file watcher sees our write like any other edit and pushes it itself.
+  if (isCliInvocation(process.argv)) return;
+  const snap = getSettingsSnapshotStrict();
+  if (snap) {
+    // "Unset" and '' both mean the built-in summary prompt, but the renderer
+    // skips a key that is absent from a push — so a cleared prompt must be
+    // sent as '' or it would come back on the renderer's next save.
+    const payload = {
+      ...snap,
+      ui: { ...snap.ui, recordingSummaryPrompt: snap.ui.recordingSummaryPrompt ?? '' },
+    };
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send(IPC.SettingsChanged, payload);
+    }
+  }
+  // What the SetUiSettings IPC handler does after every write.
+  scheduleAppleCalendarAutoSync();
+}
+
+function effectiveValue(def: ConfigKeyDef, s: ConfigSnapshot): ConfigValue {
+  const v = def.read(s);
+  return v === undefined ? def.default : v;
+}
+
+// The part of a view worth echoing after `set`: value (or, for a secret,
+// only whether it is set and how long) and where it came from.
+function briefView(v: ConfigView): Record<string, unknown> {
+  return v.secret
+    ? { configured: v.configured, length: v.length }
+    : { value: v.value, source: v.source };
+}
+
+function renderConfigTable(views: ConfigView[], format: Format): string {
+  if (views.length === 0) return '(no settings)';
+  if (format === 'markdown') {
+    return [
+      '| key | value | |',
+      '| --- | --- | --- |',
+      ...views.map((v) => `| \`${v.key}\` | ${renderViewValue(v).replace(/\|/g, '\\|').replace(/\n/g, ' ')} | ${v.source === 'default' ? 'default' : ''} |`),
+    ].join('\n');
+  }
+  const width = Math.max(...views.map((v) => v.key.length));
+  return views
+    .map((v) => {
+      let shown = renderViewValue(v).replace(/\n/g, '⏎');
+      if (shown.length > 60) shown = `${shown.slice(0, 57)}… (${shown.length} chars)`;
+      return `${v.key.padEnd(width)}  ${shown}${v.source === 'default' ? '  (default)' : ''}`;
+    })
+    .join('\n');
+}
+
+const CONFIG_USAGE = 'usage: ycal config list [prefix] | get <key> | set <key> <value>';
+
+function cmdConfig(args: ParsedArgs, io: CliIo): number {
+  const format = getFormat(args);
+  const [action = 'list', ...rest] = args.positional;
+
+  if (action === 'list') {
+    if (rest.length > 1) throw new CliError(CONFIG_USAGE);
+    const prefix = rest[0];
+    const defs = prefix ? CONFIG_KEYS.filter((d) => d.key.startsWith(prefix)) : CONFIG_KEYS;
+    if (defs.length === 0) {
+      throw new CliError(`no config keys start with "${prefix}". Run \`ycal config list\` for all of them.`);
+    }
+    const snap = readConfigSnapshot();
+    const views = defs.map((d) => viewOf(d, snap));
+    emit(
+      { command: 'config', action: 'list', count: views.length, settings: views },
+      format,
+      () => renderConfigTable(views, format),
+      io,
+    );
+    return 0;
+  }
+
+  if (action === 'get') {
+    if (rest.length !== 1) throw new CliError('usage: ycal config get <key>');
+    const def = lookupConfigKey(rest[0]);
+    const view = viewOf(def, readConfigSnapshot());
+    emit({ command: 'config', action: 'get', ...view }, format, () => renderViewValue(view), io);
+    return 0;
+  }
+
+  if (action === 'set') {
+    if (rest.length !== 2) {
+      throw new CliError(
+        'usage: ycal config set <key> <value>  (quote a value with spaces; "" clears a text value)',
+      );
+    }
+    const def = lookupConfigKey(rest[0]);
+    let value: ConfigValue;
+    try {
+      value = parseValue(def, rest[1]);
+    } catch (e) {
+      throw new CliError(e instanceof Error ? e.message : String(e));
+    }
+    const before = readConfigSnapshot();
+    const invalid = def.check?.(before, value);
+    if (invalid) throw new CliError(invalid);
+
+    const patch = def.patch(before, value);
+    try {
+      if (patch.ui) setUiSettings(patch.ui);
+      if (patch.weatherIcsUrl !== undefined) {
+        setWeatherUrl(patch.weatherIcsUrl);
+        clearWeatherCache(); // what the SetWeatherUrl IPC handler does
+      }
+    } catch (e) {
+      throw new CliError(`could not write settings.json: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // The setters return nothing and skip the write when settings.json turns
+    // unreadable between our read and theirs — read back rather than assume.
+    const after = readConfigSnapshot();
+    if ((def.read(after) ?? null) !== value) {
+      throw new CliError(
+        `${def.key} did not take effect (settings.json may be mid-sync). Try again in a moment.`,
+      );
+    }
+    broadcastSettingsChange();
+
+    const beforeView = viewOf(def, before);
+    const afterView = viewOf(def, after);
+    const changed = effectiveValue(def, before) !== effectiveValue(def, after);
+    emit(
+      {
+        command: 'config',
+        action: 'set',
+        key: def.key,
+        secret: isSecretKey(def),
+        changed,
+        before: briefView(beforeView),
+        after: briefView(afterView),
+      },
+      format,
+      () => (changed
+        ? `${def.key}: ${renderViewValue(beforeView)} → ${renderViewValue(afterView)}`
+        : `${def.key}: already ${renderViewValue(afterView)}`),
+      io,
+    );
+    for (const hint of configSetHints(def, value)) io.err.write(`ycal: ${hint}\n`);
+    return 0;
+  }
+
+  throw new CliError(`unknown config action "${action}". ${CONFIG_USAGE}`);
+}
+
+// Settings whose value only matters once something else is installed —
+// say so at the moment the user flips them, not at the next meeting.
+function configSetHints(def: ConfigKeyDef, value: ConfigValue): string[] {
+  if (def.key === 'recorderDiarize.enabled' && value === true && !isDiarizeVenvReady()) {
+    return ['diarization is on, but the diarize venv is not ready — run `ycal recorder setup`.'];
+  }
+  if (def.key === 'recordingWhisperModel' && !getRecorderSetupStatus().whisperModel.installed) {
+    return [`whisper model ${String(value)} is not downloaded yet — run \`ycal recorder setup --all\`.`];
+  }
+  if (def.key === 'recorderDiarize.hfToken') {
+    return ['nothing reads this token since the switch to Nemotron; it is kept for older yCal builds sharing settings.json.'];
+  }
+  return [];
+}
+
+// ---------- Recording pipeline: `ycal recorder` ----------
+
+function tildify(p: string | null): string {
+  if (!p) return '—';
+  const home = os.homedir();
+  return p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
+}
+
+function shortCommit(c: string | null): string {
+  return c ? c.slice(0, 12) : 'none';
+}
+
+// The Settings → Recording probe, plus what the grid shows around it: the
+// selected model, the pinned transformers commit, and the two toggles.
+function recorderStatusDoc() {
+  const st = getRecorderSetupStatus();
+  const ui = getUiSettings();
+  const model = getModelById(ui.recordingWhisperModel);
+  return {
+    ...st,
+    whisperModel: { ...st.whisperModel, id: model.id, expectedBytes: model.sizeBytes },
+    diarizeVenv: { ...st.diarizeVenv, expectedCommit: DIARIZE_TRANSFORMERS_COMMIT },
+    diarizeEnabled: ui.recorderDiarize?.enabled ?? false,
+    autoRecordMeetings: ui.autoRecordMeetings ?? false,
+    setupInFlight: getRecorderSetupInFlight()?.kind ?? null,
+  };
+}
+
+function renderRecorderStatus(doc: ReturnType<typeof recorderStatusDoc>): string {
+  const mark = (ok: boolean): string => (ok ? '✓' : '✗');
+  const gb = (n: number): string => `${(n / 1e9).toFixed(2)} GB`;
+  const m = doc.whisperModel;
+  const d = doc.diarizeVenv;
+  const venvState = d.installed
+    ? 'READY'
+    : d.stale ? 'STALE (built for an older engine — rebuild)' : 'NOT INSTALLED';
+  const lines = [
+    `Recording pipeline  ${doc.ready ? 'READY' : 'NOT READY'}   (auto-record ${doc.autoRecordMeetings ? 'on' : 'off'})`,
+    `  ${mark(doc.ffmpeg.installed)} ffmpeg          ${tildify(doc.ffmpeg.path)}`,
+    `  ${mark(doc.whisperCli.installed)} whisper-cli     ${tildify(doc.whisperCli.path)}`,
+    `  ${mark(m.installed)} whisper model   ${m.id}  ${gb(m.sizeBytes)} of ${gb(m.expectedBytes)}  ${tildify(m.path)}`,
+    `  ${mark(doc.coreaudioTap.installed)} coreaudio-tap   ${tildify(doc.coreaudioTap.path)}`,
+    `  ${mark(doc.scripts.installed)} scripts         ~/.ycal/record-meet.sh + post-meet.sh`,
+    `  ${mark(doc.claude.installed)} claude          ${tildify(doc.claude.path)}   (summaries)`,
+    `  ${mark(doc.brew.installed)} brew            ${tildify(doc.brew.path)}   (installer only)`,
+    `Diarization         ${doc.diarizeEnabled ? 'enabled' : 'disabled'} · venv ${venvState}`,
+    `  transformers      ${shortCommit(d.transformersCommit)}  (pinned ${shortCommit(d.expectedCommit)})`,
+    `  python            ${tildify(d.pythonPath)}`,
+    `  venv              ${tildify(d.venvPath)}`,
+  ];
+  if (doc.setupInFlight) lines.push(`Setup running       ${doc.setupInFlight}`);
+  const next: string[] = [];
+  if (doc.setupInFlight) {
+    next.push('`ycal recorder setup` follows the running setup to its end.');
+  } else {
+    if (!doc.ffmpeg.installed || !doc.whisperCli.installed || !m.installed) {
+      next.push('`ycal recorder setup --all` installs ffmpeg / whisper-cpp and the model.');
+    }
+    if (!d.installed && (doc.diarizeEnabled || d.stale)) {
+      next.push('`ycal recorder setup` builds the diarize venv.');
+    }
+  }
+  if (next.length > 0) lines.push('', ...next.map((n) => `Next: ${n}`));
+  return lines.join('\n');
+}
+
+function untilAborted(signal?: AbortSignal): Promise<null> {
+  return new Promise((resolve) => {
+    if (!signal) return; // in-process: the process is the caller
+    if (signal.aborted) resolve(null);
+    else signal.addEventListener('abort', () => resolve(null), { once: true });
+  });
+}
+
+interface SetupStepOutcome extends RecorderSetupResult {
+  step: RecorderSetupKind;
+  // True when this step's run was already going (from Settings, or a
+  // previous CLI call whose client gave up) and we followed it.
+  attached: boolean;
+}
+
+async function cmdRecorderSetup(args: ParsedArgs, io: CliIo): Promise<number> {
+  const format = getFormat(args);
+  const steps: RecorderSetupKind[] = args.flags.all ? ['deps', 'diarize'] : ['diarize'];
+  const say = (line: string): void => {
+    if (io.note) io.note(`${line}\n`);
+    else io.err.write(`${line}\n`);
+  };
+  const gone = untilAborted(io.signal);
+
+  // The runners' progress, as the Settings log shows it. Errors are left
+  // out here: each one is reported once, as the step's result.
+  let lastDecile = -1;
+  const off = onRecorderSetupProgress((p) => {
+    if (p.phase === 'error') return;
+    if (p.phase === 'model') {
+      if (typeof p.modelPercent === 'number') {
+        const decile = Math.floor(p.modelPercent / 10);
+        if (decile !== lastDecile) {
+          lastDecile = decile;
+          say(`[model] downloading ${Math.floor(p.modelPercent)}%`);
+        }
+        return;
+      }
+      // curl's bare progress-bar redraws carry no words; skip them.
+      if (!p.line || !/[a-z]/i.test(p.line)) return;
+    }
+    if (p.line) say(`[${p.phase}] ${p.line}`);
+  });
+
+  const outcomes: SetupStepOutcome[] = [];
+  try {
+    for (const step of steps) {
+      let job = getRecorderSetupInFlight();
+      if (job && job.kind !== step) {
+        say(`[wait] a ${job.kind} setup is already running — waiting for it to finish`);
+        if ((await Promise.race([job.promise, gone])) === null) return 1;
+        job = getRecorderSetupInFlight();
+      }
+      const attached = !!job && job.kind === step;
+      if (attached) say(`[${step}] already running (started elsewhere) — following it`);
+      const run = attached && job
+        ? job.promise
+        : step === 'deps' ? runRecorderSetup() : runDiarizeSetup();
+      // The caller hung up: stop reporting, but let the setup finish — a
+      // venv abandoned half-way through pip would only need rebuilding.
+      const result = await Promise.race([run, gone]);
+      if (result === null) return 1;
+      outcomes.push({ step, attached, ...result });
+      if (!result.ok) break;
+    }
+  } finally {
+    off();
+  }
+
+  const failed = outcomes.find((o) => !o.ok);
+  const st = getRecorderSetupStatus();
+  const ok = !failed;
+  emit(
+    {
+      command: 'recorder',
+      action: 'setup',
+      ok,
+      steps: outcomes,
+      ready: st.ready,
+      diarizeVenv: {
+        installed: st.diarizeVenv.installed,
+        transformersCommit: st.diarizeVenv.transformersCommit,
+        expectedCommit: DIARIZE_TRANSFORMERS_COMMIT,
+      },
+    },
+    format,
+    () => {
+      if (failed) return `Recorder setup FAILED (${failed.step}): ${failed.error ?? 'unknown error'}`;
+      const parts: string[] = [];
+      if (steps.includes('deps')) {
+        parts.push(`Recording dependencies ${st.ready ? 'ready' : 'installed (pipeline still NOT READY — see `ycal recorder status`)'}.`);
+      }
+      parts.push(`Diarization venv ready — transformers ${shortCommit(st.diarizeVenv.transformersCommit)} (pinned).`);
+      return parts.join('\n');
+    },
+    io,
+  );
+  if (failed) {
+    io.err.write(`ycal: recorder setup failed (${failed.step}): ${failed.error ?? 'unknown error'}\n`);
+    return 1;
+  }
+  return 0;
+}
+
+async function cmdRecorder(args: ParsedArgs, io: CliIo): Promise<number> {
+  const [action = 'status', ...rest] = args.positional;
+  if (rest.length > 0) throw new CliError('usage: ycal recorder status | ycal recorder setup [--all]');
+  if (action === 'status') {
+    const format = getFormat(args);
+    const doc = recorderStatusDoc();
+    emit(
+      { command: 'recorder', action: 'status', ...doc },
+      format,
+      () => (format === 'markdown'
+        ? `\`\`\`\n${renderRecorderStatus(doc)}\n\`\`\``
+        : renderRecorderStatus(doc)),
+      io,
+    );
+    return 0;
+  }
+  if (action === 'setup') return await cmdRecorderSetup(args, io);
+  throw new CliError(`unknown recorder action "${action}" (expected status | setup)`);
+}
+
 function helpText(version: string): string {
   return `yCal CLI ${version} — read your Google Calendar from the terminal.
 
@@ -1441,6 +1841,25 @@ COMMANDS
                             Flag: --include-transcript (fold in timed lines)
   audio      <event-id>     Print the local cache path to the .m4a (does
                             NOT inline binary content). Or --query "...".
+  config list [prefix]      Show settings (the Settings window's prefs) with
+                            their current value; unset keys show the default.
+  config get <key>          One setting. Nested keys use dots:
+                            recorderDiarize.enabled, loadWindow.startMin.
+  config set <key> <value>  Change one setting, validated against its type
+                            (true/false, a number, or one of the listed
+                            choices). "" clears a text setting. Unknown keys
+                            are an error. The open Settings window updates live.
+                            Secrets (tokens, the weather feed URL) are never
+                            printed — only whether they are set, and the length.
+  recorder status           Recording-pipeline readiness: ffmpeg, whisper-cli,
+                            model, coreaudio-tap, scripts, diarize venv (and
+                            its transformers commit vs the pinned one).
+  recorder setup            Build / upgrade the speaker-diarization venv —
+                            the Settings "Setup/Upgrade diarize venv" button.
+                            Streams progress to stderr; exit 1 on failure.
+                            Flag: --all  (first brew-install ffmpeg /
+                            whisper-cpp and download the model, like the
+                            Settings "Install" button)
 
 CALENDAR FILTERING
   By default, events commands mirror the GUI agenda:
@@ -1513,6 +1932,10 @@ EXAMPLES
   ycal note --query "Q3 DevOps"          # structured note (JSON) for AI use
   ycal note abcd1234 --include-transcript --format markdown
   ycal transcript abcd1234_20260520T...  # exact event id from recordings list
+  ycal config list recorder --format text
+  ycal config set recorderDiarize.enabled true
+  ycal recorder status --format text
+  ycal recorder setup                    # after a yCal upgrade bumps the pin
 
 JSON OUTPUT
   Every JSON document has at minimum: { "command", "count" } plus a payload
@@ -1606,7 +2029,11 @@ export async function runCli(
   out: Writable = process.stdout,
   err: Writable = process.stderr,
   progress?: (status: UpdateStatus) => void,
-  stream?: { emit?: (line: string) => void; signal?: AbortSignal },
+  stream?: {
+    emit?: (line: string) => void;
+    note?: (line: string) => void;
+    signal?: AbortSignal;
+  },
 ): Promise<number> {
   const io: CliIo = { out, err, progress, ...stream };
   const version = readVersion();
@@ -1670,6 +2097,10 @@ export async function runCli(
         return await cmdNote(args, io);
       case 'audio':
         return await cmdMeetingArtifact(args, 'audio', io);
+      case 'config':
+        return cmdConfig(args, io);
+      case 'recorder':
+        return await cmdRecorder(args, io);
       default:
         io.err.write(`ycal: unknown command "${args.command}"\n\n`);
         io.err.write(helpText(version));

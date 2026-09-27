@@ -35,8 +35,10 @@ const args = process.argv.slice(2);
 
 // Mirror the command-discovery part of main/cli.ts so an argument value such
 // as `ycal find update` does not accidentally opt into the streaming updater
-// protocol. Flags may appear before the command.
-function findCommand(argv) {
+// protocol. Flags may appear before the command. Returns the positionals
+// (command first, then e.g. `setup` in `ycal recorder setup`).
+function findPositionals(argv) {
+  const found = [];
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
@@ -54,24 +56,31 @@ function findCommand(argv) {
       }
       continue;
     }
-    return arg;
+    found.push(arg);
+    i++;
   }
-  return '';
+  return found;
 }
 
-const command = findCommand(args);
+const [command = '', subcommand = ''] = findPositionals(args);
 const isUpdateCommand = command === 'update' || command === 'upgrade';
+// `recorder setup` builds a Python venv: a git clone of the pinned Transformers
+// commit plus a torch wheel (~18 min on a cold cache in testing), and with
+// --all also brew installs and a 1–3 GB model download. It streams its log as
+// `err` frames so the terminal shows progress, and gets a long budget.
+const isRecorderSetup = command === 'recorder' && subcommand === 'setup';
 // `watch` streams too, but differently: it emits stdout lines as they happen
 // and never finishes on its own. It therefore gets NO read timeout — a quiet
 // calendar is the normal case, and cutting the connection after 30 silent
 // seconds would make the feature useless.
 const isWatchCommand = command === 'watch';
-const isStreamCommand = isUpdateCommand || isWatchCommand;
+const isStreamCommand = isUpdateCommand || isWatchCommand || isRecorderSetup;
 // Updating can download a large release zip before the app hands off to the
 // swap helper. Keep the normal request budget short, but allow self-update
 // enough time on a slow connection.
 const DEFAULT_READ_TIMEOUT_MS = 30000;
 const UPDATE_READ_TIMEOUT_MS = 10 * 60 * 1000;
+const RECORDER_SETUP_READ_TIMEOUT_MS = 60 * 60 * 1000;
 
 // Floor for the override. Below this the budget can expire on a perfectly
 // healthy request — the fast path already spends up to 1s on connect alone,
@@ -104,8 +113,11 @@ function readTimeoutOverride() {
 }
 
 const timeoutOverride = readTimeoutOverride();
-const readTimeoutMs = isUpdateCommand
-  ? Math.max(UPDATE_READ_TIMEOUT_MS, timeoutOverride ?? 0)
+const longBudgetMs = isUpdateCommand
+  ? UPDATE_READ_TIMEOUT_MS
+  : isRecorderSetup ? RECORDER_SETUP_READ_TIMEOUT_MS : null;
+const readTimeoutMs = longBudgetMs !== null
+  ? Math.max(longBudgetMs, timeoutOverride ?? 0)
   : Math.max(MIN_READ_TIMEOUT_MS, timeoutOverride ?? DEFAULT_READ_TIMEOUT_MS);
 let progressVisible = false;
 
@@ -213,7 +225,10 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
           // Straight through to stdout, unbuffered: a watcher's whole value is
           // that the event arrives when it happens.
           else if (frame.type === 'out') process.stdout.write(frame.data);
-          else if (frame.type === 'result') buf = JSON.stringify(frame);
+          else if (frame.type === 'err') {
+            finishProgress();
+            process.stderr.write(frame.data);
+          } else if (frame.type === 'result') buf = JSON.stringify(frame);
         } catch (_e) { /* ignore malformed frame */ }
         newline = lineBuf.indexOf('\n');
       }
@@ -229,7 +244,7 @@ function tryRequest(connectTimeoutMs, readTimeoutMs) {
           settle({ outcome: 'ok', result: { stdout: '', stderr: '', code: 0 } });
           return;
         }
-        if (isUpdateCommand && !buf && lineBuf) {
+        if (!isWatchCommand && !buf && lineBuf) {
           // Backwards compatibility with an older installed yCal that
           // answers with the original single-JSON response.
           buf = lineBuf;
@@ -294,7 +309,40 @@ function shellQuote(a) {
   return /^[\w@%+=:,./-]+$/.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`;
 }
 
+// Config keys whose value is a credential: the `secret: true` entries of
+// src/main/configKeys.ts, repeated here because this script imports nothing
+// from the app — keep the two lists in step. SECRET_NAME is configKeys.ts's
+// credential-name backstop, so a bare `hfToken` is caught as well.
+const SECRET_CONFIG_KEYS = ['recorderDiarize.hfToken', 'weatherIcsUrl'];
+const SECRET_NAME = /token|secret|password|passwd|api[-_]?key|credential/i;
+const REDACTED = '<redacted>';
+
+function isSecretConfigKey(arg) {
+  const a = arg.toLowerCase();
+  return SECRET_NAME.test(a) || SECRET_CONFIG_KEYS.some((k) => {
+    const key = k.toLowerCase();
+    return a === key || a === key.slice(key.lastIndexOf('.') + 1);
+  });
+}
+
+// The argv as it is safe to echo back. In a `config` call, everything after
+// a secret key is the secret (or could be) — `config set weatherIcsUrl <url>`
+// must not land in a terminal scrollback or a log just because the call
+// timed out. Hides too much rather than too little: flags after the key go
+// as well, and the key is recognised wherever it sits, since a flag without
+// `=` swallows the next word and shifts the positionals.
+function displayArgs() {
+  const inConfig = args.includes('config');
+  let hideRest = false;
+  return args.map((a) => {
+    if (hideRest) return REDACTED;
+    if (inConfig && isSecretConfigKey(a)) hideRest = true;
+    return shellQuote(a);
+  });
+}
+
 function describeCommand() {
+  if (isRecorderSetup) return '`ycal recorder setup`';
   return command ? `\`ycal ${command}\`` : 'the request';
 }
 
@@ -311,16 +359,35 @@ function reportLiveFailure(attempt) {
     const secs = readTimeoutMs / 1000;
     // Don't round a 1.5s override up to "2s" — the number is the whole point.
     const budget = `${secs >= 10 ? Math.round(secs) : Math.round(secs * 10) / 10}s`;
-    const suggested = Math.max(readTimeoutMs * 3, 120000);
-    const retry = ['ycal', ...args.map(shellQuote)].join(' ');
-    process.stderr.write(
-      `ycal: connected to yCal, but ${describeCommand()} did not answer within ${budget}.\n`
-      + '  The socket accepted, so yCal is up — it is either slow to answer this\n'
-      + '  command (listings of the whole Drive archive get slower as it grows) or\n'
-      + '  stuck. This cannot tell the two apart.\n'
-      + `  If you think it is slow, give this one call more room:\n    YCAL_TIMEOUT_MS=${suggested} ${retry}\n`
-      + '  If that times out too, or it keeps happening, restart yCal.\n',
-    );
+    const shown = displayArgs();
+    const retry = ['ycal', ...shown].join(' ');
+    const redactNote = shown.includes(REDACTED)
+      ? `  (${REDACTED} stands in for the secret value — put it back before running it.)\n`
+      : '';
+    if (isRecorderSetup) {
+      // Only this client gave up. The setup runs inside yCal and outlives the
+      // connection, so restarting yCal is the one wrong move: it would kill a
+      // pip install or model download half-way and leave a venv to rebuild.
+      process.stderr.write(
+        `ycal: connected to yCal, but ${describeCommand()} did not finish within ${budget}.\n`
+        + '  The setup is still running inside yCal — only this command stopped\n'
+        + '  waiting. Do not restart yCal: that would cut the install off mid-way.\n'
+        + '  `ycal recorder status` shows how far it has got; running the same\n'
+        + `  command again picks the running setup up and follows it to the end:\n    ${retry}\n`
+        + redactNote,
+      );
+    } else {
+      const suggested = Math.max(readTimeoutMs * 3, 120000);
+      process.stderr.write(
+        `ycal: connected to yCal, but ${describeCommand()} did not answer within ${budget}.\n`
+        + '  The socket accepted, so yCal is up — it is either slow to answer this\n'
+        + '  command (listings of the whole Drive archive get slower as it grows) or\n'
+        + '  stuck. This cannot tell the two apart.\n'
+        + `  If you think it is slow, give this one call more room:\n    YCAL_TIMEOUT_MS=${suggested} ${retry}\n`
+        + redactNote
+        + '  If that times out too, or it keeps happening, restart yCal.\n',
+      );
+    }
   } else {
     process.stderr.write(
       `ycal: connected to yCal, but ${describeCommand()} returned no usable response`
