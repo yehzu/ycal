@@ -2066,12 +2066,12 @@ function PrefsRecording({
         label: 'diarize venv',
         ok: status.diarizeVenv.installed,
         detail: status.diarizeVenv.installed
-          ? `${status.diarizeVenv.venvPath} (pyannote ${status.diarizeVenv.pyannoteVersion ?? '?'})`
+          ? `${status.diarizeVenv.venvPath} (Nemotron · transformers@${status.diarizeVenv.transformersCommit?.slice(0, 7) ?? '?'})`
           : status.diarizeVenv.stale
-            ? `outdated — pyannote ${status.diarizeVenv.pyannoteVersion ?? '<4'} installed, needs ≥4. Re-run Setup to upgrade.`
+            ? 'outdated — built for an older diarization engine (e.g. pyannote). Re-run Setup to rebuild it for Nemotron.'
             : status.diarizeVenv.pythonPath
               ? `optional — Setup creates ${status.diarizeVenv.venvPath} from ${status.diarizeVenv.pythonPath}`
-              : 'optional — no Python 3.10–3.12 found (brew install python@3.12 first)',
+              : 'optional — no Python 3.10–3.13 with lzma found (brew install python@3.12 first)',
         note: 'Required only when "Speaker separation" is enabled below.',
       },
     ]
@@ -2205,11 +2205,14 @@ function PrefsRecording({
       <h3 className="pref-h" style={{ marginTop: 18 }}>Speaker separation</h3>
       <p className="pref-row-hint" style={{ maxWidth: '60ch', marginTop: 0 }}>
         Upgrade the [Other] channel into per-speaker labels ([SPK1], [SPK2], …)
-        using <code>pyannote.audio</code> diarization. The summary prompt then
-        maps those labels to the calendar event's actual attendees — so action
+        using NVIDIA's Nemotron-3-Diarization model, which separates{' '}
+        <strong>up to 8 speakers</strong> — beyond that, voices can't each get
+        a label of their own. The summary prompt then maps
+        those labels to the calendar event's actual attendees — so action
         items get attributed to real people, and Whisper-hallucinated names get
         flagged with a "?". Setup creates <code>~/.ycal/diarize-venv/</code>{' '}
-        (~1.5 GB once) and downloads a ~500 MB pyannote model on first use.
+        (~1.2 GB once) and downloads a ~379 MB model on first use. No
+        Hugging Face token needed.
       </p>
       {status?.diarizeVenv.stale && (
         <div
@@ -2225,47 +2228,25 @@ function PrefsRecording({
             maxWidth: '60ch',
           }}
         >
-          ⚠ Your diarization environment is <strong>outdated</strong> (pyannote{' '}
-          {status.diarizeVenv.pyannoteVersion ?? '<4'}; needs ≥4). Speaker
-          separation is <strong>paused</strong> — recordings keep [Me]/[Other]
-          only — until you re-run <strong>Setup diarize venv</strong> below to
-          upgrade. Then re-process a meeting to get speaker labels.
+          ⚠ Your diarization environment is <strong>outdated</strong> — it was
+          built for an older engine (e.g. pyannote), and speaker separation now
+          runs on Nemotron. Speaker separation is <strong>paused</strong> —
+          recordings keep [Me]/[Other] only — until you click{' '}
+          <strong>Upgrade diarize venv</strong> below, which rebuilds it from
+          scratch. Then re-process a meeting to get speaker labels.
         </div>
       )}
       <PrefRow
         label="Enable speaker separation"
         hint={
           diarize.enabled
-            ? 'When recordings finish, post-meet.sh runs diarization before claude. Adds ~2–5 min per hour of audio.'
+            ? 'When recordings finish, post-meet.sh runs diarization before claude. Adds under a minute per hour of audio.'
             : 'Off — recordings keep the [Me]/[Other] split only.'
         }
       >
         <PrefSwitch
           value={diarize.enabled}
           onChange={(v) => setDiarize({ ...diarize, enabled: v })}
-        />
-      </PrefRow>
-      <PrefRow
-        label="HuggingFace token"
-        hint="Read-only token used to download the public pyannote model. Accept the license at all three URLs first: huggingface.co/pyannote/speaker-diarization-community-1, huggingface.co/pyannote/speaker-diarization-3.1, huggingface.co/pyannote/segmentation-3.0. Then generate the token. Synced across Macs via cloudStore."
-      >
-        <input
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="hf_…"
-          value={diarize.hfToken ?? ''}
-          onChange={(e) =>
-            setDiarize({ ...diarize, hfToken: e.target.value.trim() || null })
-          }
-          style={{
-            width: 260,
-            padding: '4px 8px',
-            border: '1px solid var(--border, #d0d0d0)',
-            borderRadius: 4,
-            fontSize: 12,
-            fontFamily: 'monospace',
-          }}
         />
       </PrefRow>
 
@@ -2394,19 +2375,19 @@ function PrefsRecording({
           }}
           title={
             !status?.diarizeVenv.pythonPath
-              ? 'Install Python 3.10–3.12 first (brew install python@3.12)'
+              ? 'Install Python 3.10–3.13 first (brew install python@3.12)'
               : status?.diarizeVenv.installed
                 ? 'Diarize venv already set up'
                 : status?.diarizeVenv.stale
-                  ? 'Upgrade the venv to pyannote ≥4'
-                  : 'Create the pyannote.audio venv (~1.5 GB)'
+                  ? 'Rebuild the venv for Nemotron diarization'
+                  : 'Create the Nemotron diarization venv (~1.2 GB)'
           }
         >
           {status?.diarizeVenv.installed
             ? 'Diarize venv ✓'
             : status?.diarizeVenv.stale
               ? 'Upgrade diarize venv'
-              : 'Setup diarize venv (~1.5 GB)'}
+              : 'Setup diarize venv (~1.2 GB)'}
         </button>
       </div>
 

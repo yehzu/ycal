@@ -277,11 +277,13 @@ PY
   fi
 
   # === Speaker diarization (optional, stereo-only) =========================
-  # When the GUI's recorderDiarize.enabled toggle is on AND an HF token is
-  # set, replace [Other] labels in the merged transcript with [SPK1]/[SPK2]
-  # /… based on pyannote.audio's speaker separation of the system-audio
-  # (right) channel. The summary prompt knows what to do with these
-  # labels — map them to attendees from the calendar invite.
+  # When the GUI's recorderDiarize.enabled toggle is on AND the diarize venv
+  # is ready (yCal sets YCAL_DIARIZE_ENABLED only then), replace [Other]
+  # labels in the merged transcript with [SPK1]/[SPK2]/… (up to 8) based on
+  # Nemotron-3-Diarization's speaker separation of the system-audio (right)
+  # channel. No HF token needed — the model is not gated. The summary prompt
+  # knows what to do with these labels — map them to attendees from the
+  # calendar invite.
   #
   # We only run on the stereo path because the system-audio WAV ($sys_wav)
   # is what holds the multi-speaker mix; the mono path has no separable
@@ -289,15 +291,13 @@ PY
   if [[ "${YCAL_DIARIZE_ENABLED:-}" == "1" \
         && -n "${YCAL_DIARIZE_PY:-}" && -f "${YCAL_DIARIZE_PY:-}" \
         && -n "${YCAL_DIARIZE_VENV_PY:-}" && -x "${YCAL_DIARIZE_VENV_PY:-}" \
-        && -n "${YCAL_HF_TOKEN:-}" \
         && -s "$sys_wav" ]]; then
-    echo "[post-meet] running speaker diarization (this can take 2-5 min on long recordings)…" >&2
+    echo "[post-meet] running speaker diarization (under a minute per hour of audio; first run downloads the model)…" >&2
     diarized="${transcript}.diarized"
     if "$YCAL_DIARIZE_VENV_PY" "$YCAL_DIARIZE_PY" \
          --audio "$sys_wav" \
          --transcript "$transcript" \
-         --out "$diarized" \
-         --hf-token "$YCAL_HF_TOKEN" >&2; then
+         --out "$diarized" >&2; then
       mv "$diarized" "$transcript"
       echo "[post-meet] transcript upgraded with speaker labels" >&2
     else

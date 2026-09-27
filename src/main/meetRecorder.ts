@@ -1473,7 +1473,7 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
 }
 
 // post-meet.sh runs whisper TWICE (stereo: a mic pass + a system pass),
-// then optional pyannote diarization, then a claude summary — every stage
+// then optional speaker diarization, then a claude summary — every stage
 // scales with the recording's length. A fixed 30-min ceiling is fine for a
 // 30-min meeting but far too short for a multi-hour one: a 3-hour stereo
 // recording's two whisper passes alone run well past 30 min, so post-meet.sh
@@ -1570,17 +1570,23 @@ async function postProcess(
       envExtras.YCAL_EXTRA_CONTEXT = extraContextFile;
     }
     // Speaker diarization toggle. When the user has enabled it in
-    // Settings → Recording AND set their HF token AND the venv is
-    // installed, hand post-meet.sh everything it needs to splice
-    // [SPK1]/[SPK2]/… labels into the [Other] segments of the merged
-    // transcript. Any missing piece → the env vars stay unset and
-    // post-meet.sh falls back to the legacy [Me]/[Other] flow.
+    // Settings → Recording AND the venv is ready, hand post-meet.sh
+    // everything it needs to splice [SPK1]/[SPK2]/… labels into the
+    // [Other] segments of the merged transcript. No HF token: the
+    // Nemotron model is not gated (a stored pyannote-era token is simply
+    // not passed on). Enabled but venv not ready — never set up, or a
+    // stale pre-Nemotron venv — skips diarization with a warning below
+    // instead of running the old stack or keeping [Me]/[Other] silently.
     const diarizeCfg = getUiSettings().recorderDiarize;
-    if (diarizeCfg?.enabled && diarizeCfg.hfToken && isDiarizeVenvReady()) {
-      envExtras.YCAL_DIARIZE_ENABLED = '1';
-      envExtras.YCAL_HF_TOKEN = diarizeCfg.hfToken;
-      envExtras.YCAL_DIARIZE_PY = DIARIZE_PY;
-      envExtras.YCAL_DIARIZE_VENV_PY = getDiarizeVenvPython();
+    let diarizeWarning: string | undefined;
+    if (diarizeCfg?.enabled) {
+      if (isDiarizeVenvReady()) {
+        envExtras.YCAL_DIARIZE_ENABLED = '1';
+        envExtras.YCAL_DIARIZE_PY = DIARIZE_PY;
+        envExtras.YCAL_DIARIZE_VENV_PY = getDiarizeVenvPython();
+      } else if (!summaryOnly) {
+        diarizeWarning = 'Speaker separation skipped — the diarization environment is missing or outdated. Run “Setup / Upgrade diarize venv” in Settings → Recording, then Reprocess.';
+      }
     }
     const postTimeoutMs = postProcessTimeoutMs(audioFile);
     rlog(`postProcess(${eventId}) timeoutMin=${Math.round(postTimeoutMs / 60_000)} summaryOnly=${summaryOnly} audioBytes=${(() => { try { return fs.statSync(audioFile).size; } catch { return 0; } })()}`);
@@ -1612,11 +1618,10 @@ async function postProcess(
 
     // Quiet-failure guard: if speaker separation was requested but the
     // transcript came back with no [SPKn] labels, diarization fell over
-    // (revoked HF token, gated model, OOM, …) and post-meet.sh silently
+    // (model download failed, OOM, …) and post-meet.sh silently
     // kept [Me]/[Other]. The recording is still fine, so surface a warning
     // rather than a failure — otherwise the user just wonders why everyone
     // is "Other".
-    let diarizeWarning: string | undefined;
     if (envExtras.YCAL_DIARIZE_ENABLED === '1' && fs.existsSync(transcript)) {
       try {
         if (!/\]\s*SPK\d/i.test(fs.readFileSync(transcript, 'utf-8'))) {

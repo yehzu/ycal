@@ -146,8 +146,8 @@ function AppShell({ initialUi }: { initialUi: UiSettings }) {
     () => initialUi.recordingVoiceProcessing ?? false,
   );
   // Speaker diarization config. Lives in settings.json (cloud-routed) so
-  // it follows the user across Macs — the HF token is a low-sensitivity
-  // download token for public pyannote models, not a personal credential.
+  // it follows the user across Macs. hfToken is legacy (pyannote-era, no
+  // longer read) and is carried through untouched for older builds.
   const [recorderDiarize, setRecorderDiarize] = useState<{
     enabled: boolean;
     hfToken: string | null;

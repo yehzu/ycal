@@ -37,14 +37,24 @@ const POST_SH = path.join(os.homedir(), '.ycal', 'post-meet.sh');
 const DIARIZE_VENV = path.join(os.homedir(), '.ycal', 'diarize-venv');
 const DIARIZE_VENV_PY = path.join(DIARIZE_VENV, 'bin', 'python');
 
-// Dependency stack for diarization. pyannote.audio 4.x uses the newer
-// speaker-diarization-community-1 model (better accuracy than 3.1 in our
-// PoC) and works with the latest torch + huggingface_hub — no version
-// pins needed. Validated 2026-05-25 on Python 3.12.
+// Dependency stack for diarization: NVIDIA Nemotron-3-Diarization run
+// through Hugging Face Transformers (replaced pyannote.audio 4.x +
+// speaker-diarization-community-1 — see tools/recording/diarize.py for why).
+// Transformers supports the model only on main, not in any PyPI release
+// (5.17.0 lacks it), so we pin the exact commit validated on Apple Silicon
+// (5.18.0.dev0; Python 3.10, 3.12, 3.13; 2026-09-27). librosa computes the mel filters
+// the feature extractor needs; torchaudio is no longer used. Needs `git` on
+// PATH for the git+ install (runDiarizeSetup checks it up front).
+//
+// The pin doubles as the readiness gate: a venv counts as ready only when
+// its transformers came from exactly this commit (see diarizeVenvOk), so
+// bumping it — or a leftover pyannote venv — reads as "stale, re-run Setup"
+// instead of silently running whatever is installed.
+const DIARIZE_TRANSFORMERS_COMMIT = '96331a9f93b72697f160a958d2883d4b49a56739';
 const DIARIZE_PINS = [
-  'pyannote.audio>=4.0',
+  `transformers @ git+https://github.com/huggingface/transformers@${DIARIZE_TRANSFORMERS_COMMIT}`,
+  'librosa',
   'torch',
-  'torchaudio',
 ];
 
 // Resolve the user's chosen whisper model into a concrete path + URL.
@@ -113,9 +123,10 @@ function fileSize(p: string): number {
   try { return fs.statSync(p).size; } catch { return 0; }
 }
 
-// Find a system Python suitable for the diarize venv. pyannote 3.x +
-// torch <2.6 wheels exist for 3.10–3.12. 3.13+ doesn't have matching
-// wheels yet; 3.9 is below pyannote's floor.
+// Find a system Python suitable for the diarize venv, in order of
+// preference. The stack ran end to end on 3.12 and 3.13 (librosa 1.0) and
+// on 3.10 (pip resolves librosa 0.11 there, since 1.0 needs 3.12); 3.10 is
+// Transformers' floor, and 3.11 sits in between.
 //
 // Pyenv quirk: ~/.pyenv/shims/python3.X is a dispatch script that only
 // works when that version is in `pyenv global` or `pyenv local`. A user
@@ -123,16 +134,17 @@ function fileSize(p: string): number {
 // shim file exist (whichOf finds it) but execution returns
 // "pyenv: python3.12: command not found". So we prefer the REAL binary
 // inside ~/.pyenv/versions/3.12.X/bin/python3.12 over the shim, and
-// verify shims with a quick `--version` probe before accepting them.
+// verify every candidate with a quick probe before accepting it.
+const DIARIZE_PY_MINORS = ['3.12', '3.13', '3.11', '3.10'];
 function findCompatiblePython(): string | null {
-  for (const v of ['3.12', '3.11', '3.10']) {
+  for (const v of DIARIZE_PY_MINORS) {
     const p = findPythonByMinor(v);
     if (p) return p;
   }
   // Generic `python3` last — only acceptable if it actually runs and
   // reports a version in our supported range.
   const generic = whichOf('python3');
-  if (generic && verifyPythonVersion(generic, ['3.10', '3.11', '3.12'])) {
+  if (generic && verifyPythonVersion(generic, DIARIZE_PY_MINORS)) {
     return generic;
   }
   return null;
@@ -151,7 +163,7 @@ function findPythonByMinor(minor: string): string | null {
       const real = path.join(versionsDir, v, 'bin', `python${minor}`);
       try {
         const st = fs.statSync(real);
-        if (st.isFile() && (st.mode & 0o111)) return real;
+        if (st.isFile() && (st.mode & 0o111) && verifyPythonVersion(real, [minor])) return real;
       } catch { /* keep looking */ }
     }
   } catch { /* no pyenv */ }
@@ -164,14 +176,17 @@ function findPythonByMinor(minor: string): string | null {
   return null;
 }
 
-// Run `<python> --version` and return true if it matches one of the
-// allowed minor versions. Catches pyenv shims dispatching to a missing
-// install (the shim file exists but `--version` exits non-zero).
+// Run the candidate and return true if it reports one of the allowed minor
+// versions AND can import lzma. Catches pyenv shims dispatching to a missing
+// install (the shim file exists but exits non-zero), and Pythons built
+// without xz (common with pyenv when xz headers were absent): they lack
+// _lzma, which librosa needs through pooch, so a venv built on one passes
+// Setup yet fails every recording with "No module named '_lzma'".
 function verifyPythonVersion(pythonPath: string, allowedMinors: string[]): boolean {
   try {
     const out = require('node:child_process').execFileSync(
       pythonPath,
-      ['--version'],
+      ['-c', 'import lzma, sys; print("Python %d.%d" % sys.version_info[:2])'],
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000 },
     );
     const m = /Python\s+3\.(\d+)/.exec(out);
@@ -182,18 +197,14 @@ function verifyPythonVersion(pythonPath: string, allowedMinors: string[]): boole
   }
 }
 
-// Minimum pyannote.audio major version. diarize.py loads the
-// speaker-diarization-community-1 model with the 4.x `token=` API; a 3.x
-// venv (older `use_auth_token=`, no community-1 support) throws at load and
-// post-meet.sh silently keeps [Me]/[Other]. We refuse to engage diarization
-// on such a venv and flag it for re-setup instead.
-const DIARIZE_MIN_MAJOR = 4;
-
-// Read the installed pyannote.audio version cheaply from the venv's
-// dist-info directory name (e.g. `pyannote_audio-4.0.1.dist-info`) — no
-// subprocess, no slow `import pyannote.audio` (which pulls in torch and
-// costs several seconds). Returns null when the venv/package is absent.
-export function getDiarizePyannoteVersion(): string | null {
+// Read the commit the venv's transformers was installed from, cheaply:
+// pip records it in the dist-info's direct_url.json (PEP 610) for a git+
+// install — no subprocess, no slow `import transformers` (which pulls in
+// torch and costs several seconds). Null when the venv or package is
+// absent, or transformers came from PyPI (no commit recorded) — both of
+// which leave the venv not ready. A pre-Nemotron pyannote venv lands here
+// too: it has no transformers at all.
+export function getDiarizeTransformersCommit(): string | null {
   try {
     const libDir = path.join(DIARIZE_VENV, 'lib');
     const pyDirs = fs.readdirSync(libDir).filter((d) => /^python3\.\d+$/.test(d));
@@ -202,29 +213,26 @@ export function getDiarizePyannoteVersion(): string | null {
       let entries: string[];
       try { entries = fs.readdirSync(sp); } catch { continue; }
       for (const e of entries) {
-        const m = e.match(/^pyannote[._]audio-(\d+(?:\.\d+)*)\.dist-info$/i);
-        if (m) return m[1];
+        if (!/^transformers-[^-]+\.dist-info$/i.test(e)) continue;
+        try {
+          const du = JSON.parse(fs.readFileSync(path.join(sp, e, 'direct_url.json'), 'utf-8'));
+          const commit = du?.vcs_info?.commit_id;
+          return typeof commit === 'string' ? commit : null;
+        } catch { return null; }
       }
     }
   } catch { /* venv absent */ }
   return null;
 }
 
-function pyannoteMajor(v: string | null): number | null {
-  if (!v) return null;
-  const n = parseInt(v.split('.')[0], 10);
-  return Number.isFinite(n) ? n : null;
-}
-
-// True when the marker exists AND a usable pyannote (>= 4.x) is installed.
+// True when the marker exists AND transformers is the pinned commit.
 function diarizeVenvOk(): boolean {
   try {
     const st = fs.statSync(DIARIZE_VENV_PY);
     if (!st.isFile() || !(st.mode & 0o111)) return false;
   } catch { return false; }
   if (!fs.existsSync(path.join(DIARIZE_VENV, '.ycal-diarize-ready'))) return false;
-  const maj = pyannoteMajor(getDiarizePyannoteVersion());
-  return maj !== null && maj >= DIARIZE_MIN_MAJOR;
+  return getDiarizeTransformersCommit() === DIARIZE_TRANSFORMERS_COMMIT;
 }
 
 // Marker present (a venv was built at some point) regardless of version.
@@ -257,8 +265,8 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
   })();
   const scriptsOk = fs.existsSync(RECORD_SH) && fs.existsSync(POST_SH);
   const diarizeOk = diarizeVenvOk();
-  const diarizePyVer = getDiarizePyannoteVersion();
-  // A venv exists but its pyannote is too old to work → "stale" (prompts
+  // A venv was built but not for the current engine (a pre-Nemotron
+  // pyannote venv, or an older transformers pin) → "stale" (prompts
   // re-setup) rather than "not installed".
   const diarizeStale = diarizeMarkerPresent() && !diarizeOk;
 
@@ -274,7 +282,7 @@ export function getRecorderSetupStatus(): RecorderSetupStatus {
       installed: diarizeOk,
       venvPath: DIARIZE_VENV,
       pythonPath: findCompatiblePython(),
-      pyannoteVersion: diarizePyVer,
+      transformersCommit: getDiarizeTransformersCommit(),
       stale: diarizeStale,
     },
     ready: ffmpeg !== null && whisperCli !== null && modelOk && tapOk && scriptsOk,
@@ -434,9 +442,12 @@ export async function runRecorderSetup(): Promise<void> {
 }
 
 // Build the diarize venv: create it from a compatible system Python,
-// install the pinned pyannote/torch/huggingface_hub stack, then drop a
-// sentinel marker so the next status probe sees it as ready. Runs in
-// the same in-flight gate as runRecorderSetup so the UI can't kick
+// install the pinned transformers/librosa/torch stack, then drop a
+// sentinel marker so the next status probe sees it as ready. Any existing
+// venv that isn't ready (built for an older engine, e.g. pyannote, or an
+// unfinished setup) is rebuilt from scratch rather than patched, so no
+// leftover package can shadow the new stack.
+// Runs in the same in-flight gate as runRecorderSetup so the UI can't kick
 // both at once.
 export async function runDiarizeSetup(): Promise<void> {
   if (setupInFlight) {
@@ -452,7 +463,8 @@ export async function runDiarizeSetup(): Promise<void> {
       pushProgress({
         phase: 'error',
         error:
-          'No compatible Python found. pyannote.audio requires Python 3.10–3.12.\n' +
+          'No compatible Python found. The diarization stack needs Python 3.10–3.13 built\n' +
+          'with lzma support (some pyenv builds lack it).\n' +
           'Install via Homebrew:  brew install python@3.12',
       });
       return;
@@ -460,12 +472,43 @@ export async function runDiarizeSetup(): Promise<void> {
 
     pushProgress({ phase: 'diarize', line: `Using Python: ${py}` });
 
-    // Step 1: create venv if missing.
-    if (!fs.existsSync(DIARIZE_VENV_PY)) {
-      pushProgress({ phase: 'diarize', line: `$ ${py} -m venv ${DIARIZE_VENV}` });
+    // Step 0: pip needs git for the git+ transformers pin. Check before
+    // touching the venv, so a missing git can't cost a --clear rebuild.
+    pushProgress({ phase: 'diarize', line: '$ git --version' });
+    const git = await runStreaming(
+      'git',
+      ['--version'],
+      (line) => pushProgress({ phase: 'diarize', line }),
+    );
+    if (!git.ok) {
+      pushProgress({
+        phase: 'error',
+        error:
+          'git is required: the diarizer installs a pinned Transformers commit straight from GitHub, ' +
+          `and \`git --version\` failed (exit ${git.code}).\n` +
+          'Install Apple\'s command line tools:  xcode-select --install\n' +
+          '(or: brew install git), then re-run Setup.',
+      });
+      return;
+    }
+
+    // Step 1: create the venv if missing. Any existing venv that is not
+    // ready — built for an older engine (e.g. pyannote), or left behind by
+    // a setup that never finished — is wiped and recreated rather than
+    // reused, so a broken one can't keep failing the import check.
+    const rebuild = fs.existsSync(DIARIZE_VENV) && !diarizeVenvOk();
+    if (!fs.existsSync(DIARIZE_VENV_PY) || rebuild) {
+      if (rebuild) {
+        pushProgress({
+          phase: 'diarize',
+          line: `Existing venv is not ready (older engine or unfinished setup) — rebuilding ${DIARIZE_VENV} from scratch`,
+        });
+      }
+      const venvArgs = ['-m', 'venv', ...(rebuild ? ['--clear'] : []), DIARIZE_VENV];
+      pushProgress({ phase: 'diarize', line: `$ ${py} ${venvArgs.join(' ')}` });
       const venv = await runStreaming(
         py,
-        ['-m', 'venv', DIARIZE_VENV],
+        venvArgs,
         (line) => pushProgress({ phase: 'diarize', line }),
       );
       if (!venv.ok) {
@@ -495,10 +538,11 @@ export async function runDiarizeSetup(): Promise<void> {
       return;
     }
 
-    // Step 3: install pinned stack. ~1.5GB download for torch.
+    // Step 3: install pinned stack. The transformers git clone + torch
+    // wheel dominate; the ~379 MB model downloads on first use.
     pushProgress({
       phase: 'diarize',
-      line: `$ pip install ${DIARIZE_PINS.join(' ')}  (downloads ~1.5GB)`,
+      line: `$ pip install ${DIARIZE_PINS.join(' ')}`,
     });
     const install = await runStreaming(
       pip,
@@ -508,23 +552,28 @@ export async function runDiarizeSetup(): Promise<void> {
     if (!install.ok) {
       pushProgress({
         phase: 'error',
-        error: `pyannote/torch install failed (exit ${install.code})`,
+        error: `transformers/librosa/torch install failed (exit ${install.code})`,
       });
       return;
     }
 
     // Step 4: import smoke test — catches broken wheels before the
     // user's first recording fails halfway through.
-    pushProgress({ phase: 'diarize', line: 'verifying pyannote.audio import…' });
+    pushProgress({ phase: 'diarize', line: 'verifying Nemotron diarization import…' });
     const smoke = await runStreaming(
       DIARIZE_VENV_PY,
-      ['-c', 'import pyannote.audio; import torch; print("ok", pyannote.audio.__version__, torch.__version__)'],
+      // librosa.filters (what the feature extractor uses) is imported
+      // explicitly: librosa loads it lazily, and it is where a missing
+      // _lzma surfaces.
+      ['-c', 'import librosa.filters, soundfile, torch, transformers; '
+        + 'from transformers import Nemotron3DiarizationForAudioFrameClassification; '
+        + 'print("ok", transformers.__version__, torch.__version__)'],
       (line) => pushProgress({ phase: 'diarize', line }),
     );
     if (!smoke.ok) {
       pushProgress({
         phase: 'error',
-        error: `pyannote.audio import failed after install (exit ${smoke.code}). Check the log above.`,
+        error: `Nemotron diarization import failed after install (exit ${smoke.code}). Check the log above.`,
       });
       return;
     }
