@@ -161,6 +161,12 @@ npm run build           # produces out/main/index.js
 ln -s "$PWD/bin/ycal" /usr/local/bin/ycal   # optional — put it on PATH
 ```
 
+A symlink follows the checkout; a **copied** `bin/ycal` does not. Re-copy it
+after pulling a change to the client. An older copy keeps working for every
+command, but `ycal recorder setup` needs the current one for live progress
+and its one-hour budget: an older client gives up after 30 s (the setup
+itself keeps running inside yCal, and re-running the command follows it).
+
 The launcher in `bin/ycal` prefers the installed `/Applications/yCal.app` binary, falling back to the local checkout. To force a specific binary set `YCAL_BIN=/path/to/yCal`.
 
 For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built source.
@@ -185,6 +191,9 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 | `ycal summary <event-id>` | Raw summary artifact (Markdown note). Or `--query "<title>"`. |
 | `ycal note <event-id>` | **Structured** meeting note for AI use (summary / decisions / actions / open questions / follow-ups / speakers / terms). JSON by default. `--include-transcript` folds in timed lines. Or `--query "<title>"`. |
 | `ycal audio <event-id>` | Local cache path to the `.m4a` (no binary inlined). Or `--query "<title>"`. |
+| `ycal config list [prefix]` / `get <key>` / `set <key> <value>` | Read and change Settings-window prefs without opening Settings. See "Settings and the recording setup". |
+| `ycal recorder status` | Recording-pipeline readiness (ffmpeg, whisper, model, tap, scripts, diarize venv + its transformers commit). |
+| `ycal recorder setup [--all]` | Build / upgrade the diarize venv — the Settings "Setup/Upgrade diarize venv" button. `--all` first installs ffmpeg / whisper-cpp and the model. |
 | `ycal --help` | Full reference. |
 
 ### Flags
@@ -381,6 +390,49 @@ offline, with a `"now"` per snapshot so the timers are reproducible. Every case
 encodes one way to report a change that never happened — read the diff before
 blessing one away.
 
+### Settings and the recording setup
+
+`ycal config` reads and writes the same `settings.json` as the Settings
+window, through the same setters, and pushes the change to an open window —
+the UI updates live instead of reverting on its next save.
+
+```bash
+ycal config list --format text              # every key, current value, "(default)" when unset
+ycal config list recorder --format text     # keys starting with "recorder"
+ycal config get recorderDiarize.enabled --format text    # → true
+ycal config set recorderDiarize.enabled true
+ycal config set loadWindow.startMin 480     # minutes from midnight
+ycal config set recordingSummaryPrompt ""   # "" clears a text value
+```
+
+- Nested prefs use dotted keys (`recorderDiarize.enabled`, `mergeCriteria.matchEnd`,
+  `loadWindow.mode`, `loadBands.calmMax`, …). `ycal config list` is the full list.
+- Values are checked against the key's type: `true`/`false` (also on/off,
+  yes/no, 1/0), a number within range, or one of the listed choices. An
+  unknown key or a bad value is an error (exit 1) and nothing is written.
+- **Secrets are never printed.** `recorderDiarize.hfToken` and
+  `weatherIcsUrl` (feed URLs often carry a key) show only whether they are
+  set and their length — `<set, length 37>` in text, `"configured": true,
+  "length": 37` in JSON — in `list`, `get` and `set` alike.
+- The per-account / per-calendar maps (visibility, roles) and list-valued
+  prefs stay GUI-only.
+
+`ycal recorder status` shows what the Settings → Recording grid shows, and
+whether the diarize venv's transformers commit matches the one this build
+pins. When an upgrade bumps the pin the venv reads `STALE`; rebuild it with:
+
+```bash
+ycal recorder setup          # diarize venv only; progress on stderr
+ycal recorder setup --all    # + brew install ffmpeg / whisper-cpp + the model
+```
+
+Expect minutes, not seconds: a from-scratch build took ~18 min in testing,
+most of it cloning the pinned Transformers commit. It runs the very function
+the Settings button runs, so the Settings log fills in too. Exit code 1 with the reason on failure. If a setup is already
+running (from Settings, or an earlier call), the command follows that run to
+its end instead of starting a second one. Interrupting the CLI does not stop
+the setup inside yCal.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -452,6 +504,7 @@ src/
 ## Privacy & security notes
 
 - The app has read-only access to your Google Calendar.
+- `ycal config` never prints a secret setting's value — only whether it is set and its length.
 - Refresh tokens are encrypted via the OS keystore (Keychain on macOS) before being written to disk.
 - The renderer process runs with `contextIsolation: true` and `nodeIntegration: false`. All Google API calls happen in the main process; the renderer only sees event objects via IPC.
 - Content Security Policy in the renderer disallows arbitrary network calls — events come from main, fonts from Google Fonts, nothing else.
