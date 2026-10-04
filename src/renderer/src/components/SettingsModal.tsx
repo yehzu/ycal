@@ -11,6 +11,7 @@ import { useGlossary } from '../glossary';
 import { DEFAULT_SUMMARY_PROMPT } from '@shared/recorderPrompt';
 import { WHISPER_MODELS } from '@shared/whisperModels';
 import { DEFAULT_LOAD_BANDS } from '@shared/types';
+import { ACTIVE_MEET_IDLE_THRESHOLD_SECS } from '@shared/activeMeetPresence';
 import { calKey } from '../store';
 import { type CalRole, type CalRoles, ROLE_OPTIONS } from '../calRoles';
 import { avatarBg, initials } from './MacTitleBar';
@@ -2130,7 +2131,7 @@ function PrefsRecording({
         label="Trigger"
         hint={
           trigger === 'activeMeet'
-            ? 'Recording follows your actual Google Meet tab: starts when you join, stops ~90s after you leave. Meetings that delay or overrun are captured fully. Needs Automation permission for System Events (macOS will prompt the first time).'
+            ? `Recording follows your actual Google Meet tab: starts when you join, stops ~90s after you leave. Meetings that delay or overrun are captured fully. Only starts on a Mac you're using — not one that's locked or untouched for ${ACTIVE_MEET_IDLE_THRESHOLD_SECS / 60} min — so a Meet tab synced from another Mac doesn't record twice. Needs Automation permission for System Events (macOS will prompt the first time).`
             : 'Recording uses calendar event times (start/end). Predictable but doesn\'t adapt to delays or overruns.'
         }
       >

@@ -53,6 +53,10 @@ import {
   onMeetChange, probeMeetCodeOpen, startMeetDetector, stopMeetDetector,
 } from './meetDetector';
 import { rlog, rtrace } from './recorderLog';
+import {
+  ACTIVE_MEET_IDLE_THRESHOLD_SECS, ACTIVE_MEET_RESUME_WINDOW_MS, type PresenceSample,
+  isResumingMeet, judgeActiveMeetPresence, resumeKeys,
+} from '@shared/activeMeetPresence';
 
 // Re-export for index.ts → IPC plumbing. Keeps meetRecorder.ts as the
 // single entry point for "everything recorder" without index needing to
@@ -240,6 +244,32 @@ let detectorUnsub: (() => void) | null = null;
 // When the activeMeet detector last stopped a recording. Used to skip
 // auto-restart inside ACTIVE_MEET_COOLDOWN_MS. Cleared on manual start.
 let lastActiveMeetStopAt = 0;
+// Reason the presence gate last skipped an activeMeet auto-start, so the
+// skip is logged once per stretch rather than on every detector tick.
+// Cleared when a start goes through and when the Meet signal drops.
+let lastPresenceSkipReason: 'locked' | 'idle' | null = null;
+// Meetings this Mac recorded recently, keyed by resumeKeys() (Meet room
+// code and/or detector tab title) → ms of the last start or stop here. An
+// activeMeet restart that hits either key bypasses the presence gate — see
+// @shared/activeMeetPresence. Entries age out after
+// ACTIVE_MEET_RESUME_WINDOW_MS. Deliberately NOT cleared on inMeet=false:
+// a tab-closed misread arrives as inMeet=false, and that is exactly the
+// stop whose restart this has to let through. In memory only, so a yCal
+// relaunch mid-meeting forgets it.
+const recentMeetsOnThisMac = new Map<string, number>();
+// The resume keys an activeMeet recording was started from (incl. the
+// detector title, when its source allows one), so its stop can refresh
+// them too (RecordingStatus is the IPC contract; this stays main-side).
+// Removed on stop.
+const activeMeetKeysByEventId = new Map<string, string[]>();
+function rememberMeet(keys: string[]): void {
+  if (keys.length === 0) return;
+  const now = Date.now();
+  for (const [k, at] of recentMeetsOnThisMac) {
+    if (now - at >= ACTIVE_MEET_RESUME_WINDOW_MS) recentMeetsOnThisMac.delete(k);
+  }
+  for (const k of keys) recentMeetsOnThisMac.set(k, now);
+}
 // Set in startMeetRecorder so we unhook on stopMeetRecorder.
 let powerHandlersBound = false;
 
@@ -916,9 +946,48 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
       console.log(`[yCal recorder] in-Meet signal ignored — cooldown ${Math.round(sinceStop / 1000)}s/${ACTIVE_MEET_COOLDOWN_MS / 1000}s`);
       return;
     }
+    // Presence gate: only the Mac somebody is using records. A Meet tab
+    // synced over from another Mac (Arc) looks identical to a real join,
+    // so check that this Mac is unlocked and recently touched — unless
+    // this Mac already recorded this meeting (same room code or same tab
+    // title), in which case it's a restart. Pure in-memory lookup: this
+    // runs on every detector tick on the Mac that should stay quiet.
+    // See @shared/activeMeetPresence for the 'unknown' and resume rules.
+    const resuming = isResumingMeet(
+      { roomCode: signalCode, title: signal.title, source: signal.source },
+      recentMeetsOnThisMac, Date.now(),
+    );
+    const presence = sampleUserPresence();
+    const verdict = judgeActiveMeetPresence(presence, { resuming });
+    const presenceDetail = `room=${signalCode ?? 'n/a'} source=${signal.source ?? 'n/a'} title=${JSON.stringify(signal.title ?? '')} idleState=${presence.idleState} idleSecs=${Number.isFinite(presence.idleSecs) ? Math.round(presence.idleSecs) : 'n/a'} thresholdSecs=${ACTIVE_MEET_IDLE_THRESHOLD_SECS}`;
+    if (!verdict.start) {
+      // The detector re-signals every 10s while the tab stays open; log
+      // the skip once per reason, not once per tick.
+      if (lastPresenceSkipReason !== verdict.reason) {
+        lastPresenceSkipReason = verdict.reason;
+        const line = `activeMeet auto-start skipped — nobody at this Mac (${verdict.reason}): ${presenceDetail}`;
+        console.log(`[yCal recorder] ${line}`);
+        rlog(line);
+      }
+      return;
+    }
+    lastPresenceSkipReason = null;
+    if (verdict.reason === 'unknown') {
+      rlog(`activeMeet presence unknown — starting anyway: ${presenceDetail}`);
+    } else if (verdict.reason === 'resume') {
+      rlog(`activeMeet restart for a meeting this Mac recorded — presence gate bypassed: ${presenceDetail}`);
+    }
     const event = await pickEventForActiveMeet(ui, signal);
+    // Remember the tab title as well as the room code startRecording()
+    // stores: a title-only signal ("Meet - …", no URL) has nothing else
+    // to match the restart by. resumeKeys keeps the title only for the
+    // 'title' source — a PWA's "title" is the same for every meeting.
+    const startKeys = resumeKeys(signalCode, signal.title, signal.source);
+    activeMeetKeysByEventId.set(event.id, startKeys);
+    rememberMeet(startKeys);
     void startRecording(event);
   } else {
+    lastPresenceSkipReason = null;
     // Tab-closed signal. The global probe lost the Meet — but that could
     // be a brief glitch (osascript timeout in a busy multi-tab browser,
     // hidden window state, etc.) rather than the user actually leaving.
@@ -979,6 +1048,24 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     // confirmed it). Forget any room-codes we'd blocked from earlier
     // failed starts so the next rejoin gets a fresh try.
     if (failedMeetCodes.size > 0) failedMeetCodes.clear();
+  }
+}
+
+// Read keyboard/mouse idle time and lock state from Electron. Electron has
+// no "is the display on" query, so idle + 'locked' stand in for it:
+// automatic display sleep only happens after the display-sleep timer runs
+// out (so idle time is at least that long), and a Mac set to require a
+// password after display sleep locks, which reads as 'locked'. A throw
+// becomes 'unknown', which judgeActiveMeetPresence treats as "start".
+function sampleUserPresence(): PresenceSample {
+  try {
+    return {
+      idleState: powerMonitor.getSystemIdleState(ACTIVE_MEET_IDLE_THRESHOLD_SECS),
+      idleSecs: powerMonitor.getSystemIdleTime(),
+    };
+  } catch (e) {
+    console.error('[yCal recorder] powerMonitor idle probe failed', e);
+    return { idleState: 'unknown', idleSecs: NaN };
   }
 }
 
@@ -1238,6 +1325,7 @@ async function startRecording(
     manual: manual || undefined,
   };
   recordings.set(ev.id, status);
+  rememberMeet(resumeKeys(meetCode, null, null));
   rlog(`startRecording(${ev.id}) title="${ev.title}" manual=${manual} endsAt=${Number.isFinite(endsAt) ? new Date(endsAt).toISOString() : 'null'} maxSecs=${maxSecs} meetCode=${meetCode ?? 'none'} accountId=${ev.accountId || 'none'}`);
   // Clear cooldown — explicit start (manual or automatic) means this
   // is the recording we want, not a stale-tab echo.
@@ -1356,6 +1444,11 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
   // triggered an auto-stop after the fact. Cheap (one fs.write) and
   // only fires on stop transitions.
   rtrace(`stopRecording(${eventId}, reason=${reason}) state=${status.state} endsAt=${status.endsAt ? new Date(status.endsAt).toISOString() : 'null'}`);
+  // Refresh the start's keys too, title included: without this a meeting
+  // that runs past 4 h from its start loses the title key just when a
+  // late restart needs it.
+  rememberMeet([...resumeKeys(status.meetCode, null, null), ...(activeMeetKeysByEventId.get(eventId) ?? [])]);
+  activeMeetKeysByEventId.delete(eventId);
   // Move out of 'recording' immediately so concurrent ticks don't try
   // to start/stop again.
   status.state = 'processing';
