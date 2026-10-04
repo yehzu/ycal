@@ -257,10 +257,11 @@ let lastPresenceSkipReason: 'locked' | 'idle' | null = null;
 // stop whose restart this has to let through. In memory only, so a yCal
 // relaunch mid-meeting forgets it.
 const recentMeetsOnThisMac = new Map<string, number>();
-// The detector title an activeMeet recording was started from, so its stop
-// can refresh the title key too (RecordingStatus is the IPC contract; this
-// stays main-side). Removed on stop.
-const activeMeetTitleByEventId = new Map<string, string>();
+// The resume keys an activeMeet recording was started from (incl. the
+// detector title, when its source allows one), so its stop can refresh
+// them too (RecordingStatus is the IPC contract; this stays main-side).
+// Removed on stop.
+const activeMeetKeysByEventId = new Map<string, string[]>();
 function rememberMeet(keys: string[]): void {
   if (keys.length === 0) return;
   const now = Date.now();
@@ -953,11 +954,12 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     // runs on every detector tick on the Mac that should stay quiet.
     // See @shared/activeMeetPresence for the 'unknown' and resume rules.
     const resuming = isResumingMeet(
-      { roomCode: signalCode, title: signal.title }, recentMeetsOnThisMac, Date.now(),
+      { roomCode: signalCode, title: signal.title, source: signal.source },
+      recentMeetsOnThisMac, Date.now(),
     );
     const presence = sampleUserPresence();
     const verdict = judgeActiveMeetPresence(presence, { resuming });
-    const presenceDetail = `room=${signalCode ?? 'n/a'} title=${JSON.stringify(signal.title ?? '')} idleState=${presence.idleState} idleSecs=${Number.isFinite(presence.idleSecs) ? Math.round(presence.idleSecs) : 'n/a'} thresholdSecs=${ACTIVE_MEET_IDLE_THRESHOLD_SECS}`;
+    const presenceDetail = `room=${signalCode ?? 'n/a'} source=${signal.source ?? 'n/a'} title=${JSON.stringify(signal.title ?? '')} idleState=${presence.idleState} idleSecs=${Number.isFinite(presence.idleSecs) ? Math.round(presence.idleSecs) : 'n/a'} thresholdSecs=${ACTIVE_MEET_IDLE_THRESHOLD_SECS}`;
     if (!verdict.start) {
       // The detector re-signals every 10s while the tab stays open; log
       // the skip once per reason, not once per tick.
@@ -978,9 +980,11 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     const event = await pickEventForActiveMeet(ui, signal);
     // Remember the tab title as well as the room code startRecording()
     // stores: a title-only signal ("Meet - …", no URL) has nothing else
-    // to match the restart by.
-    if (signal.title) activeMeetTitleByEventId.set(event.id, signal.title);
-    rememberMeet(resumeKeys(signalCode, signal.title));
+    // to match the restart by. resumeKeys keeps the title only for the
+    // 'title' source — a PWA's "title" is the same for every meeting.
+    const startKeys = resumeKeys(signalCode, signal.title, signal.source);
+    activeMeetKeysByEventId.set(event.id, startKeys);
+    rememberMeet(startKeys);
     void startRecording(event);
   } else {
     lastPresenceSkipReason = null;
@@ -1321,7 +1325,7 @@ async function startRecording(
     manual: manual || undefined,
   };
   recordings.set(ev.id, status);
-  rememberMeet(resumeKeys(meetCode, null));
+  rememberMeet(resumeKeys(meetCode, null, null));
   rlog(`startRecording(${ev.id}) title="${ev.title}" manual=${manual} endsAt=${Number.isFinite(endsAt) ? new Date(endsAt).toISOString() : 'null'} maxSecs=${maxSecs} meetCode=${meetCode ?? 'none'} accountId=${ev.accountId || 'none'}`);
   // Clear cooldown — explicit start (manual or automatic) means this
   // is the recording we want, not a stale-tab echo.
@@ -1440,8 +1444,11 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
   // triggered an auto-stop after the fact. Cheap (one fs.write) and
   // only fires on stop transitions.
   rtrace(`stopRecording(${eventId}, reason=${reason}) state=${status.state} endsAt=${status.endsAt ? new Date(status.endsAt).toISOString() : 'null'}`);
-  rememberMeet(resumeKeys(status.meetCode, activeMeetTitleByEventId.get(eventId)));
-  activeMeetTitleByEventId.delete(eventId);
+  // Refresh the start's keys too, title included: without this a meeting
+  // that runs past 4 h from its start loses the title key just when a
+  // late restart needs it.
+  rememberMeet([...resumeKeys(status.meetCode, null, null), ...(activeMeetKeysByEventId.get(eventId) ?? [])]);
+  activeMeetKeysByEventId.delete(eventId);
   // Move out of 'recording' immediately so concurrent ticks don't try
   // to start/stop again.
   status.state = 'processing';

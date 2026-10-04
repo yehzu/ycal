@@ -55,14 +55,21 @@ export const ACTIVE_MEET_RESUME_WINDOW_MS = 4 * 60 * 60_000;
  * wins whenever the Meet tab is in front), so a code alone would miss most
  * restarts. A synced tab carries the same title onto the other Mac, but that
  * Mac never recorded it, so it never has the key.
+ *
+ * The title counts only when the detector's source is 'title' (a browser
+ * "Meet - …" window). For the Meet PWA ('proc' / 'bundle') the "title" is
+ * the app name or bundle id — the same for every meeting — so keying on it
+ * would turn one PWA recording into a pass for every PWA meeting for 4 h.
+ * URL sources ('url' / 'chrome' / 'arc') carry a room code instead.
  */
 export function resumeKeys(
   roomCode: string | null | undefined,
   title: string | null | undefined,
+  source: string | null | undefined,
 ): string[] {
   const keys: string[] = [];
   if (roomCode) keys.push(`room:${roomCode}`);
-  const t = title?.trim();
+  const t = source === 'title' ? title?.trim() : undefined;
   if (t) keys.push(`title:${t}`);
   return keys;
 }
@@ -73,12 +80,12 @@ export function resumeKeys(
  * room code OR the title is enough. No code and no title → never a resume.
  */
 export function isResumingMeet(
-  meet: { roomCode?: string | null; title?: string | null },
+  meet: { roomCode?: string | null; title?: string | null; source?: string | null },
   recent: ReadonlyMap<string, number>,
   now: number,
   windowMs: number = ACTIVE_MEET_RESUME_WINDOW_MS,
 ): boolean {
-  return resumeKeys(meet.roomCode, meet.title).some((k) => {
+  return resumeKeys(meet.roomCode, meet.title, meet.source).some((k) => {
     const at = recent.get(k);
     return at !== undefined && now - at < windowMs;
   });

@@ -37,21 +37,24 @@ const judge = (idleState, idleSecs, thresholdSecs) =>
   judgeActiveMeetPresence({ idleState, idleSecs }, { thresholdSecs });
 
 // The whole gate as meetRecorder runs it: memory → verdict. `recorded`
-// lists what this Mac recorded, as [roomCode, title, msAgo]; it is stored
-// through resumeKeys() exactly as meetRecorder's rememberMeet() stores it.
+// lists what this Mac recorded, as [roomCode, title, msAgo, source]; it is
+// stored through resumeKeys() exactly as meetRecorder's rememberMeet()
+// stores it. Titles here come from the detector's 'title' source unless a
+// case says otherwise (signals default to it too).
+const S = 'title';
 const NOW = Date.parse('2026-10-05T10:00:00Z');
 const HOUR = 60 * 60_000;
 const memory = (recorded) => {
   const m = new Map();
-  for (const [room, title, ago] of recorded) {
-    for (const k of resumeKeys(room, title)) m.set(k, NOW - ago);
+  for (const [room, title, ago, source = S] of recorded) {
+    for (const k of resumeKeys(room, title, source)) m.set(k, NOW - ago);
   }
   return m;
 };
 const gate = (signal, recorded, idleState, idleSecs) =>
   judgeActiveMeetPresence(
     { idleState, idleSecs },
-    { resuming: isResumingMeet(signal, memory(recorded), NOW) },
+    { resuming: isResumingMeet({ source: S, ...signal }, memory(recorded), NOW) },
   );
 const ROOM = 'abc-defg-hij';
 const TITLE = 'Meet - abc-defg-hij';
@@ -79,6 +82,12 @@ const forgetsIn = (code) => MEM !== null
 const FORGETTERS = MEM === null ? [] : [...REC.matchAll(/function (\w+)\(/g)]
   .map((m) => m[1])
   .filter((name) => name !== 'rememberMeet' && forgetsIn(bodyOf(`function ${name}(`)));
+// The activeMeet start's keys (title included) and the per-recording map
+// they're parked in for the stop — again found by what the code does.
+const START_KEYS = /const (\w+) = resumeKeys\(\s*\w+,\s*signal\.title,\s*signal\.source\s*\)/.exec(IN_MEET)?.[1] ?? null;
+const KEYS_MAP = START_KEYS === null ? null
+  : new RegExp(`(\\w+)\\.set\\(event\\.id,\\s*${START_KEYS}\\)`).exec(IN_MEET)?.[1] ?? null;
+const STOP = bodyOf('async function stopRecording(');
 
 const CASES = [
   // The threshold itself — the Settings hint and the log line both quote it.
@@ -168,6 +177,26 @@ const CASES = [
       gate({ title: ROOM }, [[ROOM, null, 60_000]], 'idle', 1800).start,
       gate({ roomCode: TITLE }, [[null, TITLE, 60_000]], 'idle', 1800).start,
     ], [false, false]],
+  // The Meet PWA: its "title" is the app name or bundle id, identical for
+  // every meeting. One PWA recording must not wave every PWA meeting
+  // through for 4 h — so it is neither remembered nor matched.
+  ['a PWA "title" (proc / bundle source) is not remembered',
+    () => [resumeKeys(null, 'Google Meet', 'proc'), resumeKeys(null, 'com.google.meet', 'bundle')],
+    [[], []]],
+  ['a "Meet - …" title from the title source is remembered',
+    () => resumeKeys(null, TITLE, 'title'), [`title:${TITLE}`]],
+  ['a PWA signal never resumes by title, even with that title in memory',
+    () => gate({ title: 'Google Meet', source: 'proc' },
+      [[null, 'Google Meet', 10 * 60_000, 'title']], 'idle', 1800),
+    { start: false, reason: 'idle' }],
+  ['a PWA recording followed by another PWA meeting → gated as usual',
+    () => gate({ title: 'Google Meet', source: 'proc' },
+      [[null, 'Google Meet', 10 * 60_000, 'proc']], 'locked', 5),
+    { start: false, reason: 'locked' }],
+  ['a URL-source signal resumes by its room code, not its URL "title"',
+    () => gate({ roomCode: ROOM, title: `https://meet.google.com/${ROOM}`, source: 'arc' },
+      [[ROOM, null, 10 * 60_000]], 'idle', 1800),
+    { start: true, reason: 'resume' }],
   ['either key hitting is enough (stale title, fresh room)',
     () => gate({ roomCode: ROOM, title: TITLE },
       [[null, TITLE, 5 * HOUR], [ROOM, null, 10 * 60_000]], 'idle', 1800),
@@ -188,12 +217,20 @@ const CASES = [
       const head = IN_MEET.slice(0, g);
       return g >= 0 && !/pickEventForActiveMeet\(|fetchCandidates\(|listEvents\(/.test(head);
     }, true],
-  ['activeMeet start remembers the signal title; start and stop remember the meeting',
+  ['the gate matches the signal with its source (or titles could never resume)',
+    () => /isResumingMeet\(\s*\{[^}]*title:\s*signal\.title,\s*source:\s*signal\.source/.test(IN_MEET),
+    true],
+  ['activeMeet start remembers the signal title (via its source); startRecording the room',
     () => [
-      /rememberMeet\(resumeKeys\([^)]*signal\.title/.test(IN_MEET),
+      START_KEYS !== null && IN_MEET.includes(`rememberMeet(${START_KEYS})`),
       bodyOf('async function startRecording(').includes('rememberMeet('),
-      bodyOf('async function stopRecording(').includes('rememberMeet('),
-    ], [true, true, true]],
+    ], [true, true]],
+  // Without this, a meeting running past 4 h from its start loses the title
+  // key exactly when a late restart needs it.
+  ['stop refreshes the start\'s keys, title included, not just the room',
+    () => KEYS_MAP !== null
+      && new RegExp(`rememberMeet\\([^;]*${KEYS_MAP}\\.get\\(eventId\\)`).test(STOP),
+    true],
   ['the resume memory is found in rememberMeet (by behaviour, not by name)',
     () => MEM !== null, true],
   ['the inMeet=false branch never forgets meetings (a misread passes through it)',
