@@ -19,6 +19,13 @@
 // Only the activeMeet AUTO-START consults this. Manual starts, the calendar
 // trigger, and every stop path (tab closed, endsAt, overrun, suspend) are
 // untouched — once a recording is running, presence no longer matters.
+//
+// A RESTART is not a fresh join. A recording can stop mid-meeting (a
+// tab-closed misread, an inconclusive probe at endsAt, the overrun cap), and
+// the detector retries only after whisper + summary finish — by which time
+// someone who is just listening has easily been hands-off for 5 minutes, or
+// has locked the screen with headphones on. So a room this Mac recorded
+// recently bypasses the gate entirely, locked included.
 
 /** Same union Electron's `powerMonitor.getSystemIdleState()` returns. */
 export type SystemIdleState = 'active' | 'idle' | 'locked' | 'unknown';
@@ -31,6 +38,30 @@ export type SystemIdleState = 'active' | 'idle' | 'locked' | 'unknown';
  */
 export const ACTIVE_MEET_IDLE_THRESHOLD_SECS = 5 * 60;
 
+/**
+ * How long a room this Mac recorded keeps bypassing the gate. Recurring
+ * meetings reuse one Meet code, so it can't be forever — otherwise last
+ * week's recording here would wave this week's synced tab through. 4 h
+ * matches the longest event the recorder will auto-record.
+ */
+export const ACTIVE_MEET_RESUME_WINDOW_MS = 4 * 60 * 60_000;
+
+/**
+ * Did this Mac record `roomCode` (start or stop) within the resume window?
+ * `recentRooms` maps Meet code → ms of the last start/stop here. A signal
+ * with no room code can't be matched, so it never counts as a resume.
+ */
+export function isResumingRoom(
+  roomCode: string | null | undefined,
+  recentRooms: ReadonlyMap<string, number>,
+  now: number,
+  windowMs: number = ACTIVE_MEET_RESUME_WINDOW_MS,
+): boolean {
+  if (!roomCode) return false;
+  const at = recentRooms.get(roomCode);
+  return at !== undefined && now - at < windowMs;
+}
+
 export interface PresenceSample {
   /** `powerMonitor.getSystemIdleState(threshold)`; 'unknown' if it threw. */
   idleState: SystemIdleState;
@@ -39,13 +70,21 @@ export interface PresenceSample {
 }
 
 export type PresenceVerdict =
-  | { start: true; reason: 'active' | 'unknown' }
+  | { start: true; reason: 'active' | 'unknown' | 'resume' }
   | { start: false; reason: 'locked' | 'idle' };
+
+export interface PresenceOptions {
+  /** isResumingRoom() for the signal's room — restarts skip the gate. */
+  resuming?: boolean;
+  thresholdSecs?: number;
+}
 
 export function judgeActiveMeetPresence(
   sample: PresenceSample,
-  thresholdSecs: number = ACTIVE_MEET_IDLE_THRESHOLD_SECS,
+  { resuming = false, thresholdSecs = ACTIVE_MEET_IDLE_THRESHOLD_SECS }: PresenceOptions = {},
 ): PresenceVerdict {
+  // Checked first, so it wins over 'locked' and 'idle' alike.
+  if (resuming) return { start: true, reason: 'resume' };
   if (sample.idleState === 'locked') return { start: false, reason: 'locked' };
   // 'unknown' means the OS couldn't say — not that nobody is there. Start
   // anyway: a duplicate empty recording on the other Mac is the nuisance
