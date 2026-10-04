@@ -27,7 +27,7 @@ const built = await esbuild.build({
   alias: { '@shared': path.join(ROOT, 'src/shared') },
 });
 const {
-  judgeActiveMeetPresence, isResumingRoom,
+  judgeActiveMeetPresence, isResumingMeet, resumeKeys,
   ACTIVE_MEET_IDLE_THRESHOLD_SECS: T, ACTIVE_MEET_RESUME_WINDOW_MS: W,
 } = await import(
   'data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64')
@@ -36,14 +36,25 @@ const {
 const judge = (idleState, idleSecs, thresholdSecs) =>
   judgeActiveMeetPresence({ idleState, idleSecs }, { thresholdSecs });
 
-// The whole gate as meetRecorder runs it: room memory → verdict.
+// The whole gate as meetRecorder runs it: memory → verdict. `recorded`
+// lists what this Mac recorded, as [roomCode, title, msAgo]; it is stored
+// through resumeKeys() exactly as meetRecorder's rememberMeet() stores it.
 const NOW = Date.parse('2026-10-05T10:00:00Z');
 const HOUR = 60 * 60_000;
-const gate = (room, recent, idleState, idleSecs) =>
+const memory = (recorded) => {
+  const m = new Map();
+  for (const [room, title, ago] of recorded) {
+    for (const k of resumeKeys(room, title)) m.set(k, NOW - ago);
+  }
+  return m;
+};
+const gate = (signal, recorded, idleState, idleSecs) =>
   judgeActiveMeetPresence(
     { idleState, idleSecs },
-    { resuming: isResumingRoom(room, new Map(Object.entries(recent)), NOW) },
+    { resuming: isResumingMeet(signal, memory(recorded), NOW) },
   );
+const ROOM = 'abc-defg-hij';
+const TITLE = 'Meet - abc-defg-hij';
 
 // The wiring, read from source. judgeActiveMeetPresence being right is no
 // use if the call goes missing or moves off the one path it guards, and
@@ -56,6 +67,18 @@ const bodyOf = (signature) => {
 };
 const HANDLE = bodyOf('async function handleMeetSignal(');
 const IN_MEET = HANDLE.slice(0, HANDLE.indexOf('} else {'));
+const LEFT_MEET = HANDLE.slice(HANDLE.indexOf('} else {'));
+// The resume memory is whatever rememberMeet() writes to, found by what the
+// code does rather than by the variable's name, so a rename can't blind
+// the inMeet=false check. Any function that clears or deletes from it,
+// other than rememberMeet's own TTL prune, counts as a way to forget.
+const REMEMBER = bodyOf('function rememberMeet(');
+const MEM = /for \(const k of keys\) (\w+)\.set\(/.exec(REMEMBER)?.[1] ?? null;
+const forgetsIn = (code) => MEM !== null
+  && new RegExp(`\\b${MEM}\\s*(\\.\\s*(clear|delete)\\s*\\(|=(?!=))`).test(code);
+const FORGETTERS = MEM === null ? [] : [...REC.matchAll(/function (\w+)\(/g)]
+  .map((m) => m[1])
+  .filter((name) => name !== 'rememberMeet' && forgetsIn(bodyOf(`function ${name}(`)));
 
 const CASES = [
   // The threshold itself — the Settings hint and the log line both quote it.
@@ -95,31 +118,59 @@ const CASES = [
 
   // Restarts. A recording that stops mid-meeting is retried only after
   // whisper + summary finish; a listener is hands-off (or locked, with
-  // headphones on) by then. A room this Mac recorded recently must start.
+  // headphones on) by then. A meeting this Mac recorded recently must start.
   ['the resume window is 4 hours',
     () => W, 4 * HOUR],
   ['same room recorded here within the window, now idle → start (resume)',
-    () => gate('abc-defg-hij', { 'abc-defg-hij': NOW - 20 * 60_000 }, 'idle', 1800),
+    () => gate({ roomCode: ROOM }, [[ROOM, null, 20 * 60_000]], 'idle', 1800),
     { start: true, reason: 'resume' }],
   ['same room recorded here within the window, now locked → start (resume)',
-    () => gate('abc-defg-hij', { 'abc-defg-hij': NOW - 20 * 60_000 }, 'locked', 1800),
+    () => gate({ roomCode: ROOM }, [[ROOM, null, 20 * 60_000]], 'locked', 1800),
     { start: true, reason: 'resume' }],
   // Recurring meetings reuse their code, so last week's recording here must
   // not wave this week's synced tab through.
   ['same room but recorded exactly 4h ago → gated as usual (idle skips)',
-    () => gate('abc-defg-hij', { 'abc-defg-hij': NOW - W }, 'idle', 1800),
+    () => gate({ roomCode: ROOM }, [[ROOM, null, W]], 'idle', 1800),
     { start: false, reason: 'idle' }],
   ['same room recorded a week ago → gated as usual (locked skips)',
-    () => gate('abc-defg-hij', { 'abc-defg-hij': NOW - 7 * 24 * HOUR }, 'locked', 5),
+    () => gate({ roomCode: ROOM }, [[ROOM, null, 7 * 24 * HOUR]], 'locked', 5),
     { start: false, reason: 'locked' }],
   ['a different room than the one recorded here → gated as usual',
-    () => gate('xyz-wxyz-xyz', { 'abc-defg-hij': NOW - 20 * 60_000 }, 'idle', 1800),
+    () => gate({ roomCode: 'xyz-wxyz-xyz' }, [[ROOM, null, 20 * 60_000]], 'idle', 1800),
     { start: false, reason: 'idle' }],
-  ['no room code on the signal → never a resume',
-    () => gate(null, { 'abc-defg-hij': NOW - 60_000 }, 'idle', 1800),
+  ['no room code and no title on the signal → never a resume',
+    () => gate({}, [[ROOM, TITLE, 60_000]], 'idle', 1800),
     { start: false, reason: 'idle' }],
   ['a resume still starts when someone is active anyway',
-    () => gate('abc-defg-hij', { 'abc-defg-hij': NOW - 60_000 }, 'active', 2),
+    () => gate({ roomCode: ROOM }, [[ROOM, null, 60_000]], 'active', 2),
+    { start: true, reason: 'resume' }],
+
+  // Title-only signals: the System Events pass reports "Meet - …" with no
+  // URL whenever the Meet tab is in front, so the title is often all a
+  // restart can be matched by.
+  ['title-only restart of a title recorded here, now idle → start (resume)',
+    () => gate({ title: TITLE }, [[null, TITLE, 30 * 60_000]], 'idle', 2400),
+    { start: true, reason: 'resume' }],
+  ['title-only restart of a title recorded here, now locked → start (resume)',
+    () => gate({ title: TITLE }, [[null, TITLE, 30 * 60_000]], 'locked', 2400),
+    { start: true, reason: 'resume' }],
+  ['title recorded here exactly 4h ago → gated as usual',
+    () => gate({ title: TITLE }, [[null, TITLE, W]], 'idle', 1800),
+    { start: false, reason: 'idle' }],
+  ['a different title than the one recorded here → gated as usual',
+    () => gate({ title: 'Meet - Weekly sync' }, [[null, TITLE, 30 * 60_000]], 'locked', 5),
+    { start: false, reason: 'locked' }],
+  ['the synced Mac: same title arrives, but it recorded nothing → gated',
+    () => gate({ title: TITLE }, [], 'idle', 3600),
+    { start: false, reason: 'idle' }],
+  ['a title never matches a room key, or the reverse',
+    () => [
+      gate({ title: ROOM }, [[ROOM, null, 60_000]], 'idle', 1800).start,
+      gate({ roomCode: TITLE }, [[null, TITLE, 60_000]], 'idle', 1800).start,
+    ], [false, false]],
+  ['either key hitting is enough (stale title, fresh room)',
+    () => gate({ roomCode: ROOM, title: TITLE },
+      [[null, TITLE, 5 * HOUR], [ROOM, null, 10 * 60_000]], 'idle', 1800),
     { start: true, reason: 'resume' }],
 
   // Wiring tripwires (source-level; see REC above).
@@ -131,13 +182,23 @@ const CASES = [
     }, true],
   ['the gate is called on that one path only',
     () => REC.split('judgeActiveMeetPresence(').length - 1, 1],
-  ['start and stop both record the room for resume',
+  ['no calendar lookup before the gate (it runs every tick on the idle Mac)',
+    () => {
+      const g = IN_MEET.indexOf('judgeActiveMeetPresence(');
+      const head = IN_MEET.slice(0, g);
+      return g >= 0 && !/pickEventForActiveMeet\(|fetchCandidates\(|listEvents\(/.test(head);
+    }, true],
+  ['activeMeet start remembers the signal title; start and stop remember the meeting',
     () => [
-      bodyOf('async function startRecording(').includes('rememberRoom('),
-      bodyOf('async function stopRecording(').includes('rememberRoom('),
-    ], [true, true]],
-  ['the inMeet=false branch never forgets rooms (a misread passes through it)',
-    () => /recentRoomsOnThisMac\.(clear|delete)\(/.test(HANDLE), false],
+      /rememberMeet\(resumeKeys\([^)]*signal\.title/.test(IN_MEET),
+      bodyOf('async function startRecording(').includes('rememberMeet('),
+      bodyOf('async function stopRecording(').includes('rememberMeet('),
+    ], [true, true, true]],
+  ['the resume memory is found in rememberMeet (by behaviour, not by name)',
+    () => MEM !== null, true],
+  ['the inMeet=false branch never forgets meetings (a misread passes through it)',
+    () => forgetsIn(LEFT_MEET) || FORGETTERS.some((f) => LEFT_MEET.includes(`${f}(`)),
+    false],
 
   // The threshold is a parameter, not baked into the comparison.
   ['a custom threshold is honoured',

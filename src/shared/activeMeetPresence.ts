@@ -24,8 +24,9 @@
 // tab-closed misread, an inconclusive probe at endsAt, the overrun cap), and
 // the detector retries only after whisper + summary finish — by which time
 // someone who is just listening has easily been hands-off for 5 minutes, or
-// has locked the screen with headphones on. So a room this Mac recorded
-// recently bypasses the gate entirely, locked included.
+// has locked the screen with headphones on. So a meeting this Mac recorded
+// recently (same room code or same tab title) bypasses the gate entirely,
+// locked included.
 
 /** Same union Electron's `powerMonitor.getSystemIdleState()` returns. */
 export type SystemIdleState = 'active' | 'idle' | 'locked' | 'unknown';
@@ -39,27 +40,48 @@ export type SystemIdleState = 'active' | 'idle' | 'locked' | 'unknown';
 export const ACTIVE_MEET_IDLE_THRESHOLD_SECS = 5 * 60;
 
 /**
- * How long a room this Mac recorded keeps bypassing the gate. Recurring
- * meetings reuse one Meet code, so it can't be forever — otherwise last
- * week's recording here would wave this week's synced tab through. 4 h
- * matches the longest event the recorder will auto-record.
+ * How long a meeting this Mac recorded keeps bypassing the gate. Recurring
+ * meetings reuse one Meet code and usually one tab title, so it can't be
+ * forever — otherwise last week's recording here would wave this week's
+ * synced tab through. 4 h matches the longest event the recorder will
+ * auto-record.
  */
 export const ACTIVE_MEET_RESUME_WINDOW_MS = 4 * 60 * 60_000;
 
 /**
- * Did this Mac record `roomCode` (start or stop) within the resume window?
- * `recentRooms` maps Meet code → ms of the last start/stop here. A signal
- * with no room code can't be matched, so it never counts as a resume.
+ * The keys a meeting is remembered by: its Meet room code and the tab title
+ * the detector reported. Both, because the detector often reports only a
+ * "Meet - …" window title with no URL (its System Events pass runs first and
+ * wins whenever the Meet tab is in front), so a code alone would miss most
+ * restarts. A synced tab carries the same title onto the other Mac, but that
+ * Mac never recorded it, so it never has the key.
  */
-export function isResumingRoom(
+export function resumeKeys(
   roomCode: string | null | undefined,
-  recentRooms: ReadonlyMap<string, number>,
+  title: string | null | undefined,
+): string[] {
+  const keys: string[] = [];
+  if (roomCode) keys.push(`room:${roomCode}`);
+  const t = title?.trim();
+  if (t) keys.push(`title:${t}`);
+  return keys;
+}
+
+/**
+ * Did this Mac record this meeting (start or stop) within the resume window?
+ * `recent` maps resumeKeys() → ms of the last start/stop here; a hit on the
+ * room code OR the title is enough. No code and no title → never a resume.
+ */
+export function isResumingMeet(
+  meet: { roomCode?: string | null; title?: string | null },
+  recent: ReadonlyMap<string, number>,
   now: number,
   windowMs: number = ACTIVE_MEET_RESUME_WINDOW_MS,
 ): boolean {
-  if (!roomCode) return false;
-  const at = recentRooms.get(roomCode);
-  return at !== undefined && now - at < windowMs;
+  return resumeKeys(meet.roomCode, meet.title).some((k) => {
+    const at = recent.get(k);
+    return at !== undefined && now - at < windowMs;
+  });
 }
 
 export interface PresenceSample {
@@ -74,7 +96,7 @@ export type PresenceVerdict =
   | { start: false; reason: 'locked' | 'idle' };
 
 export interface PresenceOptions {
-  /** isResumingRoom() for the signal's room — restarts skip the gate. */
+  /** isResumingMeet() for the signal — restarts skip the gate. */
   resuming?: boolean;
   thresholdSecs?: number;
 }
