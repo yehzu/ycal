@@ -53,6 +53,9 @@ import {
   onMeetChange, probeMeetCodeOpen, startMeetDetector, stopMeetDetector,
 } from './meetDetector';
 import { rlog, rtrace } from './recorderLog';
+import {
+  ACTIVE_MEET_IDLE_THRESHOLD_SECS, type PresenceSample, judgeActiveMeetPresence,
+} from '@shared/activeMeetPresence';
 
 // Re-export for index.ts → IPC plumbing. Keeps meetRecorder.ts as the
 // single entry point for "everything recorder" without index needing to
@@ -240,6 +243,10 @@ let detectorUnsub: (() => void) | null = null;
 // When the activeMeet detector last stopped a recording. Used to skip
 // auto-restart inside ACTIVE_MEET_COOLDOWN_MS. Cleared on manual start.
 let lastActiveMeetStopAt = 0;
+// Reason the presence gate last skipped an activeMeet auto-start, so the
+// skip is logged once per stretch rather than on every detector tick.
+// Cleared when a start goes through and when the Meet signal drops.
+let lastPresenceSkipReason: 'locked' | 'idle' | null = null;
 // Set in startMeetRecorder so we unhook on stopMeetRecorder.
 let powerHandlersBound = false;
 
@@ -916,9 +923,32 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
       console.log(`[yCal recorder] in-Meet signal ignored — cooldown ${Math.round(sinceStop / 1000)}s/${ACTIVE_MEET_COOLDOWN_MS / 1000}s`);
       return;
     }
+    // Presence gate: only the Mac somebody is using records. A Meet tab
+    // synced over from another Mac (Arc) looks identical to a real join,
+    // so check that this Mac is unlocked and recently touched. See
+    // @shared/activeMeetPresence for the 'unknown' → start trade-off.
+    const presence = sampleUserPresence();
+    const verdict = judgeActiveMeetPresence(presence);
+    const presenceDetail = `idleState=${presence.idleState} idleSecs=${Number.isFinite(presence.idleSecs) ? Math.round(presence.idleSecs) : 'n/a'} thresholdSecs=${ACTIVE_MEET_IDLE_THRESHOLD_SECS}`;
+    if (!verdict.start) {
+      // The detector re-signals every 10s while the tab stays open; log
+      // the skip once per reason, not once per tick.
+      if (lastPresenceSkipReason !== verdict.reason) {
+        lastPresenceSkipReason = verdict.reason;
+        const line = `activeMeet auto-start skipped — nobody at this Mac (${verdict.reason}): ${presenceDetail}`;
+        console.log(`[yCal recorder] ${line}`);
+        rlog(line);
+      }
+      return;
+    }
+    lastPresenceSkipReason = null;
+    if (verdict.reason === 'unknown') {
+      rlog(`activeMeet presence unknown — starting anyway: ${presenceDetail}`);
+    }
     const event = await pickEventForActiveMeet(ui, signal);
     void startRecording(event);
   } else {
+    lastPresenceSkipReason = null;
     // Tab-closed signal. The global probe lost the Meet — but that could
     // be a brief glitch (osascript timeout in a busy multi-tab browser,
     // hidden window state, etc.) rather than the user actually leaving.
@@ -979,6 +1009,24 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     // confirmed it). Forget any room-codes we'd blocked from earlier
     // failed starts so the next rejoin gets a fresh try.
     if (failedMeetCodes.size > 0) failedMeetCodes.clear();
+  }
+}
+
+// Read keyboard/mouse idle time and lock state from Electron. Electron has
+// no "is the display on" query, so idle + 'locked' stand in for it:
+// automatic display sleep only happens after the display-sleep timer runs
+// out (so idle time is at least that long), and a Mac set to require a
+// password after display sleep locks, which reads as 'locked'. A throw
+// becomes 'unknown', which judgeActiveMeetPresence treats as "start".
+function sampleUserPresence(): PresenceSample {
+  try {
+    return {
+      idleState: powerMonitor.getSystemIdleState(ACTIVE_MEET_IDLE_THRESHOLD_SECS),
+      idleSecs: powerMonitor.getSystemIdleTime(),
+    };
+  } catch (e) {
+    console.error('[yCal recorder] powerMonitor idle probe failed', e);
+    return { idleState: 'unknown', idleSecs: NaN };
   }
 }
 

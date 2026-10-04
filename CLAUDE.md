@@ -132,10 +132,11 @@ npm run dist             # build signed dmg + zip (needs codesign setup)
 
 **The validation loop is `npm run typecheck && npm run build`.** No test runner, no linter — keep changes small enough to verify by reading and by running the result.
 
-**The exceptions are the two suites under `tests/`, both frameworkless, and both covering the same failure mode: silent and wrong rather than loud and broken.**
+**The exceptions are the three suites under `tests/`, all frameworkless, and all covering the same failure mode: silent and wrong rather than loud and broken.**
 
 - **`npm run test:watch`** — the change detection behind `ycal watch`, whose way of being wrong is reporting a cancellation that never happened. 19 golden-file cases in `tests/watch/`: each is a `.jsonl` of recorded snapshots plus the events they must produce, replayed through the real code by `ycal watch --replay`. Run after touching `src/shared/calendarWatch.ts`.
 - **`npm run test:targets`** — which (account, calendar) pairs a query reads, whose way of being wrong is the watcher watching a wider set than the agenda shows, so somebody else's calendar churn arrives as your own. `tests/targets/check.mjs` calls the pure `resolveTargets` directly (esbuild supplies only the `@shared/*` alias). Run after touching `src/main/calendarTargets.ts` or the role predicates in `@shared/types`.
+- **`npm run test:presence`** — whether an activeMeet auto-start goes ahead on this Mac, whose way of being wrong is either an empty duplicate recording on the Mac that only received a synced Meet tab (Arc), or — worse — skipping a real meeting. `tests/presence/check.mjs` calls the pure `judgeActiveMeetPresence` (`@shared/activeMeetPresence`) with sampled `powerMonitor` values: locked or idle ≥ `ACTIVE_MEET_IDLE_THRESHOLD_SECS` skips, `unknown` starts. Run after touching that file or the gate in `meetRecorder.ts#handleMeetSignal`.
 
 ## CLI architecture (the recently-added bit)
 
@@ -285,6 +286,7 @@ Two decisions worth not re-litigating:
 - **CLI subcommand** → add a `cmdFoo(args, io)` to `src/main/cli.ts`, wire into `runCli`'s switch, document in the `helpText` string and in `README.md`. If it can outlast 30 s, `bin/ycal` needs to know (streaming + budget).
 - **A new setting the CLI should reach** → an entry in `src/main/configKeys.ts` (type, default mirroring `App.tsx`, `secret` if it is a credential). The setter branch in `settings.ts#setUiSettings` must exist too, or the write is silently dropped.
 - **Change-detection rule** → `src/shared/calendarWatch.ts`, plus a case in `tests/watch/` (add it to `build-cases.mjs`, review the output, then bless).
+- **When an activeMeet auto-start is allowed** → `src/shared/activeMeetPresence.ts` (pure; main samples `powerMonitor`), plus a case in `tests/presence/check.mjs`. Manual starts, the calendar trigger and every stop path stay outside it.
 - **Which calendars a query reads** → `src/main/calendarTargets.ts`, plus a case in `tests/targets/check.mjs`. A role that means "somebody else's calendar" belongs in `isReadOnlyRole` (`@shared/types`), which main and renderer both read — never re-tested inline.
 
 ## Release flow
