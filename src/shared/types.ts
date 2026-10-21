@@ -355,6 +355,12 @@ export interface RecorderMeetSignal {
   source: string | null;
   // Epoch ms of the most recent probe (whether positive or negative).
   lastProbedAt: number;
+  // Whether a browser on this Mac had the mic open at the last probe that
+  // saw a Meet tab (native/mic-usage). null when the probe couldn't answer
+  // or no tab was seen, in which case inMeet is the tab-only signal. An
+  // inMeet=false carrying micInCall=false means "the tab may still be open,
+  // but the call is over": the recorder stops on it without re-probing tabs.
+  micInCall?: boolean | null;
 }
 
 // A finished recording sitting on disk under ~/Recordings/yCal/. The

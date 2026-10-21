@@ -2131,7 +2131,7 @@ function PrefsRecording({
         label="Trigger"
         hint={
           trigger === 'activeMeet'
-            ? `Recording follows your actual Google Meet tab: starts when you join, stops ~90s after you leave. Meetings that delay or overrun are captured fully. Only starts on a Mac you're using — not one that's locked or untouched for ${ACTIVE_MEET_IDLE_THRESHOLD_SECS / 60} min — so a Meet tab synced from another Mac doesn't record twice. Needs Automation permission for System Events (macOS will prompt the first time).`
+            ? `Recording follows your actual Google Meet call: it starts when a Meet tab is open AND your browser has the microphone open (muted still counts), and stops ~90s after you leave — even if the tab stays open. Meetings that delay or overrun are captured fully. A Meet tab synced from another Mac never records, because that Mac's browser isn't using the mic. If the mic check isn't available, it falls back to the tab alone and only starts on a Mac you're using (not locked or untouched for ${ACTIVE_MEET_IDLE_THRESHOLD_SECS / 60} min). Needs Automation permission for System Events (macOS will prompt the first time).`
             : 'Recording uses calendar event times (start/end). Predictable but doesn\'t adapt to delays or overruns.'
         }
       >
@@ -3119,7 +3119,7 @@ function ActiveMeetDiagnostics() {
   // (a) what the probe last saw + when, and (b) a "Diagnose" button
   // that prints every visible process + bundle id + window title so we
   // can teach the detector new patterns without shipping a release.
-  const [signal, setSignal] = useState<{ inMeet: boolean; title: string | null; source: string | null; lastProbedAt: number } | null>(null);
+  const [signal, setSignal] = useState<{ inMeet: boolean; title: string | null; source: string | null; lastProbedAt: number; micInCall?: boolean | null } | null>(null);
   const [diag, setDiag] = useState<string>('');
   const [diagBusy, setDiagBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -3169,6 +3169,9 @@ function ActiveMeetDiagnostics() {
               source: <code>{signal.source}</code> · matched: <code>{signal.title}</code>
             </div>
           )}
+          <div className="pref-row-hint" style={{ marginTop: 0, paddingLeft: 18 }}>
+            browser mic: <code>{signal.micInCall == null ? 'n/a (tab only)' : signal.micInCall ? 'open' : 'closed'}</code>
+          </div>
         </div>
       ) : (
         <div className="pref-row-hint">Loading…</div>

@@ -53,6 +53,7 @@ import {
   onMeetChange, probeMeetCodeOpen, startMeetDetector, stopMeetDetector,
 } from './meetDetector';
 import { rlog, rtrace } from './recorderLog';
+import { MIC_USAGE_BIN } from './micUsage';
 import {
   ACTIVE_MEET_IDLE_THRESHOLD_SECS, ACTIVE_MEET_RESUME_WINDOW_MS, type PresenceSample,
   isResumingMeet, judgeActiveMeetPresence, resumeKeys,
@@ -84,7 +85,20 @@ const ACTIVE_MEET_COOLDOWN_MS = 3 * 60_000;
 // endsAt forward by this much and keep recording. Capped by
 // OVERRUN_MAX_MS so a forgotten tab can't run forever.
 const OVERRUN_EXTEND_MS = 15 * 60_000;
+// The cap above guards the tab-only fallback, where an open tab can't tell
+// a forgotten Meet from a long one. When the mic probe answers, a call is
+// only extended while a browser here still holds the mic, so it may run up
+// to this ceiling (counted from the start, also the ffmpeg `-t` cap so the
+// audio isn't truncated mid-extension).
 const OVERRUN_MAX_MS = 60 * 60_000;
+const ACTIVE_MEET_MAX_SECS = 4 * 60 * 60;
+// Stop reasons that END the current Meet stretch: once one of these stops
+// an activeMeet recording, the detector does not start another until the
+// signal drops (leave + rejoin). A stop for any other reason (suspend,
+// ffmpeg died, a tab misread) may be retried. Without this latch the
+// 2026-10-21 forgotten tab re-recorded every two hours all evening: hit
+// the cap → stop → cooldown → same tab still open → start again.
+const LATCHING_STOP_REASONS = new Set(['tick-endsAt-reached', 'manual-ipc', 'autoRecord-toggled-off']);
 // Safety cap for a MANUAL recording. The user starts these by hand (an
 // in-room conversation, a Zoom call) so yCal never auto-stops them on a
 // schedule or on Meet-presence — only a manual stop or this hard ffmpeg
@@ -155,6 +169,7 @@ function ensureHelpersInstalled(): void {
   const pairs: Array<[string | null, string, string]> = [
     [resolveBundled('native', 'coreaudio-tap'), TAP_BIN, 'coreaudio-tap'],
     [resolveBundled('native', 'voiceproc-mic'), VPIO_BIN, 'voiceproc-mic'],
+    [resolveBundled('native', 'mic-usage'), MIC_USAGE_BIN, 'mic-usage'],
     [scriptSource('record-meet.sh'), RECORD_SH, 'record-meet.sh'],
     [scriptSource('post-meet.sh'), POST_SH, 'post-meet.sh'],
     [scriptSource('diarize.py'), DIARIZE_PY, 'diarize.py'],
@@ -244,6 +259,9 @@ let detectorUnsub: (() => void) | null = null;
 // When the activeMeet detector last stopped a recording. Used to skip
 // auto-restart inside ACTIVE_MEET_COOLDOWN_MS. Cleared on manual start.
 let lastActiveMeetStopAt = 0;
+// Set when a LATCHING_STOP_REASONS stop ends a recording while the detector
+// still reports a Meet; blocks activeMeet auto-start until inMeet=false.
+let activeMeetLatched = false;
 // Reason the presence gate last skipped an activeMeet auto-start, so the
 // skip is logged once per stretch rather than on every detector tick.
 // Cleared when a start goes through and when the Meet signal drops.
@@ -836,7 +854,20 @@ async function tick(): Promise<void> {
     if (ui.recordingTrigger === 'activeMeet' && s.meetCode) {
       const original = s.originalEndsAt ?? s.endsAt;
       const totalExtension = s.endsAt - original;
-      if (totalExtension < OVERRUN_MAX_MS) {
+      const sig = getMeetSignal();
+      if (sig.micInCall != null) {
+        // Mic probe answering: the call is still on exactly while a browser
+        // here holds the mic, so extend on that alone, up to the ceiling.
+        const ceiling = s.startedAt + ACTIVE_MEET_MAX_SECS * 1000;
+        if (sig.inMeet && sig.micInCall && s.endsAt + OVERRUN_EXTEND_MS <= ceiling) {
+          if (s.originalEndsAt == null) s.originalEndsAt = original;
+          s.endsAt = s.endsAt + OVERRUN_EXTEND_MS;
+          rlog(`overrun(${id}) mic still open — extending to ${new Date(s.endsAt).toISOString()}`);
+          pushStatus();
+          continue;
+        }
+        rlog(`overrun(${id}) stopping — inMeet=${sig.inMeet} micInCall=${sig.micInCall} ceilingReached=${s.endsAt + OVERRUN_EXTEND_MS > ceiling}`);
+      } else if (totalExtension < OVERRUN_MAX_MS) {
         const stillOpen = await probeMeetCodeOpen(s.meetCode);
         if (stillOpen === true) {
           if (s.originalEndsAt == null) s.originalEndsAt = original;
@@ -916,6 +947,13 @@ async function tick(): Promise<void> {
 // nothing.
 
 async function handleMeetSignal(signal: MeetSignal): Promise<void> {
+  // Release the latch on ANY drop of the signal, before the trigger and
+  // toggle checks below can return — a latch set in calendar mode must not
+  // outlive the Meet it was set for.
+  if (!signal.inMeet && activeMeetLatched) {
+    activeMeetLatched = false;
+    rlog('activeMeet latch released — Meet signal dropped');
+  }
   const ui = getUiSettings();
   if (!ui.autoRecordMeetings) return;
   if (ui.recordingTrigger !== 'activeMeet') return;
@@ -931,6 +969,9 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     // (script broken, mic permission denied, etc.), don't keep spamming
     // start attempts every 10s — wait until the user leaves and rejoins
     // (the inMeet=false transition clears failedMeetCodes).
+    // This stretch already ended by cap / manual stop — wait for the signal
+    // to drop before recording this Meet again (see LATCHING_STOP_REASONS).
+    if (activeMeetLatched) return;
     const signalCode = extractMeetCode(signal.title) ?? undefined;
     if (signalCode && failedMeetCodes.has(signalCode)) {
       console.log(`[yCal recorder] in-Meet signal ignored — ${signalCode} previously failed; leave + rejoin to retry`);
@@ -958,8 +999,8 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
       recentMeetsOnThisMac, Date.now(),
     );
     const presence = sampleUserPresence();
-    const verdict = judgeActiveMeetPresence(presence, { resuming });
-    const presenceDetail = `room=${signalCode ?? 'n/a'} source=${signal.source ?? 'n/a'} title=${JSON.stringify(signal.title ?? '')} idleState=${presence.idleState} idleSecs=${Number.isFinite(presence.idleSecs) ? Math.round(presence.idleSecs) : 'n/a'} thresholdSecs=${ACTIVE_MEET_IDLE_THRESHOLD_SECS}`;
+    const verdict = judgeActiveMeetPresence(presence, { resuming, micInCall: signal.micInCall });
+    const presenceDetail = `room=${signalCode ?? 'n/a'} source=${signal.source ?? 'n/a'} mic=${signal.micInCall ?? 'n/a'} title=${JSON.stringify(signal.title ?? '')} idleState=${presence.idleState} idleSecs=${Number.isFinite(presence.idleSecs) ? Math.round(presence.idleSecs) : 'n/a'} thresholdSecs=${ACTIVE_MEET_IDLE_THRESHOLD_SECS}`;
     if (!verdict.start) {
       // The detector re-signals every 10s while the tab stays open; log
       // the skip once per reason, not once per tick.
@@ -985,7 +1026,7 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
     const startKeys = resumeKeys(signalCode, signal.title, signal.source);
     activeMeetKeysByEventId.set(event.id, startKeys);
     rememberMeet(startKeys);
-    void startRecording(event);
+    void startRecording(event, { activeMeet: true });
   } else {
     lastPresenceSkipReason = null;
     // Tab-closed signal. The global probe lost the Meet — but that could
@@ -1015,6 +1056,16 @@ async function handleMeetSignal(signal: MeetSignal): Promise<void> {
       // NOT mean the user's recording should end. Leave it to the user.
       if (s.manual) {
         rlog(`inMeet=false ignored for ${id} — manual recording, user-controlled`);
+        continue;
+      }
+
+      // The mic probe saw the browser release the mic: the call is over,
+      // even if the tab (a "You left the meeting" page) is still open.
+      // Authoritative, so neither the tab probe nor the calendar window
+      // below may keep this recording alive.
+      if (signal.micInCall === false) {
+        void stopRecording(id, 'inMeet-false-mic-released');
+        stoppedAny = true;
         continue;
       }
 
@@ -1288,7 +1339,7 @@ function writeRecordingContext(
 
 async function startRecording(
   ev: CalendarEvent,
-  opts: { manual?: boolean } = {},
+  opts: { manual?: boolean; activeMeet?: boolean } = {},
 ): Promise<void> {
   const manual = opts.manual === true;
   const endsAt = Date.parse(ev.end);
@@ -1305,8 +1356,13 @@ async function startRecording(
   // hand), so give them the long safety cap rather than event-duration +
   // slack — otherwise an in-room chat that overruns its calendar block, or
   // a manual start on an already-ended event, would self-terminate early.
+  // An activeMeet start is stopped by the detector or the overrun ceiling,
+  // so ffmpeg gets that ceiling: event-duration + slack would cut the audio
+  // the moment an overrun extension ran past the slack.
   const maxSecs = manual
     ? MANUAL_MAX_SECS
+    : opts.activeMeet
+    ? ACTIVE_MEET_MAX_SECS
     : Math.max(
         Math.ceil((remainingMs + STOP_SLACK_MS) / 1000),
         MIN_RUNWAY_SECS,
@@ -1449,6 +1505,13 @@ async function stopRecording(eventId: string, reason = 'unspecified'): Promise<v
   // late restart needs it.
   rememberMeet([...resumeKeys(status.meetCode, null, null), ...(activeMeetKeysByEventId.get(eventId) ?? [])]);
   activeMeetKeysByEventId.delete(eventId);
+  // Every stop starts the activeMeet cooldown — not just the inMeet=false
+  // path, or a cap stop is followed by a restart seconds later.
+  lastActiveMeetStopAt = Date.now();
+  if (LATCHING_STOP_REASONS.has(reason) && getMeetSignal().inMeet) {
+    activeMeetLatched = true;
+    rlog(`activeMeet latched after ${reason} — no auto-start until the Meet signal drops`);
+  }
   // Move out of 'recording' immediately so concurrent ticks don't try
   // to start/stop again.
   status.state = 'processing';
@@ -1835,6 +1898,7 @@ function startHealthMonitor(eventId: string): void {
   let warnedOnce = false;
   let ticks = 0;            // HEALTH_TICK_MS ticks since start (for cadence)
   let lastFreezeSnapAt = 0; // throttle the forensic snapshot while frozen
+  let ffmpegDeadBeats = 0;  // consecutive heartbeats that found ffmpeg gone
   const timer = setInterval(() => {
     ticks++;
     const status = recordings.get(eventId);
@@ -1863,7 +1927,19 @@ function startHealthMonitor(eventId: string): void {
     // per-process liveness, so a frozen recording leaves a readable trail in
     // recorder.log instead of going dark. Cheap; bounded (one line/min).
     if (ticks % 4 === 0) {
-      rlog(`health(${eventId}) sizeMB=${(newest.size / 1e6).toFixed(1)} bytesPerSec=${Math.round(bytesPerSec)} ffmpegAlive=${pidAliveFor(eventId, '.pid')} tapAlive=${pidAliveFor(eventId, '.tap.pid')}`);
+      const ffmpegAlive = pidAliveFor(eventId, '.pid');
+      rlog(`health(${eventId}) sizeMB=${(newest.size / 1e6).toFixed(1)} bytesPerSec=${Math.round(bytesPerSec)} ffmpegAlive=${ffmpegAlive} tapAlive=${pidAliveFor(eventId, '.tap.pid')}`);
+      // ffmpeg gone means nothing is being recorded, whatever the status
+      // row says. On 2026-10-21 ffmpeg died ~20 min into a recording that
+      // then stayed "recording" for another 100 min. Two beats (~2 min) so
+      // a pid-file race at start can't trip it; finalize what was captured.
+      // Not a latching stop: if the call is still on, activeMeet restarts.
+      ffmpegDeadBeats = ffmpegAlive === false ? ffmpegDeadBeats + 1 : 0;
+      if (ffmpegDeadBeats >= 2) {
+        rlog(`health(${eventId}) ffmpeg exited — finalizing the recording`);
+        void stopRecording(eventId, 'ffmpeg-exited');
+        return;
+      }
     }
 
     if (bytesPerSec < SILENT_BPS_THRESHOLD) {

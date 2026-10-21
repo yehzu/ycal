@@ -16,6 +16,12 @@
 // (tests/presence/check.mjs). The renderer reads the threshold for the
 // Settings hint, which is why this lives in @shared.
 //
+// The keyboard is the FALLBACK. The primary signal is the browser holding
+// the mic (native/mic-usage → browserCapturingMic): the synced-tab Mac's
+// browser never opens it, and a listener's does even while muted and
+// locked. Presence and the resume bypass below decide only when that probe
+// can't answer (pre-14 macOS, helper missing).
+//
 // Only the activeMeet AUTO-START consults this. Manual starts, the calendar
 // trigger, and every stop path (tab closed, endsAt, overrun, suspend) are
 // untouched — once a recording is running, presence no longer matters.
@@ -99,19 +105,65 @@ export interface PresenceSample {
 }
 
 export type PresenceVerdict =
-  | { start: true; reason: 'active' | 'unknown' | 'resume' }
+  | { start: true; reason: 'mic' | 'active' | 'unknown' | 'resume' }
   | { start: false; reason: 'locked' | 'idle' };
 
 export interface PresenceOptions {
   /** isResumingMeet() for the signal — restarts skip the gate. */
   resuming?: boolean;
+  /**
+   * browserCapturingMic() for this Mac, or null when the mic-usage probe
+   * couldn't answer. True is proof on its own: the synced-tab Mac's browser
+   * never opens the mic. The detector doesn't report a Meet whose browser
+   * has the mic closed, so false never reaches the gate.
+   */
+  micInCall?: boolean | null;
   thresholdSecs?: number;
+}
+
+/**
+ * Bundle-id prefixes of the browsers (and their audio helper processes) a
+ * Meet call runs in. Chromium browsers capture through a shared
+ * `…helper` AudioService process; Safari through com.apple.WebKit.GPU.
+ * yCal's own ffmpeg / voiceproc-mic carry no bundle id, so they never match.
+ */
+export const MEET_BROWSER_BUNDLE_PREFIXES = [
+  'company.thebrowser.',   // Arc
+  'com.google.Chrome',     // Chrome + Meet PWA app shims
+  'com.microsoft.edgemac',
+  'com.brave.Browser',
+  'com.vivaldi.Vivaldi',
+  'com.operasoftware.',
+  'org.mozilla.firefox',
+  'com.apple.Safari',
+  'com.apple.WebKit.GPU',
+] as const;
+
+/** One row of native/mic-usage's output. */
+export interface AudioProcess {
+  pid: number;
+  bundleId: string;
+  input: boolean;
+  output: boolean;
+}
+
+/**
+ * Is a browser on this Mac capturing the microphone? An open Meet tab says
+ * only that a tab exists; a browser holding the mic says somebody is in a
+ * call here. Muting in Meet keeps the capture open, leaving releases it.
+ */
+export function browserCapturingMic(processes: readonly AudioProcess[]): boolean {
+  return processes.some((p) => p.input
+    && MEET_BROWSER_BUNDLE_PREFIXES.some((prefix) => p.bundleId.startsWith(prefix)));
 }
 
 export function judgeActiveMeetPresence(
   sample: PresenceSample,
-  { resuming = false, thresholdSecs = ACTIVE_MEET_IDLE_THRESHOLD_SECS }: PresenceOptions = {},
+  { resuming = false, micInCall = null, thresholdSecs = ACTIVE_MEET_IDLE_THRESHOLD_SECS }: PresenceOptions = {},
 ): PresenceVerdict {
+  // A browser holding the mic on THIS Mac is the meeting itself, whatever
+  // the keyboard says — a listener with the screen locked included.
+  if (micInCall === true) return { start: true, reason: 'mic' };
   // Checked first, so it wins over 'locked' and 'idle' alike.
   if (resuming) return { start: true, reason: 'resume' };
   if (sample.idleState === 'locked') return { start: false, reason: 'locked' };

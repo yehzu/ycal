@@ -16,6 +16,13 @@
 // faster cadence in-session so we react to the user tabbing away (i.e.
 // meeting ending) within ~30s after the debounce.
 //
+// Second signal: a Meet tab only proves a meeting PAGE is open — Arc syncs
+// tabs to the other Mac, and the "You left the meeting" page keeps the room
+// URL. So once a tab is found, micUsage asks whether a browser here has the
+// mic open; one that doesn't means no call, and the probe reports not-in-
+// Meet. Muting keeps the capture open, leaving releases it. If the mic
+// probe can't answer (null) the tab alone decides, as it always did.
+//
 // Debounce: a single negative probe doesn't stop the recording. Users
 // briefly tab to another app during meetings (Slack, Notion, browser
 // other tabs); without debounce we'd flicker the recording state.
@@ -23,6 +30,7 @@
 
 import { execFile } from 'node:child_process';
 import type { RecorderMeetSignal } from '@shared/types';
+import { probeBrowserMic } from './micUsage';
 
 const POLL_MS_IDLE = 20_000;
 const POLL_MS_ACTIVE = 10_000;
@@ -278,7 +286,20 @@ function parseYes(raw: string, lastProbedAt: number): MeetSignal | null {
   return { inMeet: true, source, title, lastProbedAt };
 }
 
+// The tab probe, then the mic gate on top of a hit. A tab whose browser
+// has the mic closed comes back inMeet=false with micInCall=false, which
+// tick() debounces like any other negative.
 async function probe(): Promise<MeetSignal> {
+  const tab = await probeTabs();
+  if (!tab.inMeet) return tab;
+  const micInCall = await probeBrowserMic();
+  if (micInCall === false) {
+    return { inMeet: false, title: null, source: null, lastProbedAt: tab.lastProbedAt, micInCall };
+  }
+  return { ...tab, micInCall };
+}
+
+async function probeTabs(): Promise<MeetSignal> {
   const now = Date.now();
   // Each pass may return a "yes" that parseYes vetoes (e.g. user is on
   // the Meet landing page) — we fall through to the next pass in that
@@ -375,7 +396,9 @@ async function tick(): Promise<void> {
     }
     if (outSince === 0) outSince = now;
     if (now - outSince >= OFF_DEBOUNCE_MS) {
-      state = { inMeet: false, title: null, source: null, lastProbedAt: now };
+      // Carry the mic verdict onto the off-transition: micInCall=false
+      // tells the recorder the call ended even if the tab is still open.
+      state = { inMeet: false, title: null, source: null, lastProbedAt: now, micInCall: next.micInCall ?? null };
       outSince = 0;
       reschedule();
       for (const fn of listeners) fn(state);

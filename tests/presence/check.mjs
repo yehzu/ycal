@@ -27,7 +27,7 @@ const built = await esbuild.build({
   alias: { '@shared': path.join(ROOT, 'src/shared') },
 });
 const {
-  judgeActiveMeetPresence, isResumingMeet, resumeKeys,
+  judgeActiveMeetPresence, isResumingMeet, resumeKeys, browserCapturingMic,
   ACTIVE_MEET_IDLE_THRESHOLD_SECS: T, ACTIVE_MEET_RESUME_WINDOW_MS: W,
 } = await import(
   'data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64')
@@ -240,6 +240,64 @@ const CASES = [
   // The threshold is a parameter, not baked into the comparison.
   ['a custom threshold is honoured',
     () => [judge('active', 59, 60).start, judge('active', 60, 60).start], [true, false]],
+
+  // The mic signal (native/mic-usage). A browser holding the mic here IS the
+  // meeting: it outranks presence, so a muted listener on a locked Mac starts,
+  // while the synced-tab Mac never gets here (its browser has the mic closed,
+  // so the detector reports no Meet at all).
+  ['browser mic open + locked → start (mic)',
+    () => judgeActiveMeetPresence({ idleState: 'locked', idleSecs: 3600 }, { micInCall: true }),
+    { start: true, reason: 'mic' }],
+  ['browser mic open + idle → start (mic)',
+    () => judgeActiveMeetPresence({ idleState: 'idle', idleSecs: 3600 }, { micInCall: true }),
+    { start: true, reason: 'mic' }],
+  ['mic probe unavailable → the presence gate decides as before',
+    () => judgeActiveMeetPresence({ idleState: 'locked', idleSecs: 5 }, { micInCall: null }),
+    { start: false, reason: 'locked' }],
+  ['Arc capturing (muted listener) counts',
+    () => browserCapturingMic([{ pid: 1, bundleId: 'company.thebrowser.browser.helper', input: true, output: true }]),
+    true],
+  ['Arc only playing audio (left the call, video tab) does not',
+    () => browserCapturingMic([{ pid: 1, bundleId: 'company.thebrowser.browser.helper', input: false, output: true }]),
+    false],
+  ["yCal's own ffmpeg (no bundle id) and macOS daemons never count",
+    () => browserCapturingMic([
+      { pid: 2, bundleId: '', input: true, output: false },
+      { pid: 3, bundleId: 'com.apple.replayd', input: true, output: false },
+    ]),
+    false],
+  ['Chrome and Safari (WebKit GPU process) count',
+    () => [
+      browserCapturingMic([{ pid: 4, bundleId: 'com.google.Chrome.helper', input: true, output: false }]),
+      browserCapturingMic([{ pid: 5, bundleId: 'com.apple.WebKit.GPU', input: true, output: false }]),
+    ],
+    [true, true]],
+  ['another app on the mic (Zoom, Slack huddle) is not a Meet',
+    () => browserCapturingMic([{ pid: 6, bundleId: 'us.zoom.xos', input: true, output: true }]),
+    false],
+
+  // The restart latch. A stop that ENDS the stretch (cap, manual) must keep
+  // the same still-open Meet from starting again until the signal drops —
+  // the 2026-10-21 two-hourly loop. Tripwires, like the gate's wiring above.
+  ['handleMeetSignal checks the latch before it starts a recording',
+    () => IN_MEET.includes('if (activeMeetLatched) return;')
+      && IN_MEET.indexOf('if (activeMeetLatched) return;') < IN_MEET.indexOf('startRecording('),
+    true],
+  ['the latch is released on a dropped signal before any early return',
+    () => {
+      const release = HANDLE.indexOf('activeMeetLatched = false');
+      return release > 0 && release < HANDLE.indexOf('return;');
+    },
+    true],
+  ['the overrun cap stop latches; suspend and a dead ffmpeg do not',
+    () => {
+      const set = /LATCHING_STOP_REASONS = new Set\(\[([^\]]*)\]\)/.exec(REC)?.[1] ?? '';
+      return [set.includes("'tick-endsAt-reached'"), set.includes("'manual-ipc'"),
+        set.includes("'system-suspend'"), set.includes("'ffmpeg-exited'")];
+    },
+    [true, true, false, false]],
+  ['every stop starts the cooldown, not only the inMeet=false path',
+    () => STOP.includes('lastActiveMeetStopAt = Date.now()'), true],
 ];
 
 let pass = 0, fail = 0;
