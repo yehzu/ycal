@@ -1822,7 +1822,9 @@ async function postProcess(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error('[yCal recorder] post-process failed', message);
-    rlog(`postProcess(${eventId}) failed: ${message.slice(0, 300)}`);
+    // The message is post-meet.sh's whole stderr; the cause is at the END
+    // (its head is just the progress banner), so log the tail.
+    rlog(`postProcess(${eventId}) failed: …${message.slice(-800)}`);
     const status = recordings.get(eventId);
     if (status) {
       status.state = 'failed';
