@@ -57,7 +57,7 @@ import {
   fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
 } from './meetingArchive';
 import { getNote, listNotes } from './notesStore';
-import { backfillArchive, type BackfillReport } from './meetRecorder';
+import { backfillArchive, rehomeArchives, type BackfillReport } from './meetRecorder';
 import { dedupEvents } from '@shared/dedup';
 import { htmlToPlainText } from '@shared/htmlText';
 import { DEFAULT_MERGE_CRITERIA, IPC } from '@shared/types';
@@ -1771,7 +1771,20 @@ async function cmdRecorderSetup(args: ParsedArgs, io: CliIo): Promise<number> {
 
 async function cmdRecorder(args: ParsedArgs, io: CliIo): Promise<number> {
   const [action = 'status', ...rest] = args.positional;
-  if (rest.length > 0) throw new CliError('usage: ycal recorder status | ycal recorder setup [--all] | ycal recorder backfill [--dry-run] [--reprocess]');
+  if (action === 'rehome') {
+    if (rest.length === 0) throw new CliError('usage: ycal recorder rehome <eventId>... [--dry-run]');
+    const dryRun = !!args.flags['dry-run'];
+    const plans = await rehomeArchives(rest, { dryRun });
+    emit(
+      { command: 'recorder', action: 'rehome', dryRun, plans },
+      getFormat(args),
+      () => plans.map((p) => `${p.eventId}: ${p.action}${p.owner ? ` → ${p.owner}` : ''}${p.misplacedIn.length ? ` (remove from ${p.misplacedIn.join(', ')})` : ''}`).join('\n')
+        + (dryRun ? '' : '\nQueued in the app; see recorder.log (rehome / upload lines).'),
+      io,
+    );
+    return 0;
+  }
+  if (rest.length > 0) throw new CliError('usage: ycal recorder status | ycal recorder setup [--all] | ycal recorder backfill [--dry-run] [--reprocess] | ycal recorder rehome <eventId>... [--dry-run]');
   if (action === 'status') {
     const format = getFormat(args);
     const doc = recorderStatusDoc();
@@ -1893,6 +1906,11 @@ COMMANDS
                             (report only), --reprocess (also queue recordings
                             with no transcript through the full pipeline,
                             serially, inside the app).
+  recorder rehome <eventId>...
+                            Move an event's Drive archive to the account that
+                            owns the event (re-upload the local recording
+                            there, then delete other accounts' copies).
+                            Flag: --dry-run.
 
 CALENDAR FILTERING
   By default, events commands mirror the GUI agenda:

@@ -156,6 +156,30 @@ function cal(accountId: string): calendar_v3.Calendar {
   return google.calendar({ version: 'v3', auth: authClientForAccount(acc) });
 }
 
+// Which signed-in account owns this calendar event? Used when a recording
+// has to be archived but its in-memory accountId is gone (a retried or
+// backfilled upload) — falling back to "the first account" put work
+// meetings into a personal Drive (2026-10-22). Looks the id up on each
+// account's primary calendar (an invite lands there with the same id,
+// recurring instance suffix included). Several accounts see it (both were
+// invited) → the one in the organizer's domain. null when no account can
+// see the event, or every lookup failed.
+export async function findEventAccount(eventId: string): Promise<string | null> {
+  const hits: Array<{ accountId: string; email: string; organizer: string }> = [];
+  for (const acc of listAccounts()) {
+    try {
+      const res = await withNetworkTimeout(`${acc.email}/events.get`, () =>
+        cal(acc.id).events.get({ calendarId: 'primary', eventId }, { timeout: NETWORK_TIMEOUT_MS }));
+      if (res.data.status === 'cancelled') continue;
+      hits.push({ accountId: acc.id, email: acc.email, organizer: res.data.organizer?.email ?? '' });
+    } catch { /* 404 on this account, or unreachable — not this one */ }
+  }
+  if (hits.length <= 1) return hits[0]?.accountId ?? null;
+  const domain = (email: string) => email.split('@')[1]?.toLowerCase() ?? '';
+  const sameDomain = hits.find((h) => h.organizer && domain(h.email) === domain(h.organizer));
+  return (sameDomain ?? hits[0]).accountId;
+}
+
 export async function fetchColors(): Promise<GoogleColors> {
   if (colorsCache) return colorsCache;
   const accounts = listAccounts();

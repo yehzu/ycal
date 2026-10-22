@@ -37,11 +37,11 @@ import type { CalendarEvent, RecentRecording, RecordingStatus, UiSettings } from
 import { dedupEvents } from '@shared/dedup';
 import { getUiSettings } from './settings';
 import { getCaptureMic, getCaptureVoiceProcessing } from './device';
-import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
+import { findEventAccount, listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
 import { getActiveModelPath, getDiarizeVenvPython, isDiarizeVenvReady } from './recorderSetup';
-import { listAllMeetingArchives, uploadMeetingArtifacts, uploadMeetingNoteSidecar } from './meetingArchive';
+import { deleteMeetingArchive, listAllMeetingArchives, uploadMeetingArtifacts, uploadMeetingNoteSidecar } from './meetingArchive';
 import { listAccounts } from './tokenStore';
 import {
   applyGlossaryToSummaryPrompt, buildRuntimeFiles, getEffectiveEntries,
@@ -2169,9 +2169,11 @@ function clearUploadPending(audioFile: string): void {
 // Every outcome goes to recorder.log: until 2026-10-22 these were
 // console-only, and 49 recordings missing from Drive left no trace at all.
 async function uploadArtifacts(input: UploadArtifactsInput): Promise<Array<'audio' | 'transcript' | 'summary'>> {
-  // Resolve which account's appdata to push to. Prefer the event's own
-  // account when available; otherwise fall back to the first signed-in
-  // account (typical: single-user → there's only one).
+  // Resolve which account's appdata to push to: the event's own account.
+  // When the caller lost it (retry, backfill), look the event up — never
+  // guess: "first signed-in account" put work meetings into a personal
+  // Drive. Only an ad-hoc Meet (synthetic `meet-…` id, no calendar event
+  // to own it) still goes to the first account, as it always has.
   let accountId = input.accountId;
   if (!accountId) {
     const accounts = listAccounts();
@@ -2180,8 +2182,19 @@ async function uploadArtifacts(input: UploadArtifactsInput): Promise<Array<'audi
       markUploadPending(input, 'no Google account signed in');
       return [];
     }
-    accountId = accounts[0].id;
-    rlog(`upload(${input.eventId}) has no accountId — uploading to first account ${accounts[0].email}`);
+    if (input.eventId.startsWith('meet-')) {
+      accountId = accounts[0].id;
+      rlog(`upload(${input.eventId}) ad-hoc Meet, no owning event — uploading to first account ${accounts[0].email}`);
+    } else {
+      const owner = await findEventAccount(input.eventId);
+      if (!owner) {
+        rlog(`upload(${input.eventId}) no signed-in account can see this event — kept pending`);
+        markUploadPending(input, 'owning account not found');
+        return [];
+      }
+      accountId = owner;
+      rlog(`upload(${input.eventId}) owning account resolved → ${accounts.find((a) => a.id === owner)?.email ?? owner}`);
+    }
   }
 
   const ui = getUiSettings();
@@ -2313,6 +2326,53 @@ export interface BackfillReport {
 }
 
 let backfillQueue: Promise<void> = Promise.resolve();
+
+export interface RehomePlan {
+  eventId: string;
+  owner: string | null;        // owning account email, null if unresolved
+  misplacedIn: string[];       // account emails holding a copy that shouldn't
+  action: 'move' | 'already-home' | 'owner-unknown' | 'no-local-copy';
+}
+
+// Move an event's archive to the account that owns the event: upload the
+// local recording there (force: it's the same take), and only once that
+// succeeded with no errors, delete the copies other accounts hold. Exists
+// to undo 0.8.47's backfill, which archived work meetings in the first
+// (personal) account. Queued like backfill; recorder.log has the outcome.
+export async function rehomeArchives(eventIds: string[], opts: { dryRun?: boolean } = {}): Promise<RehomePlan[]> {
+  const accounts = listAccounts();
+  const emailOf = (id: string) => accounts.find((a) => a.id === id)?.email ?? id;
+  const archives = await listAllMeetingArchives();
+  const local = listRecentRecordings(Number.MAX_SAFE_INTEGER);
+  const plans: RehomePlan[] = [];
+  for (const eventId of eventIds) {
+    const owner = await findEventAccount(eventId);
+    const holders = archives.filter((a) => a.eventId === eventId).map((a) => a.accountId);
+    const misplaced = holders.filter((h) => h !== owner);
+    const take = local.filter((r) => r.eventId === eventId).sort((a, b) => b.sizeBytes - a.sizeBytes)[0];
+    const plan: RehomePlan = {
+      eventId,
+      owner: owner ? emailOf(owner) : null,
+      misplacedIn: misplaced.map(emailOf),
+      action: !owner ? 'owner-unknown' : misplaced.length === 0 ? 'already-home' : !take ? 'no-local-copy' : 'move',
+    };
+    plans.push(plan);
+    if (opts.dryRun || plan.action !== 'move' || !owner || !take) continue;
+    const input = { ...artifactsInputFor(take.audioFile, { eventId, title: titleFromAudioFile(take.audioFile), accountId: owner }), force: true };
+    backfillQueue = backfillQueue.then(async () => {
+      const uploaded = await uploadArtifacts(input);
+      if (fs.existsSync(pendingMarkerPath(take.audioFile)) || uploaded.length === 0) {
+        rlog(`rehome(${eventId}) upload to ${emailOf(owner)} incomplete — misplaced copies kept`);
+        return;
+      }
+      for (const acct of misplaced) {
+        const res = await deleteMeetingArchive(eventId, acct);
+        rlog(`rehome(${eventId}) removed ${res.driveDeleted} file(s) from ${emailOf(acct)}${res.error ? ` (error: ${res.error})` : ''}`);
+      }
+    });
+  }
+  return plans;
+}
 
 // One-shot repair for recordings that never reached Drive: diff the local
 // recordings dir against every account's archive, upload what has a

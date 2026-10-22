@@ -195,6 +195,7 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 | `ycal recorder status` | Recording-pipeline readiness (ffmpeg, whisper, model, tap, scripts, diarize venv + its transformers commit). |
 | `ycal recorder setup [--all]` | Build / upgrade the diarize venv — the Settings "Setup/Upgrade diarize venv" button. `--all` first installs ffmpeg / whisper-cpp and the model. |
 | `ycal recorder backfill [--dry-run] [--reprocess]` | Upload local recordings that never reached Drive (so your other Macs see them), after retrying failed uploads. `--reprocess` also re-runs the pipeline on ones with no transcript. |
+| `ycal recorder rehome <eventId>... [--dry-run]` | Move a meeting's Drive archive to the account that owns the calendar event, then remove the copies other accounts hold. |
 | `ycal --help` | Full reference. |
 
 ### Flags
@@ -446,7 +447,9 @@ ycal recorder backfill --reprocess # also transcribe + summarize the rest (slow)
 ```
 
 The work runs inside yCal, one recording at a time, so the command returns
-right away. An upload never replaces a clearly bigger recording of the same
+right away. Each recording goes to the Google account that owns its calendar
+event; one no signed-in account can see stays pending instead of being
+guessed (an ad-hoc Meet with no calendar event goes to the first account). An upload never replaces a clearly bigger recording of the same
 meeting already in Drive (a short retake or the other Mac's stray capture);
 Reprocess from the Notes view is the explicit way to replace it.
 

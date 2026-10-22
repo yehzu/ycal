@@ -126,6 +126,11 @@ export class DriveAppDataAPI {
   /// file id. Mirrors iOS DriveAppDataAPI's `upsert(name:body:)`.
   async upsert(name: string, body: Buffer | string): Promise<string> {
     const existing = await this.file(name);
+    // The 10 s ceiling is for small JSON round-trips. A meeting's audio is
+    // 20-200 MB: under 10 s it timed out on every try, so those recordings
+    // never reached Drive. Budget the transfer at a conservative 256 KB/s.
+    const bytes = typeof body === 'string' ? Buffer.byteLength(body) : body.length;
+    const timeoutMs = Math.max(NETWORK_TIMEOUT_MS, Math.ceil(bytes / (256 * 1024)) * 1000);
     const media = {
       // Google's mime guesser is forgiving here — we use generic types so
       // syncing tasks.md (text/markdown) and *.json works without us
@@ -143,8 +148,9 @@ export class DriveAppDataAPI {
             media,
             fields: 'id',
           },
-          { timeout: NETWORK_TIMEOUT_MS },
+          { timeout: timeoutMs },
         ),
+        timeoutMs,
       );
       return existing.id ?? (res.data.id ?? '');
     }
@@ -160,8 +166,9 @@ export class DriveAppDataAPI {
           media,
           fields: 'id',
         },
-        { timeout: NETWORK_TIMEOUT_MS },
+        { timeout: timeoutMs },
       ),
+      timeoutMs,
     );
     if (!res.data.id) throw new Error('Drive create returned no file id');
     return res.data.id;
