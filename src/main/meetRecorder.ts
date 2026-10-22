@@ -2319,7 +2319,7 @@ export interface BackfillReport {
   missing: number;
   // …of which had a transcript and were queued (or, dry run, would be).
   uploaded: string[];
-  // …of which have no transcript yet (pipeline failed or the silence gate
+  // …of which have no transcript or summary yet (pipeline failed or the silence gate
   // refused them); `--reprocess` queues these through the full pipeline.
   needsReprocess: string[];
   // …under BACKFILL_MIN_AUDIO_BYTES, left alone.
@@ -2384,10 +2384,11 @@ export async function rehomeArchives(eventIds: string[], opts: { dryRun?: boolea
 // recorder.log records each outcome.
 export async function backfillArchive(opts: { dryRun?: boolean; reprocess?: boolean } = {}): Promise<BackfillReport> {
   if (!opts.dryRun) backfillQueue = backfillQueue.then(() => retryPendingUploads()).then(() => undefined);
-  // An archive without a transcript is incomplete — what a failed
+  // An archive without a transcript or summary is incomplete — what a failed
   // post-process leaves behind now that it uploads the audio anyway — so
   // it counts as missing and its recording is retried like one never sent.
-  const archived = new Set((await listAllMeetingArchives()).filter((a) => a.has.transcript).map((a) => a.eventId));
+  const archived = new Set((await listAllMeetingArchives())
+    .filter((a) => a.has.transcript && a.has.summary).map((a) => a.eventId));
   const local = listRecentRecordings(Number.MAX_SAFE_INTEGER);
   // Several takes of one event: only the biggest is a backfill candidate,
   // the same take the Notes view and the overwrite guard prefer.
@@ -2404,7 +2405,9 @@ export async function backfillArchive(opts: { dryRun?: boolean; reprocess?: bool
     if (archived.has(eventId)) continue;
     report.missing++;
     if (r.sizeBytes < BACKFILL_MIN_AUDIO_BYTES) { report.ignoredTiny++; continue; }
-    if (!r.hasTranscript) { report.needsReprocess.push(r.baseName); continue; }
+    // Upload only a finished note; a transcript without a summary means
+    // the pipeline died part-way, so it goes back through it whole.
+    if (!r.hasTranscript || !r.hasSummary) { report.needsReprocess.push(r.baseName); continue; }
     report.uploaded.push(r.baseName);
     if (!opts.dryRun) {
       const input = artifactsInputFor(r.audioFile, { eventId, title: titleFromAudioFile(r.audioFile) });
