@@ -57,6 +57,7 @@ import {
   fetchMeetingArtifact, findAccountForArchive, listAllMeetingArchives,
 } from './meetingArchive';
 import { getNote, listNotes } from './notesStore';
+import { backfillArchive, type BackfillReport } from './meetRecorder';
 import { dedupEvents } from '@shared/dedup';
 import { htmlToPlainText } from '@shared/htmlText';
 import { DEFAULT_MERGE_CRITERIA, IPC } from '@shared/types';
@@ -1770,7 +1771,7 @@ async function cmdRecorderSetup(args: ParsedArgs, io: CliIo): Promise<number> {
 
 async function cmdRecorder(args: ParsedArgs, io: CliIo): Promise<number> {
   const [action = 'status', ...rest] = args.positional;
-  if (rest.length > 0) throw new CliError('usage: ycal recorder status | ycal recorder setup [--all]');
+  if (rest.length > 0) throw new CliError('usage: ycal recorder status | ycal recorder setup [--all] | ycal recorder backfill [--dry-run] [--reprocess]');
   if (action === 'status') {
     const format = getFormat(args);
     const doc = recorderStatusDoc();
@@ -1785,7 +1786,33 @@ async function cmdRecorder(args: ParsedArgs, io: CliIo): Promise<number> {
     return 0;
   }
   if (action === 'setup') return await cmdRecorderSetup(args, io);
-  throw new CliError(`unknown recorder action "${action}" (expected status | setup)`);
+  if (action === 'backfill') {
+    const format = getFormat(args);
+    const report = await backfillArchive({ dryRun: !!args.flags['dry-run'], reprocess: !!args.flags.reprocess });
+    emit(
+      { command: 'recorder', action: 'backfill', dryRun: !!args.flags['dry-run'], ...report },
+      format,
+      () => renderBackfill(report, !!args.flags['dry-run']),
+      io,
+    );
+    return 0;
+  }
+  throw new CliError(`unknown recorder action "${action}" (expected status | setup | backfill)`);
+}
+
+function renderBackfill(r: BackfillReport, dryRun: boolean): string {
+  const verb = dryRun ? 'would upload' : 'queued for upload (see recorder.log)';
+  const lines = [
+    `${r.missing} local recording(s) have no Drive archive in any account.`,
+    `  ${verb}: ${r.uploaded.length} (had a transcript)`,
+    `  need reprocessing: ${r.needsReprocess.length} (no transcript)${r.reprocessQueued ? ` — ${r.reprocessQueued} queued in the app, one at a time` : ''}`,
+    `  ignored (< 1 MB, fragments): ${r.ignoredTiny}`,
+  ];
+  if (r.needsReprocess.length > 0 && !r.reprocessQueued) {
+    lines.push('', 'Run with --reprocess to transcribe + summarize those (whisper; can take hours):');
+    for (const n of r.needsReprocess) lines.push(`  ${n}`);
+  }
+  return lines.join('\n');
 }
 
 function helpText(version: string): string {
@@ -1860,6 +1887,12 @@ COMMANDS
                             Flag: --all  (first brew-install ffmpeg /
                             whisper-cpp and download the model, like the
                             Settings "Install" button)
+  recorder backfill         Upload local recordings that never reached Drive
+                            (a failed summary or upload used to strand them),
+                            after retrying failed uploads. Flags: --dry-run
+                            (report only), --reprocess (also queue recordings
+                            with no transcript through the full pipeline,
+                            serially, inside the app).
 
 CALENDAR FILTERING
   By default, events commands mirror the GUI agenda:

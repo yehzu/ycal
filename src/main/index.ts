@@ -55,6 +55,7 @@ import {
   setActiveProvider,
 } from './taskProviders';
 import { applyTaskOps, getTasksLocal, ingestRemoteOverlay, setTasksLocal } from './tasksStore';
+import { ingestRemoteNotesOverlay, onRemoteNotesOverlay } from './notesOverlayStore';
 import {
   diagnoseDetection, getMeetSignal, listRecentRecordings, listRecordings,
   recordingsDir, reprocessRecording, resummarizeRecording, safeRecordingPath, startMeetRecorder,
@@ -74,11 +75,11 @@ import {
 } from './glossary';
 import { parseGlossary, type ImportFormat } from './glossaryImport';
 import {
-  deleteNote, getNote, getNotesOverlayFile, listNotes, listNotesLocal, setNoteOverlay,
+  applyOverlayOps, deleteNote, getNote, getNotesOverlayFile, listNotes, listNotesLocal, setNoteOverlay,
 } from './notesStore';
 import type {
   EventGlossary, GlossaryEntry, GlossaryFile, MeetingArchiveSummary,
-  MeetingArtifactKind, NoteOverlay,
+  MeetingArtifactKind, NoteOverlay, NoteOverlayOp,
 } from '@shared/types';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
@@ -903,11 +904,16 @@ function registerIpc() {
     }
   });
   ipcMain.handle(IPC.NotesGetOverlay, () => getNotesOverlayFile());
+  // Prefer `ops` (only the keys the renderer changed — main stamps their
+  // clocks); a whole `overlay` is still accepted and diffed against main's
+  // copy, for any caller still on the old payload.
   ipcMain.handle(IPC.NotesSetOverlay, (
-    _e, payload: { eventId: string; overlay: NoteOverlay },
+    _e, payload: { eventId: string; overlay?: NoteOverlay; ops?: NoteOverlayOp[] },
   ) => {
     try {
-      const file = setNoteOverlay(payload.eventId, payload.overlay);
+      const file = payload.ops
+        ? applyOverlayOps(payload.eventId, payload.ops)
+        : setNoteOverlay(payload.eventId, payload.overlay ?? {});
       return { ok: true as const, file };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
@@ -1120,6 +1126,13 @@ function startCloudSync(win: BrowserWindow): void {
       activeChanged: true,
     });
   });
+  // A Drive pull merges the overlay through cloudStore.writeJson, which
+  // updates lastSeen — so the watcher above never reports it. The overlay
+  // store announces remote merges itself; forward them to the renderer.
+  onRemoteNotesOverlay((file) => {
+    if (win.isDestroyed()) return;
+    win.webContents.send(IPC.NotesOverlayChanged, file);
+  });
   onCloudFileChange((filename, body) => {
     if (win.isDestroyed()) return;
     try {
@@ -1170,10 +1183,14 @@ function startCloudSync(win: BrowserWindow): void {
           if (!isParseableJsonObject(body)) return;
           win.webContents.send(IPC.GlossaryChanged, getGlossary());
           break;
-        case 'meeting-notes.json':
+        case 'meeting-notes.json': {
           if (!isParseableJsonObject(body)) return;
-          win.webContents.send(IPC.NotesOverlayChanged, getNotesOverlayFile());
+          // Merge per key against main's copy (a stale peer blob must not
+          // revert edits it never saw); the union is written back to disk.
+          const { file } = ingestRemoteNotesOverlay(body);
+          win.webContents.send(IPC.NotesOverlayChanged, file);
           break;
+        }
       }
     } catch (e) {
       console.error('[yCal] cloud-sync push failed for', filename, e);

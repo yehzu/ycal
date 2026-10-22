@@ -26,20 +26,20 @@
 // note without ever clobbering the user's corrections.
 
 import fs from 'node:fs';
+import path from 'node:path';
+import { app } from 'electron';
 
 import type {
   GlossaryEntry,
   MeetingNote,
   MeetingNoteSummary,
   NoteAction,
-  NoteOverlay,
   NoteSegment,
   NoteSpeaker,
   NoteStatus,
   NoteTerm,
-  NotesOverlayFile,
 } from '@shared/types';
-import { readJson, writeJson } from './cloudStore';
+import { deleteNoteOverlay } from './notesOverlayStore';
 import { getEffectiveEntries, getGlossary } from './glossary';
 import {
   listAllMeetingArchives,
@@ -48,10 +48,10 @@ import {
   findAccountForArchive,
   readCachedMeta,
   deleteMeetingArchive,
+  cachedArchivePath,
 } from './meetingArchive';
 import { deleteLocalRecording, listRecentRecordings } from './meetRecorder';
 
-const OVERLAY_FILE = 'meeting-notes.json';
 
 // Speaker accent hues — shared lightness/chroma in the CSS, only hue
 // varies, so the roster reads as one editorial family (matches the
@@ -517,20 +517,9 @@ function readFileSafe(p: string | null): string | null {
 
 // ── public API ───────────────────────────────────────────────────────────
 
-export function getNotesOverlayFile(): NotesOverlayFile {
-  return readJson<NotesOverlayFile>(OVERLAY_FILE, { version: 1, notes: {}, updatedAt: 0 });
-}
-
-export function setNoteOverlay(eventId: string, overlay: NoteOverlay): NotesOverlayFile {
-  const file = getNotesOverlayFile();
-  const next: NotesOverlayFile = {
-    version: 1,
-    notes: { ...file.notes, [eventId]: { ...overlay, updatedAt: Date.now() } },
-    updatedAt: Date.now(),
-  };
-  writeJson(OVERLAY_FILE, next);
-  return next;
-}
+// The overlay itself (per-key merge, clocks, tombstones) lives in
+// notesOverlayStore; re-exported so callers keep one Notes entry point.
+export { applyOverlayOps, getNotesOverlayFile, setNoteOverlay } from './notesOverlayStore';
 
 // Permanently delete one meeting note across every layer that feeds the
 // Notes list, so a deleted (or garbage) recording actually disappears and
@@ -560,14 +549,10 @@ export async function deleteNote(
   }
 
   // Drop the correction overlay so a re-record of the same event id starts
-  // clean (and the deleted note doesn't linger as a phantom overlay).
+  // clean (and the deleted note doesn't linger as a phantom overlay). The
+  // tombstone keeps a peer's stale copy from bringing it back.
   try {
-    const file = getNotesOverlayFile();
-    if (file.notes[eventId]) {
-      const notes = { ...file.notes };
-      delete notes[eventId];
-      writeJson(OVERLAY_FILE, { version: 1, notes, updatedAt: Date.now() });
-    }
+    deleteNoteOverlay(eventId);
   } catch (e) {
     if (!error) error = e instanceof Error ? e.message : String(e);
   }
@@ -766,6 +751,7 @@ export async function listNotes(): Promise<MeetingNoteSummary[]> {
   // tolerate failure so the list still shows local notes when offline.
   let archives: Awaited<ReturnType<typeof listAllMeetingArchives>> = [];
   try { archives = await listAllMeetingArchives(); } catch { /* offline */ }
+  const glossaryEntries = getGlossary().entries;
   for (const a of archives) {
     const existing = byEvent.get(a.eventId);
     const at = a.meta?.startedAt ?? existing?.startedAt ?? (a.modifiedAt ? Date.parse(a.modifiedAt) : null);
@@ -776,8 +762,18 @@ export async function listNotes(): Promise<MeetingNoteSummary[]> {
       existing.hasAudio = existing.hasAudio || a.has.audio;
       existing.hasTranscript = existing.hasTranscript || a.has.transcript;
       existing.hasSummary = existing.hasSummary || a.has.summary;
+      const remoteAt = a.modifiedAt ? Date.parse(a.modifiedAt) : NaN;
+      if (Number.isFinite(remoteAt)) existing.updatedAt = Math.max(existing.updatedAt ?? 0, remoteAt);
       continue;
     }
+    // Same status rule as a local row, from the cached copy when this Mac
+    // has opened the note before; 'review' (no known pending terms) if not.
+    const sig = rowSignals(
+      readCachedArchiveText(a.eventId, 'transcript.txt'),
+      readCachedArchiveText(a.eventId, 'note.json'),
+      glossaryEntries,
+      null,
+    );
     byEvent.set(a.eventId, {
       id: a.eventId,
       eventId: a.eventId,
@@ -787,9 +783,10 @@ export async function listNotes(): Promise<MeetingNoteSummary[]> {
       startedAt: at,
       durationSec: a.meta?.endsAt && a.meta?.startedAt
         ? Math.round((a.meta.endsAt - a.meta.startedAt) / 1000) : 0,
-      status: 'review',
-      speakerInitials: [],
-      pendingTermCount: 0,
+      status: sig.status,
+      updatedAt: a.modifiedAt ? Date.parse(a.modifiedAt) || null : null,
+      speakerInitials: sig.speakerInitials,
+      pendingTermCount: sig.pendingTermCount,
       stale: false,
       hasAudio: a.has.audio,
       hasTranscript: a.has.transcript,
@@ -801,6 +798,38 @@ export async function listNotes(): Promise<MeetingNoteSummary[]> {
   return [...byEvent.values()].sort((x, y) => (y.startedAt ?? 0) - (x.startedAt ?? 0));
 }
 
+// Speaker initials + pending-term count + base status for a list row, from
+// whatever transcript / note.json text is at hand. Shared by local rows and
+// Drive-only rows so the same meeting reads the same status on every Mac.
+function rowSignals(
+  transcript: string | null,
+  noteBody: string | null,
+  entries: GlossaryEntry[],
+  meName: string | null,
+): { speakerInitials: string[]; pendingTermCount: number; status: NoteStatus } {
+  let speakerInitials: string[] = [];
+  let pendingTermCount = 0;
+  if (transcript) {
+    const { labels } = parseTranscript(transcript);
+    speakerInitials = buildSpeakers(labels, {}, meName).slice(0, 4).map((s) => s.initials);
+  }
+  if (noteBody) {
+    const nj = parseNoteJson(noteBody);
+    pendingTermCount = (nj?.terms || []).filter((t) => (t.heard || '').trim()).length;
+  } else if (transcript) {
+    pendingTermCount = deriveTermsFromGlossary(transcript, entries).length;
+  }
+  return { speakerInitials, pendingTermCount, status: pendingTermCount > 0 ? 'raw' : 'review' };
+}
+
+// A Drive-only row has no local recording, but a note opened here before
+// left its transcript / note.json in meeting-cache. Mirrors meetingArchive's
+// cacheDir() layout (<userData>/meeting-cache/<safeEventId>/) — keep the two
+// in step. Null when not cached.
+function readCachedArchiveText(eventId: string, file: 'transcript.txt' | 'note.json'): string | null {
+  return readFileSafe(cachedArchivePath(eventId, file));
+}
+
 function buildLocalSummary(
   r: ReturnType<typeof listRecentRecordings>[number],
   title: string | null,
@@ -808,22 +837,17 @@ function buildLocalSummary(
   entries: GlossaryEntry[],
 ): MeetingNoteSummary {
   // Speaker initials + term count from cheap local reads.
-  let speakerInitials: string[] = [];
-  let pendingTermCount = 0;
-  const transcript = readFileSafe(r.transcriptFile);
-  if (transcript) {
-    const { labels } = parseTranscript(transcript);
-    const meName = readContextMeName(r.audioFile);
-    speakerInitials = buildSpeakers(labels, {}, meName).slice(0, 4).map((s) => s.initials);
-  }
   const noteFile = r.audioFile.replace(/\.m4a$/, '.note.json');
-  const noteBody = readFileSafe(fs.existsSync(noteFile) ? noteFile : null);
-  if (noteBody) {
-    const nj = parseNoteJson(noteBody);
-    pendingTermCount = (nj?.terms || []).filter((t) => (t.heard || '').trim()).length;
-  } else if (transcript) {
-    pendingTermCount = deriveTermsFromGlossary(transcript, entries).length;
+  let updatedAt = r.modifiedAt;
+  for (const f of [r.transcriptFile, r.summaryFile, noteFile]) {
+    try { if (f) updatedAt = Math.max(updatedAt, fs.statSync(f).mtimeMs); } catch { /* absent */ }
   }
+  const { speakerInitials, pendingTermCount, status } = rowSignals(
+    readFileSafe(r.transcriptFile),
+    readFileSafe(fs.existsSync(noteFile) ? noteFile : null),
+    entries,
+    readContextMeName(r.audioFile),
+  );
   return {
     id: r.eventId!,
     eventId: r.eventId!,
@@ -832,7 +856,8 @@ function buildLocalSummary(
     date: localDateStr(at),
     startedAt: at,
     durationSec: 0,
-    status: pendingTermCount > 0 ? 'raw' : 'review',
+    status,
+    updatedAt,
     speakerInitials,
     pendingTermCount,
     stale: false,

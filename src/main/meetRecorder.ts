@@ -41,7 +41,7 @@ import { listAccountSummaries, listAllCalendars, listEvents } from './calendar';
 import { setRecordings } from './recorderBus';
 import { getUserShellPath } from './userShellPath';
 import { getActiveModelPath, getDiarizeVenvPython, isDiarizeVenvReady } from './recorderSetup';
-import { uploadMeetingArtifacts, uploadMeetingNoteSidecar } from './meetingArchive';
+import { listAllMeetingArchives, uploadMeetingArtifacts, uploadMeetingNoteSidecar } from './meetingArchive';
 import { listAccounts } from './tokenStore';
 import {
   applyGlossaryToSummaryPrompt, buildRuntimeFiles, getEffectiveEntries,
@@ -254,6 +254,8 @@ const failedMeetCodes = new Set<string>();
 // handler can hand it to startRecording without re-fetching.
 const pendingConfirm = new Map<string, { event: CalendarEvent; notifiedAt: number }>();
 let pollTimer: NodeJS.Timeout | null = null;
+let uploadRetryTimer: NodeJS.Timeout | null = null;
+const UPLOAD_RETRY_MS = 30 * 60_000;
 let mainWindowRef: BrowserWindow | null = null;
 let detectorUnsub: (() => void) | null = null;
 // When the activeMeet detector last stopped a recording. Used to skip
@@ -356,6 +358,10 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
   recoverInFlightRecordings();
   pruneRecorderState();                  // clear stale per-recording logs (>14d)
   pollTimer = setInterval(() => { void tick(); }, POLL_MS);
+  // Re-try uploads that failed earlier (marker files next to the audio).
+  // First pass after 2 min so launch-time Google auth isn't contended.
+  setTimeout(() => { void retryPendingUploads(); }, 2 * 60_000);
+  uploadRetryTimer = setInterval(() => { void retryPendingUploads(); }, UPLOAD_RETRY_MS);
   // First tick after 2s — gives the window time to paint and the user
   // time to grant mic permission if this is the very first launch.
   setTimeout(() => { void tick(); }, 2_000);
@@ -382,6 +388,7 @@ export function startMeetRecorder(mainWindow: BrowserWindow): void {
 
 export function stopMeetRecorder(): void {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (uploadRetryTimer) { clearInterval(uploadRetryTimer); uploadRetryTimer = null; }
   // Synchronously stop any in-flight recordings before we exit. We used
   // to leave ffmpeg + coreaudio-tap running ("the user may be mid-meeting,
   // they'll self-terminate at their -t boundary") — but that orphans a
@@ -694,7 +701,7 @@ export async function reprocessRecording(
   };
   recordings.set(eventId, status);
   pushStatus();
-  await postProcess(eventId, safe, title, accountId, false, extraContext);
+  await postProcess(eventId, safe, title, accountId, false, extraContext, true);
 }
 
 // Re-run ONLY the claude summarization step against the existing
@@ -732,7 +739,7 @@ export async function resummarizeRecording(
   };
   recordings.set(eventId, status);
   pushStatus();
-  await postProcess(eventId, safe, title, accountId, true, extraContext);
+  await postProcess(eventId, safe, title, accountId, true, extraContext, true);
 }
 
 // ── Recovery ────────────────────────────────────────────────────────────
@@ -1342,7 +1349,14 @@ async function startRecording(
   opts: { manual?: boolean; activeMeet?: boolean } = {},
 ): Promise<void> {
   const manual = opts.manual === true;
-  const endsAt = Date.parse(ev.end);
+  // An activeMeet start is ended by the detector, so a calendar event whose
+  // scheduled end has already passed (a meeting running late) gets a first
+  // window from now instead — otherwise tick() stops it on the next pass
+  // and the detector re-starts it, the 2026-10-21 restart storm.
+  let endsAt = Date.parse(ev.end);
+  if (opts.activeMeet && (!Number.isFinite(endsAt) || endsAt < Date.now() + OVERRUN_EXTEND_MS)) {
+    endsAt = Date.now() + OVERRUN_EXTEND_MS;
+  }
   // Active-Meet detection can hand us an event that's already 30+ min past
   // its scheduled end (the user left the Meet tab open). Without clamping,
   // the script's `-t <negative>` lands in ffmpeg's atrim filter and
@@ -1657,6 +1671,9 @@ async function postProcess(
   accountId: string | undefined,
   summaryOnly = false,
   extraContext?: string,
+  // The user picked this file (Reprocess / Re-summarize): its upload may
+  // replace a bigger archived take.
+  explicit = false,
 ): Promise<void> {
   notify(summaryOnly ? 'yCal · re-summarizing' : 'yCal · transcribing', title);
   // Glossary runtime files (whisper prompt + transcript substitutions)
@@ -1770,6 +1787,7 @@ async function postProcess(
       summaryFile: fs.existsSync(summary) ? summary : null,
       startedAt: status?.startedAt ?? Date.now(),
       endsAt: status?.endsAt,
+      force: explicit,
     });
 
     // Quiet-failure guard: if speaker separation was requested but the
@@ -1804,6 +1822,7 @@ async function postProcess(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error('[yCal recorder] post-process failed', message);
+    rlog(`postProcess(${eventId}) failed: ${message.slice(0, 300)}`);
     const status = recordings.get(eventId);
     if (status) {
       status.state = 'failed';
@@ -1811,6 +1830,24 @@ async function postProcess(
       pushStatus();
     }
     notify('yCal · transcription failed', message.slice(0, 140));
+    // Whatever the pipeline did produce still goes to Drive. A summary
+    // that failed (claude timeout, auth) used to skip the upload outright,
+    // stranding a finished transcript on this Mac — 13 recordings by
+    // 2026-10-22, the other Mac never saw them.
+    const transcript = audioFile.replace(/\.m4a$/, '.transcript.txt');
+    const summary = audioFile.replace(/\.m4a$/, '.summary.md');
+    const uploaded = await uploadArtifacts({
+      eventId,
+      title,
+      accountId,
+      audioFile,
+      transcriptFile: fs.existsSync(transcript) ? transcript : null,
+      summaryFile: fs.existsSync(summary) ? summary : null,
+      startedAt: status?.startedAt ?? resolveOriginalStartedAt(eventId, audioFile),
+      endsAt: status?.endsAt,
+      force: explicit,
+    });
+    if (status) { status.uploadedKinds = uploaded; pushStatus(); }
   } finally {
     if (glossaryRuntime) {
       try { glossaryRuntime.cleanup(); } catch { /* best-effort */ }
@@ -2020,18 +2057,29 @@ function buildScriptEnv(envExtras?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   };
 }
 
-// Measure a recording's mean loudness via ffmpeg's volumedetect filter.
-// Synchronous + bounded: one fast pass over the m4a (decode-only, no
-// re-encode, -f null), well under realtime. Returns the mean_volume in
-// dBFS, or null if ffmpeg is missing / the parse fails (caller then
+// Measure a recording's loudness via ffmpeg's volumedetect filter, per
+// channel, and return the LOUDER channel's mean. The m4a is stereo (mic +
+// system audio); measured mixed, a channel that captured nothing (-91 dB
+// digital silence: an in-room meeting, or a tap that never engaged) drags
+// the mean down ~3 dB — enough to sink a real meeting under the floor
+// (2026-10-21 Tzu-Hui/Ellier: mixed -45.7, mic channel -42.7 dB with
+// -4.1 dB peaks). Synchronous + bounded: decode-only passes, well under
+// realtime. null if ffmpeg is missing / no channel parses (caller then
 // falls through and lets postProcess run, i.e. fail-open — we'd rather
 // transcribe a borderline file than wrongly drop a real meeting).
 function meanVolumeDb(file: string): number | null {
+  const channels = [0, 1].map((c) => channelMeanDb(file, `pan=mono|c0=c${c},volumedetect`));
+  const readings = channels.filter((db): db is number => db !== null);
+  if (readings.length === 0) return channelMeanDb(file, 'volumedetect');
+  return Math.max(...readings);
+}
+
+function channelMeanDb(file: string, filter: string): number | null {
   try {
     const res = spawnSync(
       'ffmpeg',
       ['-hide_banner', '-nostats', '-i', file, '-map', '0:a:0',
-        '-af', 'volumedetect', '-f', 'null', '-'],
+        '-af', filter, '-f', 'null', '-'],
       { env: buildScriptEnv(), encoding: 'utf8', timeout: 120_000 },
     );
     const text = `${res.stderr ?? ''}`;
@@ -2078,7 +2126,7 @@ function execScript(
 // rethrown — a finished recording with local files is still useful to
 // the user even if Drive is down. Returns which kinds landed
 // successfully so the status row in the popover can flag "✓ on Drive".
-async function uploadArtifacts(input: {
+type UploadArtifactsInput = {
   eventId: string;
   title: string;
   accountId: string | undefined;
@@ -2087,22 +2135,53 @@ async function uploadArtifacts(input: {
   summaryFile: string | null;
   startedAt: number;
   endsAt: number | undefined;
-}): Promise<Array<'audio' | 'transcript' | 'summary'>> {
+  force?: boolean;
+};
+
+// `<base>.upload-pending.json` beside the audio marks a recording whose
+// Drive upload hasn't succeeded yet. It carries what a retry needs (the
+// in-memory status is gone by then). Written on any failure, removed on
+// success or on a deliberate guard skip; retryPendingUploads() sweeps them.
+function pendingMarkerPath(audioFile: string): string {
+  return audioFile.replace(/\.m4a$/, '.upload-pending.json');
+}
+
+function markUploadPending(input: UploadArtifactsInput, error: string): void {
+  try {
+    fs.writeFileSync(pendingMarkerPath(input.audioFile), JSON.stringify({
+      eventId: input.eventId,
+      title: input.title,
+      accountId: input.accountId ?? null,
+      startedAt: input.startedAt,
+      endsAt: input.endsAt ?? null,
+      error,
+      failedAt: new Date().toISOString(),
+    }, null, 2));
+  } catch (e) {
+    rlog(`upload(${input.eventId}) could not write the pending marker:`, e);
+  }
+}
+
+function clearUploadPending(audioFile: string): void {
+  try { fs.unlinkSync(pendingMarkerPath(audioFile)); } catch { /* none */ }
+}
+
+// Every outcome goes to recorder.log: until 2026-10-22 these were
+// console-only, and 49 recordings missing from Drive left no trace at all.
+async function uploadArtifacts(input: UploadArtifactsInput): Promise<Array<'audio' | 'transcript' | 'summary'>> {
   // Resolve which account's appdata to push to. Prefer the event's own
   // account when available; otherwise fall back to the first signed-in
-  // account (typical: single-user → there's only one). When NO account
-  // is signed in at all, skip the upload silently.
+  // account (typical: single-user → there's only one).
   let accountId = input.accountId;
   if (!accountId) {
     const accounts = listAccounts();
     if (accounts.length === 0) {
-      console.log('[yCal recorder] no accounts signed in — skipping Drive upload');
+      rlog(`upload(${input.eventId}) no accounts signed in — kept pending`);
+      markUploadPending(input, 'no Google account signed in');
       return [];
     }
     accountId = accounts[0].id;
-    console.log(
-      `[yCal recorder] event ${input.eventId} has no accountId — uploading to first account ${accounts[0].email}`,
-    );
+    rlog(`upload(${input.eventId}) has no accountId — uploading to first account ${accounts[0].email}`);
   }
 
   const ui = getUiSettings();
@@ -2119,30 +2198,165 @@ async function uploadArtifacts(input: {
       transcriptFile: input.transcriptFile,
       summaryFile: input.summaryFile,
       uploadAudio,
+      force: input.force,
     });
+    if (res.skipped) {
+      // A deliberate refusal, not a failure: don't retry it forever.
+      clearUploadPending(input.audioFile);
+      return [];
+    }
     // Push the structured note.json sidecar (the Notes view's source of
     // truth) alongside the trio when post-meet.sh emitted one. Best-effort
     // — a missing or unreadable note.json just means the Notes view falls
     // back to parsing summary.md on this + other Macs.
     const noteFile = input.audioFile.replace(/\.m4a$/, '.note.json');
     if (fs.existsSync(noteFile)) {
-      try {
-        await uploadMeetingNoteSidecar(input.eventId, accountId, fs.readFileSync(noteFile, 'utf-8'));
-      } catch (e) {
-        console.error('[yCal recorder] note.json sidecar upload failed', e);
-      }
+      await uploadMeetingNoteSidecar(input.eventId, accountId, fs.readFileSync(noteFile, 'utf-8'));
     }
     const uploaded = Object.keys(res.uploaded) as Array<'audio' | 'transcript' | 'summary'>;
     if (Object.keys(res.errors).length > 0) {
-      console.error('[yCal recorder] Drive upload partial failure', res.errors);
+      const detail = JSON.stringify(res.errors).slice(0, 400);
+      rlog(`upload(${input.eventId}) partial failure → ${accountId}: ${detail}`);
+      markUploadPending(input, detail);
     } else {
-      console.log(
-        `[yCal recorder] Drive upload ok (${uploaded.join(', ') || 'nothing'}) → ${accountId}`,
-      );
+      rlog(`upload(${input.eventId}) ok (${uploaded.join(', ') || 'nothing'}) → ${accountId}`);
+      clearUploadPending(input.audioFile);
     }
     return uploaded;
   } catch (e) {
-    console.error('[yCal recorder] Drive upload failed', e);
+    const message = e instanceof Error ? e.message : String(e);
+    rlog(`upload(${input.eventId}) failed → ${accountId}: ${message.slice(0, 300)}`);
+    markUploadPending(input, message);
     return [];
   }
+}
+
+// Sweep the pending markers and upload each recording again with whatever
+// artifacts are on disk now. Serial: one recording's upload at a time.
+export async function retryPendingUploads(): Promise<{ retried: number; stillPending: number }> {
+  let names: string[];
+  try { names = fs.readdirSync(recordingsDir()); } catch { return { retried: 0, stillPending: 0 }; }
+  let retried = 0;
+  let stillPending = 0;
+  for (const name of names) {
+    if (!name.endsWith('.upload-pending.json')) continue;
+    const marker = path.join(recordingsDir(), name);
+    const audioFile = marker.replace(/\.upload-pending\.json$/, '.m4a');
+    if (!fs.existsSync(audioFile)) { try { fs.unlinkSync(marker); } catch { /* */ } continue; }
+    // Skip a recording that is still in the pipeline here.
+    const busy = [...recordings.values()].some((r) => r.audioFile === audioFile
+      && (r.state === 'recording' || r.state === 'processing' || r.state === 'uploading'));
+    if (busy) continue;
+    let m: { eventId?: string; title?: string; accountId?: string | null; startedAt?: number; endsAt?: number | null };
+    try { m = JSON.parse(fs.readFileSync(marker, 'utf-8')); } catch { m = {}; }
+    const eventId = m.eventId ?? eventIdFromAudioFile(audioFile);
+    if (!eventId) continue;
+    retried++;
+    await uploadArtifacts(artifactsInputFor(audioFile, {
+      eventId,
+      title: m.title ?? titleFromAudioFile(audioFile),
+      accountId: m.accountId ?? undefined,
+      startedAt: m.startedAt,
+      endsAt: m.endsAt ?? undefined,
+    }));
+    if (fs.existsSync(marker)) stillPending++;
+  }
+  if (retried > 0) rlog(`retryPendingUploads retried=${retried} stillPending=${stillPending}`);
+  return { retried, stillPending };
+}
+
+function eventIdFromAudioFile(audioFile: string): string | null {
+  const base = path.basename(audioFile, '.m4a');
+  const sep = base.lastIndexOf('__');
+  return sep >= 0 ? base.slice(sep + 2) : null;
+}
+
+// `<stamp>__<safe-title>__<eventId>` — the safe title had spaces turned
+// into dashes, which is the best a recording with no other record can do.
+function titleFromAudioFile(audioFile: string): string {
+  const parts = path.basename(audioFile, '.m4a').split('__');
+  return parts.length >= 3 ? parts.slice(1, -1).join('__').replace(/-/g, ' ') : 'Recovered recording';
+}
+
+function artifactsInputFor(
+  audioFile: string,
+  m: { eventId: string; title: string; accountId?: string; startedAt?: number; endsAt?: number },
+): UploadArtifactsInput {
+  const transcript = audioFile.replace(/\.m4a$/, '.transcript.txt');
+  const summary = audioFile.replace(/\.m4a$/, '.summary.md');
+  return {
+    eventId: m.eventId,
+    title: m.title,
+    accountId: m.accountId,
+    audioFile,
+    transcriptFile: fs.existsSync(transcript) ? transcript : null,
+    summaryFile: fs.existsSync(summary) ? summary : null,
+    startedAt: m.startedAt ?? resolveOriginalStartedAt(m.eventId, audioFile),
+    endsAt: m.endsAt,
+  };
+}
+
+// Recordings below this are restart fragments and empty takes, not meetings.
+const BACKFILL_MIN_AUDIO_BYTES = 1024 * 1024;
+
+export interface BackfillReport {
+  // Local recordings whose event has no Drive archive in any account.
+  missing: number;
+  // …of which had a transcript and were queued (or, dry run, would be).
+  uploaded: string[];
+  // …of which have no transcript yet (pipeline failed or the silence gate
+  // refused them); `--reprocess` queues these through the full pipeline.
+  needsReprocess: string[];
+  // …under BACKFILL_MIN_AUDIO_BYTES, left alone.
+  ignoredTiny: number;
+  reprocessQueued: number;
+}
+
+let backfillQueue: Promise<void> = Promise.resolve();
+
+// One-shot repair for recordings that never reached Drive: diff the local
+// recordings dir against every account's archive, upload what has a
+// transcript, and (opt-in) re-run the pipeline on the rest. All of it is
+// queued serially in the background — multi-hundred-MB uploads, hours of
+// whisper — so the CLI (30 s read budget) returns with the plan at once and
+// recorder.log records each outcome.
+export async function backfillArchive(opts: { dryRun?: boolean; reprocess?: boolean } = {}): Promise<BackfillReport> {
+  if (!opts.dryRun) backfillQueue = backfillQueue.then(() => retryPendingUploads()).then(() => undefined);
+  const archived = new Set((await listAllMeetingArchives()).map((a) => a.eventId));
+  const local = listRecentRecordings(Number.MAX_SAFE_INTEGER);
+  // Several takes of one event: only the biggest is a backfill candidate,
+  // the same take the Notes view and the overwrite guard prefer.
+  const biggest = new Map<string, typeof local[number]>();
+  for (const r of local) {
+    if (!r.eventId) continue;
+    const cur = biggest.get(r.eventId);
+    if (!cur || r.sizeBytes > cur.sizeBytes) biggest.set(r.eventId, r);
+  }
+  const report: BackfillReport = {
+    missing: 0, uploaded: [], needsReprocess: [], ignoredTiny: 0, reprocessQueued: 0,
+  };
+  for (const [eventId, r] of biggest) {
+    if (archived.has(eventId)) continue;
+    report.missing++;
+    if (r.sizeBytes < BACKFILL_MIN_AUDIO_BYTES) { report.ignoredTiny++; continue; }
+    if (!r.hasTranscript) { report.needsReprocess.push(r.baseName); continue; }
+    report.uploaded.push(r.baseName);
+    if (!opts.dryRun) {
+      const input = artifactsInputFor(r.audioFile, { eventId, title: titleFromAudioFile(r.audioFile) });
+      backfillQueue = backfillQueue.then(() => uploadArtifacts(input)).then(() => undefined);
+    }
+  }
+  if (opts.reprocess && !opts.dryRun) {
+    for (const baseName of report.needsReprocess) {
+      const r = local.find((x) => x.baseName === baseName);
+      if (!r?.eventId) continue;
+      const eventId = r.eventId;
+      report.reprocessQueued++;
+      backfillQueue = backfillQueue.then(() =>
+        reprocessRecording(eventId, r.audioFile, titleFromAudioFile(r.audioFile))
+          .catch((e) => { rlog(`backfill reprocess(${eventId}) failed:`, e); }));
+    }
+  }
+  rlog(`backfillArchive dryRun=${!!opts.dryRun} missing=${report.missing} uploaded=${report.uploaded.length} needsReprocess=${report.needsReprocess.length} queued=${report.reprocessQueued}`);
+  return report;
 }

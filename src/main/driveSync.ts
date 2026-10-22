@@ -24,6 +24,7 @@ import {
   CLOUD_FILES, onCloudFileChange, onCloudFileWrite, readRaw, writeJson, writeText,
 } from './cloudStore';
 import { ingestRemoteOverlay } from './tasksStore';
+import { ingestRemoteNotesOverlay, NOTES_OVERLAY_FILE } from './notesOverlayStore';
 import {
   getDriveSyncAccountId, getDriveSyncEnabled,
   setDriveSyncAccountId, setDriveSyncEnabled,
@@ -181,6 +182,14 @@ async function pullAll(): Promise<void> {
         const { state, changed } = ingestRemoteOverlay(body);
         // pushFile dedupes on lastSeen + guards empty bodies.
         if (changed) schedulePush(f, JSON.stringify(state, null, 2));
+        continue;
+      }
+      // The Notes correction overlay gets the same per-key merge (see
+      // notesOverlayStore): a peer's whole-file snapshot can't revert a
+      // note edit made here since. The store tells the renderer itself.
+      if (f === NOTES_OVERLAY_FILE) {
+        const { file: merged, changed } = ingestRemoteNotesOverlay(body);
+        if (changed) schedulePush(f, JSON.stringify(merged, null, 2));
         continue;
       }
       // Write through cloudStore so its own lastSeen + the cross-device

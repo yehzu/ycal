@@ -23,6 +23,7 @@ import type {
   MeetingNote,
   MeetingNoteSummary,
   NoteOverlay,
+  NoteOverlayOp,
   NotesOverlayFile,
   RecentRecording,
   RecorderMeetSignal,
@@ -334,8 +335,10 @@ const api = {
     ipcRenderer.invoke(IPC.NoteGet, payload),
   notesGetOverlay: (): Promise<NotesOverlayFile> =>
     ipcRenderer.invoke(IPC.NotesGetOverlay),
+  // Send `ops` (the keys you changed — main stamps their merge clocks);
+  // a whole `overlay` is the legacy form, diffed against main's copy.
   notesSetOverlay: (
-    payload: { eventId: string; overlay: NoteOverlay },
+    payload: { eventId: string; overlay?: NoteOverlay; ops?: NoteOverlayOp[] },
   ): Promise<Result<{ file: NotesOverlayFile }>> =>
     ipcRenderer.invoke(IPC.NotesSetOverlay, payload),
   // Permanently delete a note (local files + Drive copy + overlay).

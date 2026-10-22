@@ -23,6 +23,7 @@
     "release": "sh scripts/release.sh",
     "test:targets": "node tests/targets/check.mjs",
     "test:presence": "node tests/presence/check.mjs",
+    "test:notes-overlay": "node tests/notes-overlay/check.mjs",
     "test:watch": "sh scripts/watch-check.sh"
   },
   "bin": {

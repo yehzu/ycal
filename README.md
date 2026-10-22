@@ -194,6 +194,7 @@ For dev work, `npm run ycal -- <args>` runs the CLI from the freshly built sourc
 | `ycal config list [prefix]` / `get <key>` / `set <key> <value>` | Read and change Settings-window prefs without opening Settings. See "Settings and the recording setup". |
 | `ycal recorder status` | Recording-pipeline readiness (ffmpeg, whisper, model, tap, scripts, diarize venv + its transformers commit). |
 | `ycal recorder setup [--all]` | Build / upgrade the diarize venv — the Settings "Setup/Upgrade diarize venv" button. `--all` first installs ffmpeg / whisper-cpp and the model. |
+| `ycal recorder backfill [--dry-run] [--reprocess]` | Upload local recordings that never reached Drive (so your other Macs see them), after retrying failed uploads. `--reprocess` also re-runs the pipeline on ones with no transcript. |
 | `ycal --help` | Full reference. |
 
 ### Flags
@@ -432,6 +433,22 @@ the Settings button runs, so the Settings log fills in too. Exit code 1 with the
 running (from Settings, or an earlier call), the command follows that run to
 its end instead of starting a second one. Interrupting the CLI does not stop
 the setup inside yCal.
+
+A recording reaches your other Macs through the Google Drive archive. Uploads
+that fail are retried every 30 minutes, and every outcome is logged in
+`~/Library/Logs/yCal/recorder.log` (`upload(…)` lines). To repair recordings
+from before that, run:
+
+```bash
+ycal recorder backfill --dry-run   # what is missing from Drive, and why
+ycal recorder backfill             # upload the ones that have a transcript
+ycal recorder backfill --reprocess # also transcribe + summarize the rest (slow)
+```
+
+The work runs inside yCal, one recording at a time, so the command returns
+right away. An upload never replaces a clearly bigger recording of the same
+meeting already in Drive (a short retake or the other Mac's stray capture);
+Reprocess from the Notes view is the explicit way to replace it.
 
 ### Exit codes
 

@@ -1100,6 +1100,10 @@ export interface MeetingNoteSummary {
   // accent — meetings rarely carry a usable calendar color this far from
   // the loaded window, so we fingerprint the id instead.
   hue: number;
+  // Newest modification (ms) of the note's artifacts — local transcript /
+  // summary / note.json, or the Drive archive. The renderer refetches a
+  // cached full note when this moves (another Mac reprocessed it).
+  updatedAt?: number | null;
 }
 
 // The full structured note for one meeting (base, pre-overlay).
@@ -1141,10 +1145,28 @@ export interface NoteOverlay {
   // into the summary prompt on every reprocess. Empty/absent = none.
   reprocessContext?: string;
   updatedAt?: number;
+  // Merge clocks (ms), stamped by main only: one per scalar field, and one
+  // per ENTRY of a map field ("segHtml.<segId>"). A clock with no value is
+  // a deletion of that key. Absent = legacy clock 0. See
+  // @shared/notesOverlayMerge.
+  clocks?: Record<string, number>;
 }
 
 export interface NotesOverlayFile {
   version: 1;
   notes: Record<string, NoteOverlay>;       // eventId → overlay
   updatedAt: number;
+  // Deleted notes: eventId → ms of the delete. Wipes keys stamped at or
+  // before it, so a stale peer can't resurrect a deleted note.
+  tombstones?: Record<string, number>;
+}
+
+// One change to one note's overlay, sent renderer → main (main stamps the
+// clock). `key` addresses one entry of a map field (segHtml / speakerNames
+// / segSpeakers); `remove` deletes the field or entry.
+export interface NoteOverlayOp {
+  field: keyof NoteOverlay;
+  key?: string;
+  value?: unknown;
+  remove?: boolean;
 }

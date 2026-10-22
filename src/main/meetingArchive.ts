@@ -81,6 +81,9 @@ export interface ArchiveMeta {
   // Per-kind sizes (after the upload completes). Lets the CLI report
   // existence without re-listing Drive.
   sizes: Partial<Record<ArtifactKind, number>>;
+  // Size of the captured m4a on the recording Mac, recorded even when the
+  // audio itself isn't uploaded — the overwrite guard compares takes by it.
+  audioBytes?: number;
 }
 
 export interface ArchivedRecording {
@@ -392,12 +395,37 @@ export interface UploadInput {
   summaryFile?: string | null;
   // When false, audio is skipped even if audioFile is provided.
   uploadAudio: boolean;
+  // Bypass the overwrite guard: the user explicitly reprocessed this file.
+  force?: boolean;
 }
 
 export interface UploadResult {
   uploaded: Partial<Record<ArtifactKind, { driveFileId: string; bytes: number }>>;
   meta: ArchiveMeta;
   errors: Partial<Record<ArtifactKind | 'meta', string>>;
+  // Set when the overwrite guard refused the upload (nothing was written).
+  skipped?: string;
+}
+
+// Allowance before a smaller take counts as "a different, shorter take"
+// rather than the same capture re-encoded.
+const OVERWRITE_GUARD_RATIO = 1.05;
+
+// How big is the take already archived for this event? The audio file's own
+// size when audio was uploaded, else the meta's audioBytes. null = nothing
+// archived yet, or Drive couldn't say (the guard then fails open).
+async function archivedCaptureBytes(api: DriveAppDataAPI, eventId: string): Promise<number | null> {
+  try {
+    const audio = await api.file(nameFor(eventId, 'audio'));
+    if (audio?.size) return Number(audio.size);
+    const metaFile = await api.file(metaNameFor(eventId));
+    if (!metaFile) return null;
+    const meta = JSON.parse((await api.read(metaFile.id)).toString('utf-8')) as Partial<ArchiveMeta>;
+    return typeof meta.audioBytes === 'number' ? meta.audioBytes : meta.sizes?.audio ?? null;
+  } catch (e) {
+    rlog(`archive guard: could not read the archived take for ${eventId} — uploading anyway:`, e);
+    return null;
+  }
 }
 
 // Upload whichever of {audio, transcript, summary} are present on disk
@@ -406,6 +434,31 @@ export interface UploadResult {
 // is detectable by the absence of meta.
 export async function uploadMeetingArtifacts(input: UploadInput): Promise<UploadResult> {
   const api = await apiFor(input.accountId);
+  // Drive files are named by eventId alone, so the last upload for an event
+  // wins. A short retake (a restart after the meeting, or the other Mac's
+  // stray capture) used to replace the real recording everywhere — on
+  // 2026-10-21 a 10 s clip overwrote an 18.9 MB meeting. Refuse to replace
+  // a clearly bigger archived take unless the user explicitly reprocessed.
+  let localAudioBytes: number | undefined;
+  try {
+    if (input.audioFile) localAudioBytes = fs.statSync(input.audioFile).size;
+  } catch { /* missing audio → no guard basis */ }
+  if (!input.force && localAudioBytes !== undefined) {
+    const archived = await archivedCaptureBytes(api, input.eventId);
+    if (archived !== null && archived > localAudioBytes * OVERWRITE_GUARD_RATIO) {
+      const reason = `archive already holds a bigger take (${archived} B > ${localAudioBytes} B)`;
+      rlog(`upload(${input.eventId}) skipped — ${reason}`);
+      return {
+        uploaded: {},
+        meta: {
+          eventId: input.eventId, title: input.title, startedAt: input.startedAt,
+          accountId: input.accountId, uploadedAt: new Date().toISOString(), sizes: {},
+        },
+        errors: {},
+        skipped: reason,
+      };
+    }
+  }
   // Preserve the real meeting start across reprocesses. The filename stamp is
   // immutable (set at capture); fall back to any existing meta, then to the
   // caller's startedAt (correct for a first upload, "now" for a reprocess).
@@ -423,6 +476,7 @@ export async function uploadMeetingArtifacts(input: UploadInput): Promise<Upload
       accountId: input.accountId,
       uploadedAt: new Date().toISOString(),
       sizes: {},
+      audioBytes: localAudioBytes,
     },
     errors: {},
   };
@@ -756,6 +810,9 @@ export async function listAllMeetingArchives(): Promise<ArchivedRecording[]> {
       });
     } catch (e) {
       console.error(`[yCal meetingArchive] list failed for ${acct.email}`, e);
+      // A token without the drive.appdata scope fails here on every list —
+      // silently, until this went to recorder.log too.
+      rlog(`[yCal meetingArchive] list failed for ${acct.email}:`, e);
     }
   }
   out.sort((a, b) => {
@@ -807,6 +864,12 @@ function cacheNotePath(eventId: string): string {
   return path.join(cacheDir(eventId), 'note.json');
 }
 
+// Path of a cached archive file, for readers outside this module (the Notes
+// list derives Drive-only rows' status from cached transcript/note.json).
+export function cachedArchivePath(eventId: string, file: 'transcript.txt' | 'note.json'): string {
+  return path.join(cacheDir(eventId), file);
+}
+
 export async function uploadMeetingNoteSidecar(
   eventId: string, accountId: string, body: string,
 ): Promise<void> {
@@ -819,6 +882,7 @@ export async function uploadMeetingNoteSidecar(
     } catch { /* cache seed is best-effort */ }
   } catch (e) {
     console.error('[yCal meetingArchive] note sidecar upload failed', e);
+    rlog(`[yCal meetingArchive] note sidecar upload failed for ${eventId}:`, e);
   }
 }
 
