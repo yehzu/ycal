@@ -2384,7 +2384,10 @@ export async function rehomeArchives(eventIds: string[], opts: { dryRun?: boolea
 // recorder.log records each outcome.
 export async function backfillArchive(opts: { dryRun?: boolean; reprocess?: boolean } = {}): Promise<BackfillReport> {
   if (!opts.dryRun) backfillQueue = backfillQueue.then(() => retryPendingUploads()).then(() => undefined);
-  const archived = new Set((await listAllMeetingArchives()).map((a) => a.eventId));
+  // An archive without a transcript is incomplete — what a failed
+  // post-process leaves behind now that it uploads the audio anyway — so
+  // it counts as missing and its recording is retried like one never sent.
+  const archived = new Set((await listAllMeetingArchives()).filter((a) => a.has.transcript).map((a) => a.eventId));
   const local = listRecentRecordings(Number.MAX_SAFE_INTEGER);
   // Several takes of one event: only the biggest is a backfill candidate,
   // the same take the Notes view and the overwrite guard prefer.

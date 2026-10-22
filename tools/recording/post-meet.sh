@@ -172,15 +172,20 @@ def normalize(s):
     return ''.join(c for c in s.lower() if c.isalnum())
 
 def load_segments(path, label):
+    # whisper.cpp can split one CJK character's UTF-8 bytes across two
+    # tokens and emit them into -oj as invalid UTF-8 — more often with a
+    # --prompt (the glossary). A strict decode raised here and bailed the
+    # whole merge (exit 3): 5 of 23 backfill reprocesses on 2026-10-22.
+    # Decode leniently and drop the replacement characters instead.
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             data = json.load(f)
     except FileNotFoundError:
         return []
     segs = []
     for s in data.get("transcription", []):
         off_from = (s.get("offsets") or {}).get("from", 0)
-        text = (s.get("text") or "").strip()
+        text = (s.get("text") or "").replace("\ufffd", "").strip()
         if not text:
             continue
         segs.append({'off': off_from, 'label': label, 'text': text, 'norm': normalize(text)})
